@@ -21,10 +21,12 @@ enum Ansi {
     final class StyledTextRenderer {
         private var pending = ""
         private var style = TextStyle()
+        private var shouldSkipNextLineFeed = false
 
         func reset() {
             pending.removeAll()
             style = TextStyle()
+            shouldSkipNextLineFeed = false
         }
 
         func process(_ text: String) -> StyledOutput {
@@ -49,6 +51,10 @@ enum Ansi {
             var index = 0
             while index < scalars.count {
                 let scalar = scalars[index]
+                if shouldSkipNextLineFeed, scalar.value != 0x0A {
+                    shouldSkipNextLineFeed = false
+                }
+
                 switch scalar.value {
                 case 0x1B:
                     flushRun()
@@ -61,11 +67,20 @@ enum Ansi {
                     appendVisible("\t")
                     index += 1
                 case 0x0A, 0x0B, 0x0C:
-                    appendVisible("\n")
+                    if shouldSkipNextLineFeed, scalar.value == 0x0A {
+                        shouldSkipNextLineFeed = false
+                    } else {
+                        appendVisible("\n")
+                    }
                     index += 1
                 case 0x0D:
                     appendVisible("\n")
                     index += 1
+                    if scalars.indices.contains(index), scalars[index].value == 0x0A {
+                        index += 1
+                    } else if index == scalars.count {
+                        shouldSkipNextLineFeed = true
+                    }
                 case 0x00..<0x20, 0x7F:
                     index += 1
                 default:

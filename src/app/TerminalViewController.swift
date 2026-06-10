@@ -456,12 +456,12 @@ private final class TitleTabButton: NSButton {
     init(tabID: UUID, title: String) {
         self.tabID = tabID
         super.init(frame: .zero)
-        self.title = "  \(title)"
+        self.title = title
         isBordered = false
         bezelStyle = .regularSquare
         controlSize = .regular
         font = .systemFont(ofSize: 13, weight: .semibold)
-        alignment = .left
+        alignment = .center
         lineBreakMode = .byTruncatingTail
         imagePosition = .noImage
         wantsLayer = true
@@ -540,6 +540,11 @@ private final class TitleTabButton: NSButton {
     func configureClose(target: AnyObject?, action: Selector) {
         closeButton.target = target
         closeButton.action = action
+    }
+
+    func updateTitle(_ title: String, detail: String? = nil) {
+        self.title = title
+        toolTip = detail ?? title
     }
 
     private func updateAppearance() {
@@ -731,7 +736,7 @@ private final class TerminalTab {
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
     let ptyPassthroughView = PtyPassthroughView(frame: .zero)
-    let title: String
+    var title: String
 
     var scrollBottomToCommandBarConstraint: NSLayoutConstraint?
     var scrollBottomToRootConstraint: NSLayoutConstraint?
@@ -884,6 +889,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let titleTabLeftHairline = HairlineView()
     private let newTabButton = TitleAddButton(frame: .zero)
     private let contentContainer = NSView()
+    private let completionEngine = VaulttyCompletionEngine()
+    private let completionQueue = DispatchQueue(label: "com.automicvault.vaultty.completion", qos: .userInitiated)
+    private let completionPopup = CompletionPopupController()
+    private var completionRequestSerial = 0
+    private var activeCompletionRange: NSRange?
+    private var isApplyingCompletion = false
 
     init(selfTestCommand: String? = nil) {
         self.selfTestCommand = selfTestCommand
@@ -969,10 +980,43 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard let tab = tabs.first(where: { $0.inputView === textView }) else {
             return false
         }
+
+        if completionPopup.isShown {
+            if commandSelector == #selector(NSResponder.moveUp(_:)) {
+                completionPopup.selectPrevious()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.moveDown(_:)) {
+                completionPopup.selectNext()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                completionPopup.selectNext()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                completionPopup.selectPrevious()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                acceptSelectedCompletion(in: tab)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                dismissCompletion()
+                return true
+            }
+        }
+
+        if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            requestCompletion(in: tab, mode: .explicit)
+            return true
+        }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 textView.insertNewlineIgnoringFieldEditor(nil)
             } else {
+                dismissCompletion()
                 submitCommand(in: tab)
             }
             return true
@@ -984,6 +1028,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return showNextCommand(in: tab)
         }
         return false
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard !isApplyingCompletion else { return }
+        guard completionPopup.isShown,
+              let textView = notification.object as? NSTextView,
+              let tab = tabs.first(where: { $0.inputView === textView })
+        else {
+            dismissCompletion()
+            return
+        }
+        requestCompletion(in: tab, mode: .filtering)
     }
 
     @objc private func newTab() {
@@ -1029,7 +1085,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func createTab() {
-        let tab = TerminalTab(title: "Tab \(tabs.count + 1)", delegate: self)
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        let tab = TerminalTab(title: titleForDirectory(homePath), delegate: self)
         tabs.append(tab)
         configureSession(for: tab)
         installTabView(tab)
@@ -1050,6 +1107,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func installTabButton(_ tab: TerminalTab) {
         let button = TitleTabButton(tabID: tab.id, title: tab.title)
+        button.updateTitle(tab.title, detail: detailForDirectory(tab.currentCwd))
         button.target = self
         button.action = #selector(selectTab(_:))
         button.configureClose(target: self, action: #selector(closeTab(_:)))
@@ -1080,6 +1138,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session.onExit = { [weak self, weak tab] status in
             tab?.statusLabel.stringValue = "Shell exited with status \(status)"
             if let tab {
+                self?.updateTabTitleForDirectory(tab)
                 self?.stopTtyModePolling(for: tab)
                 tab.ptyPassthroughView.usesPagerKeyBindings = false
                 self?.setTerminalControl(false, in: tab)
@@ -1120,6 +1179,140 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private enum CompletionRequestMode {
+        case explicit
+        case filtering
+    }
+
+    private func requestCompletion(in tab: TerminalTab, mode: CompletionRequestMode) {
+        guard tab.isShellReady, !tab.isTerminalControlActive else { return }
+        let selectedRange = tab.inputView.selectedRange()
+        guard selectedRange.length == 0 else { return }
+
+        completionRequestSerial += 1
+        let serial = completionRequestSerial
+        var environment = ProcessInfo.processInfo.environment
+        environment["PWD"] = tab.currentCwd
+        environment["SHELL"] = environment["SHELL"] ?? "/bin/zsh"
+        let request = CompletionRequest(
+            input: tab.inputView.string,
+            cursorOffset: selectedRange.location,
+            cwd: tab.currentCwd,
+            shellPath: environment["SHELL"] ?? "/bin/zsh",
+            environment: environment,
+            limit: 14
+        )
+
+        completionQueue.async { [weak self] in
+            guard let self else { return }
+            let result = self.completionEngine.completions(for: request)
+            DispatchQueue.main.async { [weak self, weak tab] in
+                guard let self,
+                      let tab,
+                      self.activeTabID == tab.id,
+                      serial == self.completionRequestSerial
+                else {
+                    return
+                }
+                self.handleCompletionResult(result, in: tab, mode: mode)
+            }
+        }
+    }
+
+    private func handleCompletionResult(_ result: CompletionResult, in tab: TerminalTab, mode: CompletionRequestMode) {
+        guard !result.suggestions.isEmpty else {
+            dismissCompletion()
+            if mode == .explicit {
+                NSSound.beep()
+            }
+            return
+        }
+
+        activeCompletionRange = result.replacementRange
+        if mode == .explicit, result.suggestions.count == 1 {
+            applyCompletion(result.suggestions[0], in: tab)
+            return
+        }
+
+        if mode == .explicit,
+           let prefix = result.commonPrefix,
+           let existing = substring(in: tab.inputView.string, range: result.replacementRange),
+           prefix.utf16.count > existing.utf16.count {
+            replace(range: result.replacementRange, with: prefix, in: tab)
+            activeCompletionRange = NSRange(location: result.replacementRange.location, length: prefix.utf16.count)
+        }
+
+        let anchor = completionAnchorRect(for: tab.inputView, in: tab.commandBarView)
+        completionPopup.show(
+            suggestions: result.suggestions,
+            relativeTo: anchor,
+            of: tab.commandBarView,
+            resetSelection: mode == .filtering
+        )
+    }
+
+    private func acceptSelectedCompletion(in tab: TerminalTab) {
+        guard let suggestion = completionPopup.selectedSuggestion else {
+            dismissCompletion()
+            return
+        }
+        applyCompletion(suggestion, in: tab)
+    }
+
+    private func applyCompletion(_ suggestion: CompletionSuggestion, in tab: TerminalTab) {
+        guard let range = activeCompletionRange else { return }
+        replace(range: range, with: suggestion.insertText, in: tab)
+        dismissCompletion()
+    }
+
+    private func replace(range: NSRange, with value: String, in tab: TerminalTab) {
+        let text = tab.inputView.string as NSString
+        guard range.location >= 0,
+              range.location + range.length <= text.length
+        else {
+            return
+        }
+        let updated = text.replacingCharacters(in: range, with: value)
+        isApplyingCompletion = true
+        tab.inputView.string = updated
+        let cursor = range.location + (value as NSString).length
+        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
+        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
+        isApplyingCompletion = false
+    }
+
+    private func dismissCompletion() {
+        activeCompletionRange = nil
+        completionPopup.dismiss()
+        completionRequestSerial += 1
+    }
+
+    private func substring(in value: String, range: NSRange) -> String? {
+        let text = value as NSString
+        guard range.location >= 0,
+              range.location + range.length <= text.length
+        else {
+            return nil
+        }
+        return text.substring(with: range)
+    }
+
+    private func completionAnchorRect(for textView: NSTextView, in containerView: NSView) -> NSRect {
+        let selectedRange = textView.selectedRange()
+        var actualRange = NSRange(location: 0, length: 0)
+        var x: CGFloat = 12
+        let screenRect = textView.firstRect(
+            forCharacterRange: NSRange(location: selectedRange.location, length: 0),
+            actualRange: &actualRange
+        )
+        if let window = textView.window, !screenRect.isEmpty {
+            let windowRect = window.convertFromScreen(screenRect)
+            let localRect = containerView.convert(windowRect, from: nil)
+            x = min(max(localRect.midX, 12), max(12, containerView.bounds.width - 12))
+        }
+        return NSRect(x: x, y: containerView.bounds.maxY - 1, width: 1, height: 1)
+    }
+
     private func submitCommand(in tab: TerminalTab) {
         guard tab.isShellReady else { return }
         let command = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1134,6 +1327,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.styledRenderer.reset()
         tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
         tab.statusLabel.stringValue = "Running..."
+        updateTabTitle(titleForCommand(command), detail: command, in: tab)
 
         let block = TerminalBlock(
             id: UUID(),
@@ -1267,7 +1461,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case "R":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             tab.isShellReady = true
-            tab.statusLabel.stringValue = tab.currentCwd
+            tab.statusLabel.stringValue = detailForDirectory(tab.currentCwd)
+            updateTabTitleForDirectory(tab)
             runSelfTestIfNeeded(in: tab)
         case "C":
             tab.activeBlockID = tab.pendingBlockID
@@ -1289,7 +1484,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isShellReady = true
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
-            tab.statusLabel.stringValue = tab.currentCwd
+            tab.statusLabel.stringValue = detailForDirectory(tab.currentCwd)
+            updateTabTitleForDirectory(tab)
             scrollToBottom(tab)
             focusInput(for: tab)
             runSelfTestIfNeeded(in: tab)
@@ -1308,6 +1504,58 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func usesPagerKeyBindings(for command: String) -> Bool {
         guard let name = commandName(from: command) else { return false }
         return ["less", "man", "more", "most"].contains(name)
+    }
+
+    private func updateTabTitle(_ title: String, detail: String? = nil, in tab: TerminalTab) {
+        let fallback = titleForDirectory(tab.currentCwd)
+        let normalizedTitle = singleLineTitle(title)
+        let displayTitle = normalizedTitle.isEmpty ? fallback : normalizedTitle
+        tab.title = displayTitle
+        tabButtons[tab.id]?.updateTitle(displayTitle, detail: detail)
+    }
+
+    private func updateTabTitleForDirectory(_ tab: TerminalTab) {
+        updateTabTitle(
+            titleForDirectory(tab.currentCwd),
+            detail: detailForDirectory(tab.currentCwd),
+            in: tab
+        )
+    }
+
+    private func titleForDirectory(_ cwd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = (cwd as NSString).standardizingPath
+        if path == home {
+            return "~"
+        }
+        if path == "/" {
+            return "/"
+        }
+
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
+    private func detailForDirectory(_ cwd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = (cwd as NSString).standardizingPath
+        if path == home {
+            return "~"
+        }
+        if path.hasPrefix(home + "/") {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
+
+    private func titleForCommand(_ command: String) -> String {
+        singleLineTitle(command)
+    }
+
+    private func singleLineTitle(_ title: String) -> String {
+        title
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 
     private func commandName(from command: String) -> String? {

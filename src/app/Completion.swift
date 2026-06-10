@@ -1,0 +1,1343 @@
+import AppKit
+import Foundation
+import JavaScriptCore
+
+struct CompletionRequest {
+    let input: String
+    let cursorOffset: Int
+    let cwd: String
+    let shellPath: String
+    let environment: [String: String]
+    let limit: Int
+}
+
+struct CompletionResult {
+    let replacementRange: NSRange
+    let suggestions: [CompletionSuggestion]
+    let commonPrefix: String?
+    let diagnostics: [String]
+}
+
+struct CompletionSuggestion {
+    enum Kind {
+        case command
+        case subcommand
+        case option
+        case argument
+        case file
+        case folder
+    }
+
+    let displayText: String
+    let insertText: String
+    let description: String?
+    let kind: Kind
+    let priority: Int
+    let source: String
+}
+
+final class CompletionPopupController: NSObject {
+    private static let popupWidth: CGFloat = 360
+    private static let maxPopupHeight: CGFloat = 220
+
+    private let popover = NSPopover()
+    private let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 44))
+    private let listView = CompletionListView(frame: .zero)
+    private var suggestions: [CompletionSuggestion] = []
+    private var selectedIndex = 0
+
+    var isShown: Bool { popover.isShown }
+    var selectedSuggestion: CompletionSuggestion? {
+        guard suggestions.indices.contains(selectedIndex) else { return nil }
+        return suggestions[selectedIndex]
+    }
+
+    override init() {
+        super.init()
+
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.documentView = listView
+
+        let viewController = NSViewController()
+        viewController.view = scrollView
+        viewController.preferredContentSize = scrollView.frame.size
+
+        popover.contentViewController = viewController
+        popover.behavior = .semitransient
+        popover.animates = false
+    }
+
+    func show(suggestions: [CompletionSuggestion], relativeTo rect: NSRect, of view: NSView, resetSelection: Bool = true) {
+        self.suggestions = suggestions
+        selectedIndex = suggestions.isEmpty ? 0 : (resetSelection ? 0 : min(selectedIndex, suggestions.count - 1))
+
+        let contentHeight = max(CompletionListView.rowHeight, CGFloat(suggestions.count) * CompletionListView.rowHeight)
+        let visibleHeight = min(Self.maxPopupHeight, contentHeight)
+        let size = NSSize(width: Self.popupWidth, height: visibleHeight)
+        scrollView.frame = NSRect(origin: .zero, size: size)
+        scrollView.hasVerticalScroller = contentHeight > visibleHeight
+        listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: contentHeight)
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        popover.contentViewController?.preferredContentSize = size
+        popover.contentSize = size
+
+        if popover.isShown {
+            return
+        }
+        popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+    }
+
+    func dismiss() {
+        suggestions.removeAll()
+        selectedIndex = 0
+        listView.update(suggestions: [], selectedIndex: 0)
+        popover.performClose(nil)
+    }
+
+    func selectNext() {
+        guard !suggestions.isEmpty else { return }
+        selectedIndex = min(suggestions.count - 1, selectedIndex + 1)
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        scrollRowToVisible(selectedIndex)
+    }
+
+    func selectPrevious() {
+        guard !suggestions.isEmpty else { return }
+        selectedIndex = max(0, selectedIndex - 1)
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        scrollRowToVisible(selectedIndex)
+    }
+
+    private func scrollRowToVisible(_ row: Int) {
+        listView.scrollToVisible(listView.rowRect(for: row))
+    }
+}
+
+private final class CompletionListView: NSView {
+    static let rowHeight: CGFloat = 34
+
+    private var suggestions: [CompletionSuggestion] = []
+    private var selectedIndex = 0
+
+    override var isFlipped: Bool { true }
+
+    func update(suggestions: [CompletionSuggestion], selectedIndex: Int) {
+        self.suggestions = suggestions
+        self.selectedIndex = selectedIndex
+        needsDisplay = true
+    }
+
+    func rowRect(for row: Int) -> NSRect {
+        NSRect(x: 0, y: CGFloat(row) * Self.rowHeight, width: bounds.width, height: Self.rowHeight)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        for (index, suggestion) in suggestions.enumerated() {
+            let rowRect = rowRect(for: index)
+            guard dirtyRect.intersects(rowRect) else { continue }
+
+            let isSelected = index == selectedIndex
+            if isSelected {
+                NSColor.controlAccentColor.setFill()
+                NSBezierPath(
+                    roundedRect: rowRect.insetBy(dx: 8, dy: 3),
+                    xRadius: 7,
+                    yRadius: 7
+                ).fill()
+            }
+
+            draw(suggestion: suggestion, in: rowRect, isSelected: isSelected)
+        }
+    }
+
+    private func draw(suggestion: CompletionSuggestion, in rowRect: NSRect, isSelected: Bool) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let primaryColor = isSelected ? NSColor.white : NSColor.labelColor
+        let secondaryColor = isSelected ? NSColor.white.withAlphaComponent(0.78) : NSColor.secondaryLabelColor
+        let tertiaryColor = isSelected ? NSColor.white.withAlphaComponent(0.70) : NSColor.tertiaryLabelColor
+        let detail = suggestion.description ?? (suggestion.isFilesystemResult ? "" : suggestion.source)
+        let kind = suggestion.isFilesystemResult ? "" : suggestion.kind.label
+
+        let contentRect = rowRect.insetBy(dx: 18, dy: 0)
+        let kindWidth: CGFloat = kind.isEmpty ? 0 : 64
+        let kindRect = NSRect(
+            x: contentRect.maxX - kindWidth,
+            y: rowRect.minY + 9,
+            width: kindWidth,
+            height: 16
+        )
+        let nameMaxX = kind.isEmpty ? contentRect.maxX : kindRect.minX - 8
+        let nameRect = NSRect(
+            x: contentRect.minX,
+            y: rowRect.minY + (detail.isEmpty ? 9 : 4),
+            width: max(20, nameMaxX - contentRect.minX),
+            height: 17
+        )
+
+        (suggestion.displayText as NSString).draw(
+            in: nameRect,
+            withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: primaryColor,
+                .paragraphStyle: paragraph
+            ]
+        )
+
+        if !detail.isEmpty {
+            let detailRect = NSRect(
+                x: contentRect.minX,
+                y: rowRect.minY + 19,
+                width: contentRect.width,
+                height: 13
+            )
+            (detail as NSString).draw(
+                in: detailRect,
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: secondaryColor,
+                    .paragraphStyle: paragraph
+                ]
+            )
+        }
+
+        if !kind.isEmpty {
+            let kindParagraph = NSMutableParagraphStyle()
+            kindParagraph.alignment = .right
+            kindParagraph.lineBreakMode = .byTruncatingTail
+            (kind as NSString).draw(
+                in: kindRect,
+                withAttributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
+                    .foregroundColor: tertiaryColor,
+                    .paragraphStyle: kindParagraph
+                ]
+            )
+        }
+    }
+}
+
+private extension CompletionSuggestion.Kind {
+    var label: String {
+        switch self {
+        case .command: return "cmd"
+        case .subcommand: return "subcmd"
+        case .option: return "option"
+        case .argument: return "arg"
+        case .file: return "file"
+        case .folder: return "folder"
+        }
+    }
+}
+
+private extension CompletionSuggestion {
+    var isFilesystemResult: Bool {
+        kind == .file || kind == .folder
+    }
+}
+
+final class VaulttyCompletionEngine {
+    private let specLoader = FigSpecLoader()
+    private let fileManager = FileManager.default
+    private var commandCache: [String: [CompletionSuggestion]] = [:]
+
+    func completions(for request: CompletionRequest) -> CompletionResult {
+        let parsed = ShellCompletionParser.parse(input: request.input, cursorOffset: request.cursorOffset)
+        var diagnostics: [String] = []
+
+        if parsed.commandTokenIndex == nil || parsed.isCompletingCommand {
+            let suggestions = commandSuggestions(prefix: parsed.currentTokenText, request: request)
+                .limited(to: request.limit)
+            return CompletionResult(
+                replacementRange: parsed.currentTokenRange,
+                suggestions: suggestions,
+                commonPrefix: commonPrefix(for: suggestions, strippingTrailingSpace: true),
+                diagnostics: diagnostics
+            )
+        }
+
+        guard let commandIndex = parsed.commandTokenIndex else {
+            return emptyResult(range: parsed.currentTokenRange)
+        }
+
+        let commandName = (parsed.tokens[commandIndex].text as NSString).lastPathComponent
+        let argumentTokens = Array(parsed.tokens.dropFirst(commandIndex + 1))
+        let currentPrefix = parsed.currentTokenText
+        var suggestions: [CompletionSuggestion] = []
+
+        let useNativePathCompletion = shouldUseNativePathCompletion(
+            commandName: commandName,
+            currentPrefix: currentPrefix
+        )
+
+        if useNativePathCompletion {
+            let nativeSuggestions = rankedSuggestions(pathSuggestions(
+                prefix: currentPrefix,
+                cwd: request.cwd,
+                foldersOnly: commandName == "cd"
+            ), prefix: currentPrefix, limit: request.limit)
+            return CompletionResult(
+                replacementRange: parsed.currentTokenRange,
+                suggestions: nativeSuggestions,
+                commonPrefix: commonPrefix(for: nativeSuggestions, strippingTrailingSpace: false),
+                diagnostics: diagnostics
+            )
+        } else if let spec = specLoader.load(command: commandName) {
+            suggestions.append(contentsOf: suggestionsFromSpec(
+                spec,
+                commandName: commandName,
+                argumentTokens: argumentTokens,
+                currentTokenIndex: parsed.tokens.count - commandIndex - 1,
+                currentPrefix: currentPrefix,
+                request: request
+            ))
+        } else {
+            diagnostics.append("No Fig spec for \(commandName)")
+        }
+
+        if suggestions.isEmpty && shouldAddPathFallback(commandName: commandName, currentPrefix: currentPrefix) {
+            suggestions.append(contentsOf: pathSuggestions(
+                prefix: currentPrefix,
+                cwd: request.cwd,
+                foldersOnly: commandName == "cd"
+            ))
+        }
+
+        let deduped = rankedSuggestions(suggestions, prefix: currentPrefix, limit: request.limit)
+
+        return CompletionResult(
+            replacementRange: parsed.currentTokenRange,
+            suggestions: deduped,
+            commonPrefix: commonPrefix(for: deduped, strippingTrailingSpace: false),
+            diagnostics: diagnostics
+        )
+    }
+
+    private func emptyResult(range: NSRange) -> CompletionResult {
+        CompletionResult(replacementRange: range, suggestions: [], commonPrefix: nil, diagnostics: [])
+    }
+
+    private func suggestionsFromSpec(
+        _ spec: LoadedFigSpec,
+        commandName: String,
+        argumentTokens: [ShellCompletionParser.Token],
+        currentTokenIndex: Int,
+        currentPrefix: String,
+        request: CompletionRequest
+    ) -> [CompletionSuggestion] {
+        var node = FigNode(value: spec.value)
+        let consumed = max(0, argumentTokens.count - 1)
+        var pendingOptionArgs: [FigArg] = []
+
+        if consumed > 0 {
+            for token in argumentTokens.prefix(consumed) {
+                if !pendingOptionArgs.isEmpty {
+                    pendingOptionArgs.removeFirst()
+                    continue
+                }
+                if token.text == "--" {
+                    continue
+                }
+                if token.text.hasPrefix("-"),
+                   let option = node.option(named: optionName(from: token.text)) {
+                    pendingOptionArgs = option.args
+                    continue
+                }
+                if let subcommand = node.subcommand(named: token.text) {
+                    node = subcommand
+                }
+            }
+        }
+
+        var suggestions: [CompletionSuggestion] = []
+        if currentPrefix.hasPrefix("-") {
+            suggestions.append(contentsOf: node.options.flatMap { option in
+                option.names.map {
+                    CompletionSuggestion(
+                        displayText: $0,
+                        insertText: $0 + " ",
+                        description: option.description,
+                        kind: .option,
+                        priority: 90,
+                        source: commandName
+                    )
+                }
+            })
+        } else {
+            suggestions.append(contentsOf: node.subcommands.flatMap { subcommand in
+                subcommand.names.map {
+                    CompletionSuggestion(
+                        displayText: $0,
+                        insertText: $0 + " ",
+                        description: subcommand.description,
+                        kind: .subcommand,
+                        priority: 85,
+                        source: commandName
+                    )
+                }
+            })
+
+            let arg = pendingOptionArgs.first ?? node.args.first
+            if let arg {
+                suggestions.append(contentsOf: suggestionsFromArg(
+                    arg,
+                    commandName: commandName,
+                    currentPrefix: currentPrefix,
+                    request: request,
+                    spec: spec
+                ))
+            }
+        }
+
+        return suggestions
+    }
+
+    private func suggestionsFromArg(
+        _ arg: FigArg,
+        commandName: String,
+        currentPrefix: String,
+        request: CompletionRequest,
+        spec: LoadedFigSpec
+    ) -> [CompletionSuggestion] {
+        var suggestions: [CompletionSuggestion] = []
+
+        suggestions.append(contentsOf: arg.suggestions.map { suggestion in
+            CompletionSuggestion(
+                displayText: suggestion.name,
+                insertText: (suggestion.insertValue ?? suggestion.name) + " ",
+                description: suggestion.description,
+                kind: .argument,
+                priority: suggestion.priority,
+                source: commandName
+            )
+        })
+
+        for template in arg.templates {
+            if template == "folders" {
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: true))
+            } else if template == "filepaths" {
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: false))
+            }
+        }
+
+        for generator in arg.generators {
+            suggestions.append(contentsOf: suggestionsFromGenerator(
+                generator,
+                commandName: commandName,
+                currentPrefix: currentPrefix,
+                request: request,
+                spec: spec
+            ))
+        }
+
+        return suggestions
+    }
+
+    private func suggestionsFromGenerator(
+        _ generator: FigGenerator,
+        commandName: String,
+        currentPrefix: String,
+        request: CompletionRequest,
+        spec: LoadedFigSpec
+    ) -> [CompletionSuggestion] {
+        var suggestions: [CompletionSuggestion] = []
+        for template in generator.templates {
+            if template == "folders" {
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: true))
+            } else if template == "filepaths" {
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: false))
+            }
+        }
+
+        suggestions.append(contentsOf: generator.suggestions.map { suggestion in
+            CompletionSuggestion(
+                displayText: suggestion.name,
+                insertText: (suggestion.insertValue ?? suggestion.name) + " ",
+                description: suggestion.description,
+                kind: .argument,
+                priority: suggestion.priority,
+                source: commandName
+            )
+        })
+
+        if let script = generator.script {
+            suggestions.append(contentsOf: runScriptGenerator(
+                script,
+                generator: generator,
+                commandName: commandName,
+                request: request,
+                spec: spec
+            ))
+        }
+
+        if let custom = generator.custom, custom.isObject {
+            suggestions.append(contentsOf: runCustomGenerator(
+                custom,
+                commandName: commandName,
+                request: request,
+                spec: spec
+            ))
+        }
+
+        return suggestions
+    }
+
+    private func runScriptGenerator(
+        _ script: FigScript,
+        generator: FigGenerator,
+        commandName: String,
+        request: CompletionRequest,
+        spec: LoadedFigSpec
+    ) -> [CompletionSuggestion] {
+        guard let output = ShellCommandRunner.run(
+            command: script.command,
+            args: script.args,
+            cwd: script.cwd ?? request.cwd,
+            environment: request.environment,
+            timeout: 0.75,
+            outputLimit: 64 * 1024
+        ) else {
+            return []
+        }
+
+        if let postProcess = generator.postProcess, postProcess.isObject {
+            let value = postProcess.call(withArguments: [output.stdout, request.input])
+            return suggestions(from: value, kind: .argument, source: commandName)
+        }
+
+        let splitOn = generator.splitOn ?? "\n"
+        return output.stdout
+            .components(separatedBy: splitOn)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map {
+                CompletionSuggestion(
+                    displayText: $0,
+                    insertText: $0 + " ",
+                    description: nil,
+                    kind: .argument,
+                    priority: 50,
+                    source: commandName
+                )
+            }
+    }
+
+    private func runCustomGenerator(
+        _ custom: JSValue,
+        commandName: String,
+        request: CompletionRequest,
+        spec: LoadedFigSpec
+    ) -> [CompletionSuggestion] {
+        let executeCommand: @convention(block) (JSValue) -> JSValue = { [request] commandValue in
+            let command = commandValue.forProperty("command")?.toString()
+            let argsValue = commandValue.forProperty("args")
+            let cwd = commandValue.forProperty("cwd")?.toString() ?? request.cwd
+            let args = FigReader.stringArray(argsValue)
+            guard let command,
+                  let output = ShellCommandRunner.run(
+                    command: command,
+                    args: args,
+                    cwd: cwd,
+                    environment: request.environment,
+                    timeout: 0.75,
+                    outputLimit: 64 * 1024
+                  )
+            else {
+                return JSValue(object: ["stdout": "", "stderr": ""], in: commandValue.context)!
+            }
+            return JSValue(object: ["stdout": output.stdout, "stderr": output.stderr], in: commandValue.context)!
+        }
+
+        spec.context.setObject(executeCommand, forKeyedSubscript: "__vaulttyExecuteCommand" as NSString)
+        spec.context.setObject(["currentWorkingDirectory": request.cwd, "searchTerm": request.input], forKeyedSubscript: "__vaulttyGeneratorContext" as NSString)
+        spec.context.setObject(request.input.split(whereSeparator: { $0.isWhitespace }).map(String.init), forKeyedSubscript: "__vaulttyTokens" as NSString)
+        spec.context.setObject(custom, forKeyedSubscript: "__vaulttyCustom" as NSString)
+
+        let runner = """
+        (function() {
+          var box = { done: false, result: null, error: null };
+          try {
+            Promise.resolve(__vaulttyCustom(__vaulttyTokens, __vaulttyExecuteCommand, __vaulttyGeneratorContext)).then(function(result) {
+              box.result = result;
+              box.done = true;
+            }, function(error) {
+              box.error = String(error);
+              box.done = true;
+            });
+          } catch (error) {
+            box.error = String(error);
+            box.done = true;
+          }
+          return box;
+        })()
+        """
+        guard let box = spec.context.evaluateScript(runner), !box.isUndefined else {
+            return []
+        }
+
+        let deadline = Date().addingTimeInterval(0.75)
+        while Date() < deadline {
+            if box.forProperty("done")?.toBool() == true {
+                return suggestions(from: box.forProperty("result"), kind: .argument, source: commandName)
+            }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        return []
+    }
+
+    private func suggestions(from value: JSValue?, kind: CompletionSuggestion.Kind, source: String) -> [CompletionSuggestion] {
+        guard let value, !value.isUndefined, !value.isNull else { return [] }
+        if value.isString {
+            let name = value.toString() ?? ""
+            return name.isEmpty ? [] : [
+                CompletionSuggestion(displayText: name, insertText: name + " ", description: nil, kind: kind, priority: 50, source: source)
+            ]
+        }
+        return FigReader.arrayValues(value).compactMap { item in
+            if item.isString, let name = item.toString(), !name.isEmpty {
+                return CompletionSuggestion(displayText: name, insertText: name + " ", description: nil, kind: kind, priority: 50, source: source)
+            }
+            guard let name = FigReader.names(from: item).first else { return nil }
+            let insertValue = item.forProperty("insertValue")?.toString() ?? name
+            return CompletionSuggestion(
+                displayText: name,
+                insertText: insertValue + " ",
+                description: item.forProperty("description")?.toString(),
+                kind: kind,
+                priority: Int(item.forProperty("priority")?.toInt32() ?? 50),
+                source: source
+            )
+        }
+    }
+
+    private func commandSuggestions(prefix: String, request: CompletionRequest) -> [CompletionSuggestion] {
+        let cacheKey = request.environment["PATH"] ?? ""
+        if let cached = commandCache[cacheKey] {
+            return cached.filter { matches(prefix: prefix, candidate: $0.displayText) }
+        }
+
+        var names = Set<String>()
+        names.formUnion(specLoader.commandNames())
+
+        for directory in cacheKey.split(separator: ":").map(String.init) {
+            guard let contents = try? fileManager.contentsOfDirectory(atPath: directory) else { continue }
+            for name in contents {
+                let path = (directory as NSString).appendingPathComponent(name)
+                if fileManager.isExecutableFile(atPath: path) {
+                    names.insert(name)
+                }
+            }
+        }
+
+        let suggestions = names.map {
+            CompletionSuggestion(
+                displayText: $0,
+                insertText: $0 + " ",
+                description: nil,
+                kind: .command,
+                priority: specLoader.hasSpec(command: $0) ? 70 : 50,
+                source: specLoader.hasSpec(command: $0) ? "Fig" : "PATH"
+            )
+        }
+        commandCache[cacheKey] = suggestions
+        return suggestions.filter { matches(prefix: prefix, candidate: $0.displayText) }
+    }
+
+    private func pathSuggestions(prefix: String, cwd: String, foldersOnly: Bool) -> [CompletionSuggestion] {
+        let expanded = expandTilde(prefix)
+        let nsPrefix = expanded as NSString
+        let directoryPart = nsPrefix.deletingLastPathComponent
+        let filePrefix = expanded.hasSuffix("/") ? "" : nsPrefix.lastPathComponent
+        let directory: String
+        if expanded.hasSuffix("/") {
+            directory = expanded.hasPrefix("/")
+                ? expanded
+                : (cwd as NSString).appendingPathComponent(expanded)
+        } else if directoryPart.isEmpty || directoryPart == "." {
+            directory = cwd
+        } else if directoryPart.hasPrefix("/") {
+            directory = directoryPart
+        } else {
+            directory = (cwd as NSString).appendingPathComponent(directoryPart)
+        }
+
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: URL(fileURLWithPath: directory),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        ) else {
+            return []
+        }
+
+        var suggestions: [CompletionSuggestion] = entries.compactMap { url in
+            let name = url.lastPathComponent
+            if !filePrefix.hasPrefix("."), name.hasPrefix(".") {
+                return nil
+            }
+            guard filePrefix.isEmpty || hasCaseInsensitivePrefix(name, filePrefix) else { return nil }
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDirectory || !foldersOnly else { return nil }
+
+            let visibleName = name + (isDirectory ? "/" : "")
+            let inserted = pathInsertValue(prefix: prefix, suggestionName: visibleName, isDirectory: isDirectory)
+            return CompletionSuggestion(
+                displayText: visibleName,
+                insertText: inserted,
+                description: nil,
+                kind: isDirectory ? .folder : .file,
+                priority: isDirectory ? 60 : 55,
+                source: directory
+            )
+        }
+
+        if foldersOnly, filePrefix.isEmpty || hasCaseInsensitivePrefix("..", filePrefix) {
+            suggestions.append(CompletionSuggestion(
+                displayText: "../",
+                insertText: pathInsertValue(prefix: prefix, suggestionName: "../", isDirectory: true),
+                description: "Parent directory",
+                kind: .folder,
+                priority: 45,
+                source: directory
+            ))
+        }
+        return suggestions
+    }
+
+    private func pathInsertValue(prefix: String, suggestionName: String, isDirectory: Bool) -> String {
+        let basePrefix: String
+        if prefix.hasSuffix("/") {
+            basePrefix = prefix
+        } else {
+            let nsPrefix = prefix as NSString
+            let directoryName = nsPrefix.deletingLastPathComponent
+            basePrefix = directoryName.isEmpty || directoryName == "." ? "" : directoryName + "/"
+        }
+        let raw = basePrefix + suggestionName
+        return shellEscapePath(raw) + (isDirectory ? "" : " ")
+    }
+
+    private func shouldAddPathFallback(commandName: String, currentPrefix: String) -> Bool {
+        commandName == "cd" || commandName == "ls" || currentPrefix.contains("/")
+    }
+
+    private func shouldUseNativePathCompletion(commandName: String, currentPrefix: String) -> Bool {
+        if commandName == "cd" {
+            return true
+        }
+        if commandName == "ls", !currentPrefix.hasPrefix("-") {
+            return true
+        }
+        return currentPrefix.contains("/")
+    }
+
+    private func isHiddenPathSuggestion(_ suggestion: CompletionSuggestion) -> Bool {
+        switch suggestion.kind {
+        case .file, .folder:
+            return suggestion.displayText.hasPrefix(".")
+        default:
+            return false
+        }
+    }
+
+    private func optionName(from token: String) -> String {
+        token.components(separatedBy: "=").first ?? token
+    }
+
+    private func dedupe(_ suggestions: [CompletionSuggestion]) -> [CompletionSuggestion] {
+        var seen = Set<String>()
+        var output: [CompletionSuggestion] = []
+        for suggestion in suggestions {
+            let key = "\(suggestion.kind.label):\(suggestion.displayText):\(suggestion.insertText)"
+            if seen.insert(key).inserted {
+                output.append(suggestion)
+            }
+        }
+        return output
+    }
+
+    private func rankedSuggestions(_ suggestions: [CompletionSuggestion], prefix: String, limit: Int) -> [CompletionSuggestion] {
+        dedupe(suggestions)
+            .filter { matches(prefix: prefix, suggestion: $0) }
+            .sorted { left, right in
+                if isHiddenPathSuggestion(left) != isHiddenPathSuggestion(right) {
+                    return !isHiddenPathSuggestion(left)
+                }
+                if left.priority != right.priority { return left.priority > right.priority }
+                return left.displayText.localizedStandardCompare(right.displayText) == .orderedAscending
+            }
+            .limited(to: limit)
+    }
+
+    private func matches(prefix: String, candidate: String) -> Bool {
+        prefix.isEmpty || hasCaseInsensitivePrefix(candidate, prefix)
+    }
+
+    private func matches(prefix: String, suggestion: CompletionSuggestion) -> Bool {
+        if matches(prefix: prefix, candidate: suggestion.displayText) {
+            return true
+        }
+        switch suggestion.kind {
+        case .file, .folder:
+            return matches(prefix: prefix, candidate: suggestion.insertText.replacingOccurrences(of: "\\", with: ""))
+        default:
+            return false
+        }
+    }
+
+    private func hasCaseInsensitivePrefix(_ value: String, _ prefix: String) -> Bool {
+        value.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
+    }
+
+    private func commonPrefix(for suggestions: [CompletionSuggestion], strippingTrailingSpace: Bool) -> String? {
+        guard suggestions.count > 1 else { return nil }
+        let values = suggestions.map {
+            strippingTrailingSpace ? $0.insertText.trimmingCharacters(in: .whitespaces) : $0.insertText
+        }
+        guard var prefix = values.first else { return nil }
+        for value in values.dropFirst() {
+            while !value.hasPrefix(prefix), !prefix.isEmpty {
+                prefix.removeLast()
+            }
+        }
+        return prefix.isEmpty ? nil : prefix
+    }
+
+    private func expandTilde(_ value: String) -> String {
+        if value == "~" {
+            return fileManager.homeDirectoryForCurrentUser.path
+        }
+        if value.hasPrefix("~/") {
+            return fileManager.homeDirectoryForCurrentUser.path + String(value.dropFirst())
+        }
+        return value
+    }
+
+    private func shellEscapePath(_ value: String) -> String {
+        var output = ""
+        for character in value {
+            if character.isWhitespace || "\\'\"$`!*?[]{}()&;|<>".contains(character) {
+                output.append("\\")
+            }
+            output.append(character)
+        }
+        return output
+    }
+}
+
+private extension Array {
+    func limited(to limit: Int) -> [Element] {
+        limit > 0 && count > limit ? Array(prefix(limit)) : self
+    }
+}
+
+enum ShellCompletionParser {
+    struct Token {
+        let text: String
+        let range: NSRange
+        let quote: Character?
+    }
+
+    struct ParsedCommand {
+        let tokens: [Token]
+        let currentTokenText: String
+        let currentTokenRange: NSRange
+        let commandTokenIndex: Int?
+        let isCompletingCommand: Bool
+    }
+
+    static func parse(input: String, cursorOffset: Int) -> ParsedCommand {
+        let nsInput = input as NSString
+        let clampedCursor = max(0, min(cursorOffset, nsInput.length))
+        let prefix = nsInput.substring(to: clampedCursor)
+        let segment = activeSegment(in: prefix)
+        let segmentOffset = clampedCursor - (segment as NSString).length
+        let tokens = tokenize(segment: segment, segmentOffset: segmentOffset)
+        let current = currentToken(tokens: tokens, cursorOffset: clampedCursor)
+        let commandIndex = commandTokenIndex(in: tokens)
+        let isCompletingCommand = commandIndex == nil || current.index == commandIndex
+        return ParsedCommand(
+            tokens: tokens,
+            currentTokenText: current.token?.text ?? "",
+            currentTokenRange: current.token?.range ?? NSRange(location: clampedCursor, length: 0),
+            commandTokenIndex: commandIndex,
+            isCompletingCommand: isCompletingCommand
+        )
+    }
+
+    private static func activeSegment(in value: String) -> String {
+        var quote: Character?
+        var escape = false
+        var lastBreak = value.startIndex
+
+        for index in value.indices {
+            let character = value[index]
+            if escape {
+                escape = false
+                continue
+            }
+            if character == "\\" {
+                escape = true
+                continue
+            }
+            if let activeQuote = quote {
+                if character == activeQuote {
+                    quote = nil
+                }
+                continue
+            }
+            if character == "\"" || character == "'" {
+                quote = character
+                continue
+            }
+            if character == ";" || character == "|" || character == "\n" {
+                lastBreak = value.index(after: index)
+            }
+        }
+
+        return String(value[lastBreak...])
+    }
+
+    private static func tokenize(segment: String, segmentOffset: Int) -> [Token] {
+        var tokens: [Token] = []
+        var text = ""
+        var tokenStart: Int?
+        var quote: Character?
+        var tokenQuote: Character?
+        var escape = false
+        var utf16Offset = segmentOffset
+
+        func flush(at location: Int) {
+            guard let start = tokenStart else { return }
+            tokens.append(Token(text: text, range: NSRange(location: start, length: max(0, location - start)), quote: tokenQuote))
+            text = ""
+            tokenStart = nil
+            tokenQuote = nil
+        }
+
+        for character in segment {
+            let width = String(character).utf16.count
+            if escape {
+                if tokenStart == nil { tokenStart = utf16Offset }
+                text.append(character)
+                escape = false
+                utf16Offset += width
+                continue
+            }
+            if character == "\\" {
+                if tokenStart == nil { tokenStart = utf16Offset }
+                escape = true
+                utf16Offset += width
+                continue
+            }
+            if let activeQuote = quote {
+                if character == activeQuote {
+                    quote = nil
+                } else {
+                    text.append(character)
+                }
+                utf16Offset += width
+                continue
+            }
+            if character == "\"" || character == "'" {
+                if tokenStart == nil { tokenStart = utf16Offset }
+                quote = character
+                tokenQuote = character
+                utf16Offset += width
+                continue
+            }
+            if character.isWhitespace {
+                flush(at: utf16Offset)
+                utf16Offset += width
+                continue
+            }
+            if tokenStart == nil { tokenStart = utf16Offset }
+            text.append(character)
+            utf16Offset += width
+        }
+        flush(at: utf16Offset)
+
+        if segment.last?.isWhitespace == true {
+            tokens.append(Token(text: "", range: NSRange(location: segmentOffset + (segment as NSString).length, length: 0), quote: nil))
+        } else if tokens.isEmpty {
+            tokens.append(Token(text: "", range: NSRange(location: segmentOffset, length: 0), quote: nil))
+        }
+        return tokens
+    }
+
+    private static func currentToken(tokens: [Token], cursorOffset: Int) -> (token: Token?, index: Int?) {
+        for (index, token) in tokens.enumerated() {
+            if cursorOffset >= token.range.location && cursorOffset <= token.range.location + token.range.length {
+                return (token, index)
+            }
+        }
+        return (tokens.last, tokens.indices.last)
+    }
+
+    private static func commandTokenIndex(in tokens: [Token]) -> Int? {
+        var index = 0
+        let wrappers = Set(["builtin", "command", "exec", "noglob", "sudo"])
+
+        while index < tokens.count {
+            let text = tokens[index].text
+            if text.isEmpty {
+                return index
+            }
+            if isAssignment(text) {
+                index += 1
+                continue
+            }
+            if text == "env" {
+                index += 1
+                while index < tokens.count && (isAssignment(tokens[index].text) || tokens[index].text.hasPrefix("-")) {
+                    index += 1
+                }
+                continue
+            }
+            if wrappers.contains((text as NSString).lastPathComponent) {
+                index += 1
+                if text == "sudo" {
+                    while index < tokens.count && tokens[index].text.hasPrefix("-") {
+                        index += 1
+                    }
+                }
+                continue
+            }
+            return index
+        }
+        return tokens.indices.last
+    }
+
+    private static func isAssignment(_ value: String) -> Bool {
+        guard let equals = value.firstIndex(of: "="), equals != value.startIndex else { return false }
+        let key = value[..<equals]
+        guard let first = key.first, first == "_" || first.isLetter else { return false }
+        return key.allSatisfy { $0 == "_" || $0.isLetter || $0.isNumber }
+    }
+}
+
+private final class FigSpecLoader {
+    private var specsRoot: URL?
+    private var index: [String: URL]?
+    private var cache: [String: LoadedFigSpec] = [:]
+
+    init() {
+        if let override = ProcessInfo.processInfo.environment["VAULTTY_COMPLETIONS_DIR"], !override.isEmpty {
+            specsRoot = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            specsRoot = Bundle.main.resourceURL?
+                .appendingPathComponent("completions", isDirectory: true)
+                .appendingPathComponent("fig", isDirectory: true)
+                .appendingPathComponent("build", isDirectory: true)
+        }
+    }
+
+    func commandNames() -> [String] {
+        Array(specIndex().keys)
+    }
+
+    func hasSpec(command: String) -> Bool {
+        specIndex()[command] != nil
+    }
+
+    func load(command: String) -> LoadedFigSpec? {
+        if let cached = cache[command] {
+            return cached
+        }
+        guard let url = specIndex()[command],
+              let contents = try? String(contentsOf: url, encoding: .utf8),
+              let transformed = transformModule(contents)
+        else {
+            return nil
+        }
+
+        let context = JSContext()
+        context?.exceptionHandler = { _, _ in }
+        context?.evaluateScript("""
+        globalThis.console = { log: function(){}, warn: function(){}, error: function(){}, debug: function(){} };
+        globalThis.process = { env: {} };
+        """)
+        guard let context else { return nil }
+        _ = context.evaluateScript(transformed)
+        guard context.objectForKeyedSubscript("__vaulttyDefaultException")?.isUndefined != false,
+              let defaultValue = context.objectForKeyedSubscript("__vaulttyDefault"),
+              !defaultValue.isUndefined,
+              !defaultValue.isNull
+        else {
+            return nil
+        }
+        let loaded = LoadedFigSpec(context: context, value: defaultValue)
+        cache[command] = loaded
+        return loaded
+    }
+
+    private func specIndex() -> [String: URL] {
+        if let index { return index }
+        guard let specsRoot else {
+            index = [:]
+            return [:]
+        }
+        var output: [String: URL] = [:]
+        guard let enumerator = FileManager.default.enumerator(
+            at: specsRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            index = [:]
+            return [:]
+        }
+
+        for case let url as URL in enumerator where url.pathExtension == "js" {
+            guard url.deletingLastPathComponent() == specsRoot else { continue }
+            output[url.deletingPathExtension().lastPathComponent] = url
+        }
+        index = output
+        return output
+    }
+
+    private func transformModule(_ source: String) -> String? {
+        if let range = source.range(of: #"export\s*\{([^}]*)\}\s*;?\s*$"#, options: .regularExpression) {
+            let exportClause = String(source[range])
+            guard let defaultName = defaultExportName(from: exportClause) else { return nil }
+            var transformed = source
+            transformed.replaceSubrange(range, with: "\nglobalThis.__vaulttyDefault = \(defaultName);")
+            return transformed
+        }
+        if let range = source.range(of: #"export\s+default\s+([^;]+);?\s*$"#, options: .regularExpression) {
+            let exportStatement = String(source[range])
+            let expression = exportStatement
+                .replacingOccurrences(of: #"export\s+default\s+"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ;\n\t"))
+            var transformed = source
+            transformed.replaceSubrange(range, with: "\nglobalThis.__vaulttyDefault = \(expression);")
+            return transformed
+        }
+        return nil
+    }
+
+    private func defaultExportName(from exportClause: String) -> String? {
+        let body = exportClause
+            .replacingOccurrences(of: #"^export\s*\{"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\}\s*;?\s*$"#, with: "", options: .regularExpression)
+        for part in body.split(separator: ",") {
+            let text = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pieces = text.components(separatedBy: " as ")
+            if pieces.count == 2 && pieces[1].trimmingCharacters(in: .whitespacesAndNewlines) == "default" {
+                return pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+}
+
+private struct LoadedFigSpec {
+    let context: JSContext
+    let value: JSValue
+}
+
+private struct FigNode {
+    let value: JSValue
+
+    var names: [String] { FigReader.names(from: value) }
+    var description: String? { value.forProperty("description")?.toString() }
+    var subcommands: [FigNode] { FigReader.arrayValues(value.forProperty("subcommands")).map(FigNode.init) }
+    var options: [FigOption] { FigReader.arrayValues(value.forProperty("options")).map(FigOption.init) }
+    var args: [FigArg] { FigReader.args(from: value.forProperty("args")) }
+
+    func subcommand(named name: String) -> FigNode? {
+        subcommands.first { $0.names.contains(name) }
+    }
+
+    func option(named name: String) -> FigOption? {
+        options.first { $0.names.contains(name) }
+    }
+}
+
+private struct FigOption {
+    let value: JSValue
+
+    var names: [String] { FigReader.names(from: value) }
+    var description: String? { value.forProperty("description")?.toString() }
+    var args: [FigArg] { FigReader.args(from: value.forProperty("args")) }
+}
+
+private struct FigArg {
+    let value: JSValue
+
+    var suggestions: [FigStaticSuggestion] {
+        FigReader.suggestions(from: value.forProperty("suggestions"))
+    }
+
+    var templates: [String] {
+        FigReader.templates(from: value)
+    }
+
+    var generators: [FigGenerator] {
+        var generators = FigReader.arrayValues(value.forProperty("generators")).map(FigGenerator.init)
+        if let generatorValue = value.forProperty("generator"), !generatorValue.isUndefined {
+            generators.append(FigGenerator(value: generatorValue))
+        }
+        return generators
+    }
+}
+
+private struct FigGenerator {
+    let value: JSValue
+
+    var templates: [String] { FigReader.templates(from: value) }
+    var suggestions: [FigStaticSuggestion] { FigReader.suggestions(from: value.forProperty("suggestions")) }
+    var splitOn: String? { value.forProperty("splitOn")?.toString() }
+    var postProcess: JSValue? { value.forProperty("postProcess") }
+    var custom: JSValue? { value.forProperty("custom") }
+
+    var script: FigScript? {
+        guard let scriptValue = value.forProperty("script"), !scriptValue.isUndefined else { return nil }
+        if scriptValue.isString, let command = scriptValue.toString() {
+            return FigScript(command: "/bin/zsh", args: ["-lc", command], cwd: nil)
+        }
+        if scriptValue.isArray {
+            let parts = FigReader.stringArray(scriptValue)
+            guard let command = parts.first else { return nil }
+            return FigScript(command: command, args: Array(parts.dropFirst()), cwd: nil)
+        }
+        if scriptValue.isObject {
+            let command = scriptValue.forProperty("command")?.toString()
+            let args = FigReader.stringArray(scriptValue.forProperty("args"))
+            let cwd = scriptValue.forProperty("cwd")?.toString()
+            if let command {
+                return FigScript(command: command, args: args, cwd: cwd)
+            }
+        }
+        return nil
+    }
+}
+
+private struct FigScript {
+    let command: String
+    let args: [String]
+    let cwd: String?
+}
+
+private struct FigStaticSuggestion {
+    let name: String
+    let insertValue: String?
+    let description: String?
+    let priority: Int
+}
+
+private enum FigReader {
+    static func arrayValues(_ value: JSValue?) -> [JSValue] {
+        guard let value, !value.isUndefined, !value.isNull else { return [] }
+        if value.isArray {
+            let length = Int(value.forProperty("length")?.toInt32() ?? 0)
+            return (0..<length).compactMap { value.atIndex($0) }
+        }
+        return value.isObject || value.isString ? [value] : []
+    }
+
+    static func args(from value: JSValue?) -> [FigArg] {
+        arrayValues(value).map(FigArg.init)
+    }
+
+    static func names(from value: JSValue?) -> [String] {
+        guard let value, !value.isUndefined, !value.isNull else { return [] }
+        guard let nameValue = value.forProperty("name"), !nameValue.isUndefined else {
+            return value.isString ? [value.toString()].compactMap { $0 } : []
+        }
+        return stringArray(nameValue)
+    }
+
+    static func stringArray(_ value: JSValue?) -> [String] {
+        guard let value, !value.isUndefined, !value.isNull else { return [] }
+        if value.isString {
+            return [value.toString()].compactMap { $0 }
+        }
+        if value.isArray {
+            return arrayValues(value).compactMap { $0.toString() }
+        }
+        return []
+    }
+
+    static func templates(from value: JSValue?) -> [String] {
+        guard let value else { return [] }
+        var templates: [String] = []
+        templates.append(contentsOf: stringArray(value.forProperty("template")))
+        templates.append(contentsOf: stringArray(value.forProperty("templates")))
+        return templates
+    }
+
+    static func suggestions(from value: JSValue?) -> [FigStaticSuggestion] {
+        arrayValues(value).compactMap { item in
+            if item.isString, let name = item.toString(), !name.isEmpty {
+                return FigStaticSuggestion(name: name, insertValue: nil, description: nil, priority: 50)
+            }
+            guard let name = names(from: item).first else { return nil }
+            return FigStaticSuggestion(
+                name: name,
+                insertValue: item.forProperty("insertValue")?.toString(),
+                description: item.forProperty("description")?.toString(),
+                priority: Int(item.forProperty("priority")?.toInt32() ?? 50)
+            )
+        }
+    }
+}
+
+private enum ShellCommandRunner {
+    struct Output {
+        let stdout: String
+        let stderr: String
+    }
+
+    static func run(
+        command: String,
+        args: [String],
+        cwd: String,
+        environment: [String: String],
+        timeout: TimeInterval,
+        outputLimit: Int
+    ) -> Output? {
+        let process = Process()
+        if command.hasPrefix("/") || command.contains("/") {
+            process.executableURL = URL(fileURLWithPath: command)
+            process.arguments = args
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [command] + args
+        }
+        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+
+        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile().prefix(outputLimit)
+        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile().prefix(outputLimit)
+        return Output(
+            stdout: String(decoding: stdoutData, as: UTF8.self),
+            stderr: String(decoding: stderrData, as: UTF8.self)
+        )
+    }
+}

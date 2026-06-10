@@ -18,6 +18,7 @@ EXECUTABLE="$MACOS_DIR/$APP_NAME"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
 ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
+FIG_AUTOCOMPLETE_DIR="$ROOT_DIR/target/vendor/fig-autocomplete/package"
 
 usage() {
   cat <<'EOF'
@@ -175,6 +176,23 @@ bundle_icon() {
   iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/$APP_NAME.icns"
 }
 
+bundle_completions() {
+  if [[ ! -d "$FIG_AUTOCOMPLETE_DIR/build" ]]; then
+    "$ROOT_DIR/scripts/fetch-fig-autocomplete.sh" >/dev/null
+  fi
+  if [[ ! -d "$FIG_AUTOCOMPLETE_DIR/build" ]]; then
+    echo "Fig autocomplete specs not found. Run scripts/fetch-fig-autocomplete.sh." >&2
+    exit 1
+  fi
+
+  rm -rf "$RESOURCES_DIR/completions"
+  mkdir -p "$RESOURCES_DIR/completions/fig"
+  cp -R "$FIG_AUTOCOMPLETE_DIR/build" "$RESOURCES_DIR/completions/fig/build"
+  cp "$FIG_AUTOCOMPLETE_DIR/package.json" "$RESOURCES_DIR/completions/fig/package.json"
+  cp "$FIG_AUTOCOMPLETE_DIR/LICENSE" "$RESOURCES_DIR/completions/fig/LICENSE"
+  cp "$FIG_AUTOCOMPLETE_DIR/README.md" "$RESOURCES_DIR/completions/fig/README.md"
+}
+
 IDENTITY="$(codesign_identity)"
 
 case "$CONFIGURATION" in
@@ -204,6 +222,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 render_info_plist
 cp "$RUST_BIN_DIR/vaultty-env" "$RESOURCES_DIR/vaultty-env"
 bundle_icon
+bundle_completions
 
 GHOSTTY_SWIFT_LINK_ARGS=()
 GHOSTTY_BRIDGE_FLAGS=()
@@ -259,9 +278,11 @@ swiftc \
   "${SWIFT_FLAGS[@]}" \
   -target "arm64-apple-macosx$MIN_MACOS_VERSION" \
   -framework AppKit \
+  -framework JavaScriptCore \
   "$ROOT_DIR/src/app/main.swift" \
   "$ROOT_DIR/src/app/PtySession.swift" \
   "$ROOT_DIR/src/app/Ansi.swift" \
+  "$ROOT_DIR/src/app/Completion.swift" \
   "$ROOT_DIR/src/app/TerminalViewController.swift" \
   "$GHOSTTY_BRIDGE_OBJECT" \
   "${GHOSTTY_SWIFT_LINK_ARGS[@]}" \
