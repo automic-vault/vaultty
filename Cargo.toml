@@ -1,0 +1,16 @@
+[package]
+name = "vaultty"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22"
+ecies = { version = "0.2", default-features = false, features = ["aes-rust", "std"] }
+sha2 = "0.10"
+
+[build-dependencies]
+cc = "1"
+
+[[bin]]
+name = "vaultty-env"
+path = "src/env/main.rs"

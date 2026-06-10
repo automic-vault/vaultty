@@ -1,0 +1,199 @@
+import AppKit
+
+private enum AppWindowMetrics {
+    static let defaultContentSize = NSSize(width: 1120, height: 760)
+    static let minimumContentSize = NSSize(width: 760, height: 480)
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
+    private var window: NSWindow?
+    private var controller: TerminalViewController?
+    private var titleToolbar: NSToolbar?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.mainMenu = makeMainMenu()
+
+        let args = ProcessInfo.processInfo.arguments
+        let selfTestCommand = args.enumerated().first { $0.element == "--self-test" }
+            .flatMap { index, _ in args.indices.contains(index + 1) ? args[index + 1] : nil }
+        let controller = TerminalViewController(selfTestCommand: selfTestCommand)
+        self.controller = controller
+
+        let styleMask: NSWindow.StyleMask = [
+            .titled,
+            .closable,
+            .miniaturizable,
+            .resizable,
+            .fullSizeContentView
+        ]
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: AppWindowMetrics.defaultContentSize),
+            styleMask: styleMask,
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Vaultty"
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.isRestorable = false
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        let toolbar = NSToolbar(identifier: .vaulttyTitlebar)
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
+        titleToolbar = toolbar
+        window.contentViewController = controller
+        window.contentMinSize = AppWindowMetrics.minimumContentSize
+        window.minSize = NSWindow.frameRect(
+            forContentRect: NSRect(origin: .zero, size: AppWindowMetrics.minimumContentSize),
+            styleMask: styleMask
+        ).size
+        controller.preferredContentSize = AppWindowMetrics.defaultContentSize
+        window.setContentSize(AppWindowMetrics.defaultContentSize)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        []
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        []
+    }
+
+    private func makeMainMenu() -> NSMenu {
+        let menu = NSMenu(title: "Main Menu")
+        menu.addItem(makeAppMenuItem())
+        menu.addItem(makeEditMenuItem())
+        menu.addItem(makeWindowMenuItem())
+        return menu
+    }
+
+    private func makeAppMenuItem() -> NSMenuItem {
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Vaultty")
+        let appName = ProcessInfo.processInfo.processName
+
+        appMenu.addItem(
+            withTitle: "About \(appName)",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Hide \(appName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        let hideOthers = appMenu.addItem(
+            withTitle: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(
+            withTitle: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Quit \(appName)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+
+        appItem.submenu = appMenu
+        return appItem
+    }
+
+    private func makeEditMenuItem() -> NSMenuItem {
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+
+        editMenu.addItem(
+            withTitle: "Undo",
+            action: Selector(("undo:")),
+            keyEquivalent: "z"
+        )
+        let redoItem = editMenu.addItem(
+            withTitle: "Redo",
+            action: Selector(("redo:")),
+            keyEquivalent: "z"
+        )
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            withTitle: "Cut",
+            action: #selector(NSText.cut(_:)),
+            keyEquivalent: "x"
+        )
+        editMenu.addItem(
+            withTitle: "Copy",
+            action: #selector(NSText.copy(_:)),
+            keyEquivalent: "c"
+        )
+        editMenu.addItem(
+            withTitle: "Paste",
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: "v"
+        )
+        editMenu.addItem(
+            withTitle: "Select All",
+            action: #selector(NSText.selectAll(_:)),
+            keyEquivalent: "a"
+        )
+
+        editItem.submenu = editMenu
+        return editItem
+    }
+
+    private func makeWindowMenuItem() -> NSMenuItem {
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+
+        windowMenu.addItem(
+            withTitle: "Close",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
+        windowMenu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        windowMenu.addItem(
+            withTitle: "Zoom",
+            action: #selector(NSWindow.performZoom(_:)),
+            keyEquivalent: ""
+        )
+
+        windowItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
+        return windowItem
+    }
+}
+
+private extension NSToolbar.Identifier {
+    static let vaulttyTitlebar = NSToolbar.Identifier("com.automicvault.vaultty.titlebar")
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.appearance = NSAppearance(named: .darkAqua)
+app.setActivationPolicy(.regular)
+app.activate(ignoringOtherApps: true)
+app.run()
