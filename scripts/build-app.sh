@@ -16,6 +16,8 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
+ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
+ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
 
 usage() {
   cat <<'EOF'
@@ -64,6 +66,8 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
+ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
+ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
 
 unquote_env_value() {
   local value="$1"
@@ -118,6 +122,29 @@ codesign_identity() {
   printf '%s' "$identity"
 }
 
+bundle_icon() {
+  if [[ ! -f "$ICON_SOURCE" ]]; then
+    echo "App icon not found: $ICON_SOURCE" >&2
+    exit 1
+  fi
+
+  rm -rf "$ICONSET_DIR"
+  mkdir -p "$ICONSET_DIR"
+
+  sips -z 16 16 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null
+  sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null
+  sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null
+  sips -z 64 64 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null
+  sips -z 128 128 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null
+  sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
+  sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null
+  sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
+  sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
+  sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+
+  iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/$APP_NAME.icns"
+}
+
 IDENTITY="$(codesign_identity)"
 
 case "$CONFIGURATION" in
@@ -146,6 +173,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$ROOT_DIR/src/app/Info.plist.in" "$CONTENTS_DIR/Info.plist"
 cp "$RUST_BIN_DIR/vaultty-env" "$RESOURCES_DIR/vaultty-env"
+bundle_icon
 
 GHOSTTY_SWIFT_LINK_ARGS=()
 GHOSTTY_BRIDGE_FLAGS=()

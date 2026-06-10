@@ -24,6 +24,7 @@ private enum TahoeGlassPalette {
     static let titleBarHeight: CGFloat = 50
     static let titleTabHeight: CGFloat = 34
     static let titleTabTopInset: CGFloat = 8
+    static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight
     static let titleTabLeadingInset: CGFloat = 104
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
@@ -49,8 +50,8 @@ private enum TahoeGlassPalette {
     static let commandTint = NSColor.black.withAlphaComponent(0.22)
     static let hairline = NSColor.white.withAlphaComponent(0.12)
     static let titleTopHairline = NSColor.white.withAlphaComponent(0.20)
-    static let titleText = NSColor.white.withAlphaComponent(0.58)
-    static let titleTextActive = NSColor.white.withAlphaComponent(0.76)
+    static let titleText = NSColor.white.withAlphaComponent(0.44)
+    static let titleTextActive = NSColor.white.withAlphaComponent(0.62)
     static let titleSegmentFill = NSColor.white.withAlphaComponent(0.075)
     static let titleSegmentHoverFill = NSColor.white.withAlphaComponent(0.045)
 }
@@ -116,7 +117,7 @@ private final class TahoeGlassRootView: NSView {
     override func layout() {
         super.layout()
         tintLayer.frame = bounds
-        let contentTop = TahoeGlassPalette.titleTabTopInset + TahoeGlassPalette.titleTabHeight
+        let contentTop = TahoeGlassPalette.titleContentTop
         topBarLayer.frame = CGRect(
             x: 0,
             y: bounds.height - contentTop,
@@ -125,7 +126,7 @@ private final class TahoeGlassRootView: NSView {
         )
         topBarSeparatorLayer.frame = CGRect(
             x: 0,
-            y: max(0, bounds.height - contentTop - 1),
+            y: max(0, bounds.height - contentTop),
             width: bounds.width,
             height: 1
         )
@@ -729,6 +730,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         newTabButton.target = self
         newTabButton.action = #selector(newTab)
         titleTabTopHairline.layer?.backgroundColor = TahoeGlassPalette.titleTopHairline.cgColor
+        titleTabLeftHairline.layer?.backgroundColor = TahoeGlassPalette.titleTopHairline.cgColor
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
 
@@ -761,7 +763,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             contentContainer.topAnchor.constraint(
                 equalTo: view.topAnchor,
-                constant: TahoeGlassPalette.titleTabTopInset + TahoeGlassPalette.titleTabHeight
+                constant: TahoeGlassPalette.titleContentTop
             ),
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
