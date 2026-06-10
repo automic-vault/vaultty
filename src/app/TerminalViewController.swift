@@ -240,8 +240,10 @@ private final class BlockView: NSView {
         commandLabel.lineBreakMode = .byWordWrapping
         commandLabel.maximumNumberOfLines = 0
 
-        metaLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        metaLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         metaLabel.textColor = .secondaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingMiddle
+        metaLabel.maximumNumberOfLines = 1
 
         outputView.isEditable = false
         outputView.isSelectable = true
@@ -267,14 +269,16 @@ private final class BlockView: NSView {
 
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(commandLabel)
+        header.addSubview(metaLabel)
         header.addSubview(menuButton)
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+        metaLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         commandLabel.translatesAutoresizingMaskIntoConstraints = false
         commandLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let content = NSStackView(views: [header, metaLabel, outputView])
+        let content = NSStackView(views: [header, commandLabel, outputView])
         content.orientation = .vertical
-        content.spacing = 8
+        content.spacing = 6
         content.alignment = .leading
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
@@ -289,14 +293,13 @@ private final class BlockView: NSView {
             content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             header.widthAnchor.constraint(equalTo: content.widthAnchor),
             header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
-            commandLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            commandLabel.topAnchor.constraint(equalTo: header.topAnchor, constant: 1),
-            commandLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -8),
-            commandLabel.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor),
+            metaLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            metaLabel.centerYAnchor.constraint(equalTo: menuButton.centerYAnchor),
+            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -8),
             menuButton.topAnchor.constraint(equalTo: header.topAnchor),
             menuButton.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             menuButton.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor),
-            metaLabel.widthAnchor.constraint(equalTo: content.widthAnchor),
+            commandLabel.widthAnchor.constraint(equalTo: content.widthAnchor),
             outputView.widthAnchor.constraint(equalTo: content.widthAnchor),
             menuButton.widthAnchor.constraint(equalToConstant: 36),
             menuButton.heightAnchor.constraint(equalToConstant: 28),
@@ -309,28 +312,27 @@ private final class BlockView: NSView {
     }
 
     func update(with block: TerminalBlock) {
-        commandLabel.stringValue = "$ \(block.command)"
+        commandLabel.stringValue = block.command
         outputView.string = block.output.isEmpty ? " " : block.output
         updateOutputHeight()
 
-        var metadata: [String] = []
+        var metadata = [displayCwd(block.cwd)]
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
-            metadata.append("running")
+            metadata.append("(running)")
         case .completed(let code):
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
                 : TahoeGlassPalette.failureSurfaceTint
             ).cgColor
+            if let duration = durationText(for: block) {
+                metadata.append("(\(duration))")
+            }
             if code != 0 {
                 metadata.append("exit \(code)")
             }
-            if let duration = durationText(for: block) {
-                metadata.append(duration)
-            }
         }
-        metadata.append(block.cwd)
         metaLabel.stringValue = metadata.joined(separator: "  ")
     }
 
@@ -380,9 +382,38 @@ private final class BlockView: NSView {
             return "\(twoSignificantFigures(seconds * 1000)) ms"
         }
         if seconds < 60 {
-            return "\(twoSignificantFigures(seconds)) s"
+            return "\(secondsText(seconds))s"
         }
-        return "\(twoSignificantFigures(seconds / 60)) min"
+        let totalMinutes = Int(seconds / 60)
+        let remainingSeconds = seconds.truncatingRemainder(dividingBy: 60)
+        if totalMinutes < 60 {
+            return "\(totalMinutes)m \(secondsText(remainingSeconds))s"
+        }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return "\(hours)h \(minutes)m \(secondsText(remainingSeconds))s"
+    }
+
+    private func displayCwd(_ cwd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if cwd == home {
+            return "~"
+        }
+        if cwd.hasPrefix(home + "/") {
+            return "~" + String(cwd.dropFirst(home.count))
+        }
+        return cwd
+    }
+
+    private func secondsText(_ seconds: Double) -> String {
+        var text = String(format: "%.2f", seconds)
+        while text.contains(".") && text.last == "0" {
+            text.removeLast()
+        }
+        if text.last == "." {
+            text.removeLast()
+        }
+        return text
     }
 
     private func twoSignificantFigures(_ value: Double) -> String {
@@ -408,6 +439,9 @@ private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let separatorLayer = CALayer()
     private let closeButton = NSButton(title: "x", target: nil, action: nil)
+    private var fillColor = NSColor.clear {
+        didSet { needsDisplay = true }
+    }
     var isSelectedTab = false {
         didSet { updateAppearance() }
     }
@@ -429,6 +463,7 @@ private final class TitleTabButton: NSButton {
         imagePosition = .noImage
         wantsLayer = true
         layer?.cornerRadius = 0
+        layer?.backgroundColor = NSColor.clear.cgColor
         separatorLayer.backgroundColor = TahoeGlassPalette.hairline.cgColor
         layer?.addSublayer(separatorLayer)
         translatesAutoresizingMaskIntoConstraints = false
@@ -485,7 +520,18 @@ private final class TitleTabButton: NSButton {
 
     override func layout() {
         super.layout()
-        separatorLayer.frame = CGRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height)
+        separatorLayer.frame = CGRect(
+            x: bounds.width - 1,
+            y: 0,
+            width: 1,
+            height: max(0, bounds.height - 1)
+        )
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillColor.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
+        super.draw(dirtyRect)
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -495,13 +541,13 @@ private final class TitleTabButton: NSButton {
 
     private func updateAppearance() {
         if isSelectedTab {
-            layer?.backgroundColor = TahoeGlassPalette.titleSegmentFill.cgColor
+            fillColor = TahoeGlassPalette.titleSegmentFill
             contentTintColor = TahoeGlassPalette.titleTextActive
         } else if isHovering {
-            layer?.backgroundColor = TahoeGlassPalette.titleSegmentHoverFill.cgColor
+            fillColor = TahoeGlassPalette.titleSegmentHoverFill
             contentTintColor = TahoeGlassPalette.titleTextActive
         } else {
-            layer?.backgroundColor = NSColor.clear.cgColor
+            fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleText
         }
         closeButton.isHidden = !isHovering
@@ -515,6 +561,9 @@ private final class TitleTabButton: NSButton {
 
 private final class TitleAddButton: NSButton {
     private let separatorLayer = CALayer()
+    private var fillColor = NSColor.clear {
+        didSet { needsDisplay = true }
+    }
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
         didSet { updateAppearance() }
@@ -529,6 +578,7 @@ private final class TitleAddButton: NSButton {
         font = .systemFont(ofSize: 18, weight: .medium)
         wantsLayer = true
         layer?.cornerRadius = 0
+        layer?.backgroundColor = NSColor.clear.cgColor
         separatorLayer.backgroundColor = TahoeGlassPalette.hairline.cgColor
         layer?.addSublayer(separatorLayer)
         contentTintColor = TahoeGlassPalette.titleText
@@ -565,11 +615,22 @@ private final class TitleAddButton: NSButton {
 
     override func layout() {
         super.layout()
-        separatorLayer.frame = CGRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height)
+        separatorLayer.frame = CGRect(
+            x: bounds.width - 1,
+            y: 0,
+            width: 1,
+            height: max(0, bounds.height - 1)
+        )
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillColor.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
+        super.draw(dirtyRect)
     }
 
     private func updateAppearance() {
-        layer?.backgroundColor = (isHovering ? TahoeGlassPalette.titleSegmentHoverFill : .clear).cgColor
+        fillColor = isHovering ? TahoeGlassPalette.titleSegmentHoverFill : .clear
         contentTintColor = isHovering ? TahoeGlassPalette.titleTextActive : TahoeGlassPalette.titleText
     }
 }
@@ -577,6 +638,7 @@ private final class TitleAddButton: NSButton {
 private final class PtyPassthroughView: NSView {
     var onInput: ((String) -> Void)?
     var usesApplicationCursorKeys: (() -> Bool)?
+    var usesPagerKeyBindings = false
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -598,29 +660,53 @@ private final class PtyPassthroughView: NSView {
             return nil
         }
 
-        if let special = event.charactersIgnoringModifiers?.unicodeScalars.first?.value {
-            switch special {
-            case UInt32(NSUpArrowFunctionKey):
-                return cursorKey(normal: "\u{1B}[A", application: "\u{1B}OA")
-            case UInt32(NSDownArrowFunctionKey):
-                return cursorKey(normal: "\u{1B}[B", application: "\u{1B}OB")
-            case UInt32(NSRightArrowFunctionKey):
-                return cursorKey(normal: "\u{1B}[C", application: "\u{1B}OC")
-            case UInt32(NSLeftArrowFunctionKey):
-                return cursorKey(normal: "\u{1B}[D", application: "\u{1B}OD")
-            case UInt32(NSHomeFunctionKey):
-                return "\u{1B}[H"
-            case UInt32(NSEndFunctionKey):
-                return "\u{1B}[F"
-            case UInt32(NSPageUpFunctionKey):
-                return "\u{1B}[5~"
-            case UInt32(NSPageDownFunctionKey):
-                return "\u{1B}[6~"
-            case UInt32(NSDeleteFunctionKey):
-                return "\u{1B}[3~"
+        if usesPagerKeyBindings {
+            switch event.keyCode {
+            case 126:
+                return "k"
+            case 125:
+                return "j"
+            case 115:
+                return "g"
+            case 119:
+                return "G"
+            case 116:
+                return "b"
+            case 121:
+                return " "
             default:
                 break
             }
+        }
+
+        // Navigation key character payloads can already contain ESC bytes; use hardware key codes.
+        switch event.keyCode {
+        case 126:
+            return cursorKey(normal: "\u{1B}[A", application: "\u{1B}OA")
+        case 125:
+            return cursorKey(normal: "\u{1B}[B", application: "\u{1B}OB")
+        case 124:
+            return cursorKey(normal: "\u{1B}[C", application: "\u{1B}OC")
+        case 123:
+            return cursorKey(normal: "\u{1B}[D", application: "\u{1B}OD")
+        case 115:
+            return "\u{1B}[H"
+        case 119:
+            return "\u{1B}[F"
+        case 116:
+            return "\u{1B}[5~"
+        case 121:
+            return "\u{1B}[6~"
+        case 117:
+            return "\u{1B}[3~"
+        default:
+            break
+        }
+
+        if let special = event.charactersIgnoringModifiers?.unicodeScalars.first?.value,
+           special >= 0xF700,
+           special <= 0xF8FF {
+            return nil
         }
 
         return event.characters?.isEmpty == false ? event.characters : nil
@@ -839,7 +925,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             titleTabLeftHairline.leadingAnchor.constraint(equalTo: titleTabStack.leadingAnchor),
             titleTabLeftHairline.topAnchor.constraint(equalTo: titleTabStack.topAnchor),
-            titleTabLeftHairline.bottomAnchor.constraint(equalTo: titleTabStack.bottomAnchor),
+            titleTabLeftHairline.bottomAnchor.constraint(equalTo: titleTabStack.bottomAnchor, constant: -1),
             titleTabLeftHairline.widthAnchor.constraint(equalToConstant: 1),
 
             newTabButton.widthAnchor.constraint(equalToConstant: 44),
@@ -991,6 +1077,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab?.statusLabel.stringValue = "Shell exited with status \(status)"
             if let tab {
                 self?.stopTtyModePolling(for: tab)
+                tab.ptyPassthroughView.usesPagerKeyBindings = false
                 self?.setTerminalControl(false, in: tab)
             }
         }
@@ -1040,6 +1127,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
         tab.terminalScreen.resetForCommand()
+        tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
         tab.statusLabel.stringValue = "Running..."
 
         let block = TerminalBlock(
@@ -1187,6 +1275,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.activeBlockID = nil
             tab.isAlternateScreenActive = false
             tab.isApplicationCursorModeActive = false
+            tab.ptyPassthroughView.usesPagerKeyBindings = false
             tab.isShellReady = true
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
@@ -1204,6 +1293,28 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isAlternateScreenActive = isActive
         }
         refreshTerminalControl(in: tab)
+    }
+
+    private func usesPagerKeyBindings(for command: String) -> Bool {
+        guard let name = commandName(from: command) else { return false }
+        return ["less", "man", "more", "most"].contains(name)
+    }
+
+    private func commandName(from command: String) -> String? {
+        let wrappers = Set(["builtin", "command", "env", "exec", "noglob", "sudo"])
+        for part in command.split(whereSeparator: { $0.isWhitespace }) {
+            let token = String(part)
+            if token.contains("="), !token.hasPrefix("./"), !token.hasPrefix("/") {
+                continue
+            }
+
+            let name = URL(fileURLWithPath: token).lastPathComponent.lowercased()
+            if wrappers.contains(name) {
+                continue
+            }
+            return name
+        }
+        return nil
     }
 
     private func startTtyModePolling(for tab: TerminalTab) {
