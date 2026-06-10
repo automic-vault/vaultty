@@ -98,9 +98,10 @@ env_file_value() {
 }
 
 app_version() {
-  local pkgid
+  local pkgid version
   pkgid="$(cargo pkgid --manifest-path "$ROOT_DIR/Cargo.toml")"
-  printf '%s\n' "${pkgid##*@}"
+  version="${pkgid##*#}"
+  printf '%s\n' "${version##*@}"
 }
 
 app_build_number() {
@@ -114,13 +115,15 @@ app_build_number() {
 }
 
 render_info_plist() {
-  local version build_number
+  local version build_number escaped_version escaped_build_number
   version="${APP_VERSION:-$(app_version)}"
   build_number="${APP_BUILD_NUMBER:-$(app_build_number)}"
+  escaped_version="$(printf '%s' "$version" | sed 's/[\/&\\]/\\&/g')"
+  escaped_build_number="$(printf '%s' "$build_number" | sed 's/[\/&\\]/\\&/g')"
 
   sed \
-    -e "s/@APP_VERSION@/$version/g" \
-    -e "s/@APP_BUILD_NUMBER@/$build_number/g" \
+    -e "s/@APP_VERSION@/$escaped_version/g" \
+    -e "s/@APP_BUILD_NUMBER@/$escaped_build_number/g" \
     "$ROOT_DIR/src/app/Info.plist.in" >"$CONTENTS_DIR/Info.plist"
 }
 
