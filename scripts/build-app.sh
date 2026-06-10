@@ -97,6 +97,33 @@ env_file_value() {
   ' "$file"
 }
 
+app_version() {
+  local pkgid
+  pkgid="$(cargo pkgid --manifest-path "$ROOT_DIR/Cargo.toml")"
+  printf '%s\n' "${pkgid##*@}"
+}
+
+app_build_number() {
+  local count
+  if count="$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null)" &&
+    [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
+    printf '%s\n' "$count"
+  else
+    printf '1\n'
+  fi
+}
+
+render_info_plist() {
+  local version build_number
+  version="${APP_VERSION:-$(app_version)}"
+  build_number="${APP_BUILD_NUMBER:-$(app_build_number)}"
+
+  sed \
+    -e "s/@APP_VERSION@/$version/g" \
+    -e "s/@APP_BUILD_NUMBER@/$build_number/g" \
+    "$ROOT_DIR/src/app/Info.plist.in" >"$CONTENTS_DIR/Info.plist"
+}
+
 codesign_identity() {
   if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
     printf '%s' "$CODESIGN_IDENTITY"
@@ -171,7 +198,7 @@ cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env
 echo "Building Vaultty app bundle"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-cp "$ROOT_DIR/src/app/Info.plist.in" "$CONTENTS_DIR/Info.plist"
+render_info_plist
 cp "$RUST_BIN_DIR/vaultty-env" "$RESOURCES_DIR/vaultty-env"
 bundle_icon
 

@@ -1,15 +1,11 @@
-#!/usr/local/bin/av inject +APPLE_PASSWORD +AWS_ACCESS_KEY_ID +AWS_SECRET_ACCESS_KEY /bin/bash
+#!/usr/local/bin/av inject +APPLE_PASSWORD /bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="${script_dir}"
+repo_root="$(cd "${script_dir}/.." && pwd)"
 vault_dir="${VAULT_DIR:-$HOME/src/automic-vault}"
 
 app_name="Vaultty"
-release_s3_uri="${VAULTTY_RELEASE_S3_URI:-s3://automicvault.com/Vaultty.dmg}"
-release_cloudfront_alias="${VAULTTY_RELEASE_DOMAIN:-automicvault.com}"
-release_cloudfront_path="${VAULTTY_RELEASE_CLOUDFRONT_PATH:-/Vaultty.dmg}"
-release_cloudfront_paths=("${release_cloudfront_path}")
 
 build_dir="${repo_root}/target/publish"
 target_dir="${repo_root}/target"
@@ -32,12 +28,11 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: ./publish.sh [--output PATH] [--with-ghostty-vt] [--clobber]
+Usage: scripts/publish.sh [--output PATH] [--with-ghostty-vt] [--clobber]
 
-Build, notarize, and publish the Vaultty DMG.
+Build, notarize, and publish the Vaultty DMG to a GitHub release.
 
-The shebang injects APPLE_PASSWORD, AWS_ACCESS_KEY_ID, and
-AWS_SECRET_ACCESS_KEY from Automic Vault before the script starts.
+The shebang injects APPLE_PASSWORD from Automic Vault before the script starts.
 
 Options:
   --output PATH       Write the DMG to PATH before publishing.
@@ -45,11 +40,6 @@ Options:
   --clobber          Delete an existing GitHub release for vX.Y.Z first.
   --help             Show this help.
 
-Environment overrides:
-  VAULTTY_RELEASE_S3_URI
-  VAULTTY_RELEASE_DOMAIN
-  VAULTTY_RELEASE_CLOUDFRONT_PATH
-  VAULTTY_CLOUDFRONT_DISTRIBUTION_ID
 EOF
 }
 
@@ -339,45 +329,6 @@ clobber_github_release() {
   printf '%s\n' "${notes_path}"
 }
 
-publish_public_dmg() {
-  local dmg_path="$1"
-  local tag="$2"
-  local distribution_id
-
-  require_tool aws
-
-  step "Uploading DMG to ${release_s3_uri}"
-  if ! aws s3 cp \
-    "${dmg_path}" \
-    "${release_s3_uri}" \
-    --content-type application/x-apple-diskimage \
-    >&2; then
-    die "S3 upload failed; draft release remains unpublished: ${tag}"
-  fi
-
-  distribution_id="${VAULTTY_CLOUDFRONT_DISTRIBUTION_ID:-}"
-  if [[ -z "${distribution_id}" ]]; then
-    step "Finding CloudFront distribution for ${release_cloudfront_alias}"
-    if ! distribution_id="$(
-      aws cloudfront list-distributions \
-        --query "DistributionList.Items[?Aliases.Items && contains(join(',', Aliases.Items), '${release_cloudfront_alias}')].Id | [0]" \
-        --output text
-    )"; then
-      die "CloudFront distribution lookup failed; draft release remains unpublished: ${tag}"
-    fi
-  fi
-
-  [[ -n "${distribution_id}" && "${distribution_id}" != "None" ]] ||
-    die "Unable to find CloudFront distribution for ${release_cloudfront_alias}"
-
-  step "Invalidating CloudFront release paths"
-  aws cloudfront create-invalidation \
-    --distribution-id "${distribution_id}" \
-    --paths "${release_cloudfront_paths[@]}" \
-    >&2 ||
-    die "CloudFront invalidation failed; draft release remains unpublished: ${tag}"
-}
-
 publish_github_release() {
   local tag="$1"
   local version="$2"
@@ -413,8 +364,6 @@ publish_github_release() {
   if ! gh release upload "${tag}" "${dmg_path}#${asset_label}" >&2; then
     die "DMG upload failed; draft release remains unpublished: ${tag}"
   fi
-
-  publish_public_dmg "${dmg_path}" "${tag}"
 
   step "Publishing GitHub release ${tag}"
   gh release edit "${tag}" --draft=false >&2 ||
@@ -452,7 +401,7 @@ configure_codesign_identity
 
 require_tool git
 git -C "${repo_root}" rev-parse --is-inside-work-tree >/dev/null ||
-  die "publish.sh must run inside a git repository"
+  die "scripts/publish.sh must run inside a git repository"
 git -C "${repo_root}" rev-parse --verify HEAD >/dev/null 2>&1 ||
   die "Create an initial commit before publishing"
 if ! git -C "${repo_root}" remote get-url origin >/dev/null 2>&1 && [[ -z "${GH_REPO:-}" ]]; then
@@ -475,7 +424,6 @@ final_dmg="${output_dir}/$(basename "${output_path}")"
 
 info "Version: ${version}"
 info "Output: ${final_dmg}"
-info "Public DMG: ${release_s3_uri}"
 
 create_dmg "${app_path}" "${final_dmg}"
 notarize_dmg "${final_dmg}"
