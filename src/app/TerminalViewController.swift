@@ -25,7 +25,8 @@ private enum TahoeGlassPalette {
     static let titleBarHeight: CGFloat = 50
     static let titleTabHeight: CGFloat = 34
     static let titleTabTopInset: CGFloat = 8
-    static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight
+    static let titleTabBottomInset: CGFloat = titleTabTopInset
+    static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
@@ -53,7 +54,6 @@ private enum TahoeGlassPalette {
     static let titleTopHairline = NSColor.white.withAlphaComponent(0.20)
     static let titleText = NSColor.white.withAlphaComponent(0.44)
     static let titleTextActive = NSColor.white.withAlphaComponent(0.62)
-    static let titleSegmentFill = NSColor.white.withAlphaComponent(0.075)
     static let titleSegmentHoverFill = NSColor.white.withAlphaComponent(0.045)
 }
 
@@ -61,8 +61,15 @@ private final class TahoeGlassRootView: NSView {
     private let materialView = NSVisualEffectView()
     private let tintView = NSView()
     private let tintLayer = CAGradientLayer()
-    private let topBarLayer = CALayer()
-    private let topBarSeparatorLayer = CALayer()
+    private let topBarLayer = CAShapeLayer()
+    private let topBarSeparatorLayer = CAShapeLayer()
+
+    var activeTabFrame: CGRect? {
+        didSet {
+            guard activeTabFrame != oldValue else { return }
+            needsLayout = true
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -92,10 +99,12 @@ private final class TahoeGlassRootView: NSView {
         tintLayer.endPoint = CGPoint(x: 1, y: 1)
         tintView.layer?.addSublayer(tintLayer)
 
-        topBarLayer.backgroundColor = TahoeGlassPalette.topBarTint.cgColor
+        topBarLayer.fillColor = TahoeGlassPalette.topBarTint.cgColor
         tintView.layer?.addSublayer(topBarLayer)
 
-        topBarSeparatorLayer.backgroundColor = TahoeGlassPalette.hairline.cgColor
+        topBarSeparatorLayer.fillColor = nil
+        topBarSeparatorLayer.strokeColor = TahoeGlassPalette.hairline.cgColor
+        topBarSeparatorLayer.lineWidth = 1
         tintView.layer?.addSublayer(topBarSeparatorLayer)
 
         NSLayoutConstraint.activate([
@@ -119,18 +128,72 @@ private final class TahoeGlassRootView: NSView {
         super.layout()
         tintLayer.frame = bounds
         let contentTop = TahoeGlassPalette.titleContentTop
-        topBarLayer.frame = CGRect(
+        topBarLayer.frame = bounds
+        topBarLayer.path = topBarPath(
+            contentTop: contentTop,
+            activeTabFrame: activeTabFrame
+        )
+        topBarSeparatorLayer.frame = bounds
+        topBarSeparatorLayer.path = topBarSeparatorPath(
+            y: max(0, bounds.height - contentTop),
+            activeTabFrame: activeTabFrame
+        )
+    }
+
+    private func topBarPath(contentTop: CGFloat, activeTabFrame: CGRect?) -> CGPath {
+        let path = CGMutablePath()
+        let topBarFrame = CGRect(
             x: 0,
             y: bounds.height - contentTop,
             width: bounds.width,
             height: contentTop
         )
-        topBarSeparatorLayer.frame = CGRect(
-            x: 0,
-            y: max(0, bounds.height - contentTop),
-            width: bounds.width,
-            height: 1
-        )
+        guard let activeTabFrame else {
+            path.addRect(topBarFrame)
+            return path
+        }
+
+        let gapStart = max(0, floor(activeTabFrame.minX))
+        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX))
+        if gapStart > 0 {
+            path.addRect(CGRect(
+                x: 0,
+                y: topBarFrame.minY,
+                width: gapStart,
+                height: topBarFrame.height
+            ))
+        }
+        if gapEnd < bounds.width {
+            path.addRect(CGRect(
+                x: gapEnd,
+                y: topBarFrame.minY,
+                width: bounds.width - gapEnd,
+                height: topBarFrame.height
+            ))
+        }
+
+        return path
+    }
+
+    private func topBarSeparatorPath(y: CGFloat, activeTabFrame: CGRect?) -> CGPath {
+        let path = CGMutablePath()
+        guard let activeTabFrame else {
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: bounds.width, y: y))
+            return path
+        }
+
+        let gapStart = max(0, floor(activeTabFrame.minX))
+        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX))
+        if gapStart > 0 {
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: gapStart, y: y))
+        }
+        if gapEnd < bounds.width {
+            path.move(to: CGPoint(x: gapEnd, y: y))
+            path.addLine(to: CGPoint(x: bounds.width, y: y))
+        }
+        return path
     }
 }
 
@@ -146,16 +209,39 @@ private final class SeparatorView: NSBox {
     }
 }
 
-private final class HairlineView: NSView {
+private final class TitleTabBorderView: NSView {
+    weak var tabStack: NSStackView?
+
+    override var isFlipped: Bool { true }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = TahoeGlassPalette.hairline.cgColor
         translatesAutoresizingMaskIntoConstraints = false
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        TahoeGlassPalette.titleTopHairline.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+        NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill()
+
+        guard let tabStack else { return }
+        for subview in tabStack.arrangedSubviews where !subview.isHidden {
+            let rect = subview.convert(subview.bounds, to: self)
+            NSRect(
+                x: floor(rect.maxX) - 1,
+                y: 0,
+                width: 1,
+                height: bounds.height
+            ).fill()
+        }
     }
 }
 
@@ -220,6 +306,11 @@ private final class HoverMenuButton: NSButton {
 }
 
 private final class BlockView: NSView {
+    private struct MetadataSegment {
+        let text: String
+        let color: NSColor
+    }
+
     private let commandLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
     private let outputView = NSTextView(frame: .zero)
@@ -319,24 +410,26 @@ private final class BlockView: NSView {
         )
         updateOutputHeight()
 
-        var metadata = [displayCwd(block.cwd)]
+        var metadata = [
+            MetadataSegment(text: displayCwd(block.cwd), color: .secondaryLabelColor)
+        ]
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
-            metadata.append("(running)")
+            metadata.append(MetadataSegment(text: "(running)", color: .secondaryLabelColor))
         case .completed(let code):
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
                 : TahoeGlassPalette.failureSurfaceTint
             ).cgColor
             if let duration = durationText(for: block) {
-                metadata.append("(\(duration))")
+                metadata.append(MetadataSegment(text: duration, color: .tertiaryLabelColor))
             }
             if code != 0 {
-                metadata.append("exit \(code)")
+                metadata.append(MetadataSegment(text: "exit \(code)", color: .secondaryLabelColor))
             }
         }
-        metaLabel.stringValue = metadata.joined(separator: "  ")
+        metaLabel.attributedStringValue = attributedMetadata(metadata)
     }
 
     override func layout() {
@@ -397,6 +490,32 @@ private final class BlockView: NSView {
         return "\(hours)h \(minutes)m \(secondsText(remainingSeconds))s"
     }
 
+    private func attributedMetadata(_ metadata: [MetadataSegment]) -> NSAttributedString {
+        let output = NSMutableAttributedString()
+        let font = metaLabel.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+
+        for (index, segment) in metadata.enumerated() {
+            if index > 0 {
+                output.append(NSAttributedString(
+                    string: "  ",
+                    attributes: [
+                        .font: font,
+                        .foregroundColor: NSColor.secondaryLabelColor
+                    ]
+                ))
+            }
+            output.append(NSAttributedString(
+                string: segment.text,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: segment.color
+                ]
+            ))
+        }
+
+        return output
+    }
+
     private func displayCwd(_ cwd: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if cwd == home {
@@ -440,7 +559,6 @@ private final class BlockView: NSView {
 
 private final class TitleTabButton: NSButton {
     let tabID: UUID
-    private let separatorLayer = CALayer()
     private let closeButton = NSButton(title: "x", target: nil, action: nil)
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
@@ -467,8 +585,6 @@ private final class TitleTabButton: NSButton {
         wantsLayer = true
         layer?.cornerRadius = 0
         layer?.backgroundColor = NSColor.clear.cgColor
-        separatorLayer.backgroundColor = TahoeGlassPalette.hairline.cgColor
-        layer?.addSublayer(separatorLayer)
         translatesAutoresizingMaskIntoConstraints = false
         contentTintColor = .secondaryLabelColor
 
@@ -521,16 +637,6 @@ private final class TitleTabButton: NSButton {
         isHovering = false
     }
 
-    override func layout() {
-        super.layout()
-        separatorLayer.frame = CGRect(
-            x: bounds.width - 1,
-            y: 0,
-            width: 1,
-            height: max(0, bounds.height - 1)
-        )
-    }
-
     override func draw(_ dirtyRect: NSRect) {
         fillColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
@@ -549,7 +655,7 @@ private final class TitleTabButton: NSButton {
 
     private func updateAppearance() {
         if isSelectedTab {
-            fillColor = TahoeGlassPalette.titleSegmentFill
+            fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleTextActive
         } else if isHovering {
             fillColor = TahoeGlassPalette.titleSegmentHoverFill
@@ -568,7 +674,6 @@ private final class TitleTabButton: NSButton {
 }
 
 private final class TitleAddButton: NSButton {
-    private let separatorLayer = CALayer()
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
@@ -587,8 +692,6 @@ private final class TitleAddButton: NSButton {
         wantsLayer = true
         layer?.cornerRadius = 0
         layer?.backgroundColor = NSColor.clear.cgColor
-        separatorLayer.backgroundColor = TahoeGlassPalette.hairline.cgColor
-        layer?.addSublayer(separatorLayer)
         contentTintColor = TahoeGlassPalette.titleText
         translatesAutoresizingMaskIntoConstraints = false
         updateAppearance()
@@ -619,16 +722,6 @@ private final class TitleAddButton: NSButton {
 
     override func mouseExited(with event: NSEvent) {
         isHovering = false
-    }
-
-    override func layout() {
-        super.layout()
-        separatorLayer.frame = CGRect(
-            x: bounds.width - 1,
-            y: 0,
-            width: 1,
-            height: max(0, bounds.height - 1)
-        )
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -885,8 +978,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var tabButtons: [UUID: TitleTabButton] = [:]
 
     private let titleTabStack = NSStackView()
-    private let titleTabTopHairline = HairlineView()
-    private let titleTabLeftHairline = HairlineView()
+    private let titleTabBorderView = TitleTabBorderView()
     private let newTabButton = TitleAddButton(frame: .zero)
     private let contentContainer = NSView()
     private let completionEngine = VaulttyCompletionEngine()
@@ -915,15 +1007,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         titleTabStack.translatesAutoresizingMaskIntoConstraints = false
 
         newTabButton.target = self
-        newTabButton.action = #selector(newTab)
-        titleTabTopHairline.layer?.backgroundColor = TahoeGlassPalette.titleTopHairline.cgColor
-        titleTabLeftHairline.layer?.backgroundColor = TahoeGlassPalette.titleTopHairline.cgColor
+        newTabButton.action = #selector(newTab(_:))
+        titleTabBorderView.tabStack = titleTabStack
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(titleTabStack)
-        view.addSubview(titleTabTopHairline)
-        view.addSubview(titleTabLeftHairline)
+        view.addSubview(titleTabBorderView)
         view.addSubview(contentContainer)
         titleTabStack.addArrangedSubview(newTabButton)
 
@@ -933,15 +1023,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             titleTabStack.topAnchor.constraint(equalTo: view.topAnchor, constant: TahoeGlassPalette.titleTabTopInset),
             titleTabStack.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
 
-            titleTabTopHairline.leadingAnchor.constraint(equalTo: titleTabStack.leadingAnchor),
-            titleTabTopHairline.trailingAnchor.constraint(equalTo: titleTabStack.trailingAnchor),
-            titleTabTopHairline.topAnchor.constraint(equalTo: titleTabStack.topAnchor),
-            titleTabTopHairline.heightAnchor.constraint(equalToConstant: 1),
-
-            titleTabLeftHairline.leadingAnchor.constraint(equalTo: titleTabStack.leadingAnchor),
-            titleTabLeftHairline.topAnchor.constraint(equalTo: titleTabStack.topAnchor),
-            titleTabLeftHairline.bottomAnchor.constraint(equalTo: titleTabStack.bottomAnchor, constant: -1),
-            titleTabLeftHairline.widthAnchor.constraint(equalToConstant: 1),
+            titleTabBorderView.leadingAnchor.constraint(equalTo: titleTabStack.leadingAnchor),
+            titleTabBorderView.trailingAnchor.constraint(equalTo: titleTabStack.trailingAnchor),
+            titleTabBorderView.topAnchor.constraint(equalTo: titleTabStack.topAnchor),
+            titleTabBorderView.bottomAnchor.constraint(
+                equalTo: view.topAnchor,
+                constant: TahoeGlassPalette.titleContentTop
+            ),
 
             newTabButton.widthAnchor.constraint(equalToConstant: 44),
             newTabButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
@@ -971,6 +1059,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        updateActiveTabCutoutFrame()
+        titleTabBorderView.needsDisplay = true
         for tab in tabs {
             resizePtyToViewport(for: tab)
         }
@@ -1042,7 +1132,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         requestCompletion(in: tab, mode: .filtering)
     }
 
-    @objc private func newTab() {
+    @objc func newTab(_ sender: Any?) {
         createTab()
     }
 
@@ -1050,15 +1140,30 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         activateTab(sender.tabID)
     }
 
-    @objc private func closeTab(_ sender: NSButton) {
-        guard let button = sender.superview as? TitleTabButton,
-              let index = tabs.firstIndex(where: { $0.id == button.tabID })
-        else {
+    @objc func closeActiveTabOrWindow(_ sender: Any?) {
+        guard tabs.count > 1 else {
+            view.window?.performClose(sender)
             return
+        }
+        guard let activeTabID else { return }
+        closeTab(withID: activeTabID)
+    }
+
+    @objc private func closeTab(_ sender: NSButton) {
+        guard let button = sender.superview as? TitleTabButton else { return }
+        closeTab(withID: button.tabID)
+    }
+
+    @discardableResult
+    private func closeTab(withID id: UUID) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }),
+              let button = tabButtons[id]
+        else {
+            return false
         }
         let tab = tabs[index]
         guard confirmCloseIfNeeded(tab) else {
-            return
+            return false
         }
 
         let wasActive = activeTabID == tab.id
@@ -1075,8 +1180,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             createTab()
         } else if wasActive {
             let nextIndex = min(index, tabs.count - 1)
-            activateTab(tabs[nextIndex].id)
+            activateTab(tabs[nextIndex].id, tabStripLayoutChanged: true)
+        } else {
+            layoutTabStripBeforeMeasuringSelection()
+            updateActiveTabCutoutFrame()
         }
+        return true
     }
 
     private var activeTab: TerminalTab? {
@@ -1091,7 +1200,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         configureSession(for: tab)
         installTabView(tab)
         installTabButton(tab)
-        activateTab(tab.id)
+        activateTab(tab.id, tabStripLayoutChanged: true)
         startShell(for: tab)
     }
 
@@ -1119,15 +1228,39 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         ])
     }
 
-    private func activateTab(_ id: UUID) {
+    private func activateTab(_ id: UUID, tabStripLayoutChanged: Bool = false) {
         activeTabID = id
         for tab in tabs {
             tab.rootView.isHidden = tab.id != id
             tabButtons[tab.id]?.isSelectedTab = tab.id == id
         }
+        if tabStripLayoutChanged {
+            layoutTabStripBeforeMeasuringSelection()
+        }
+        updateActiveTabCutoutFrame()
         if let tab = activeTab {
             focusInput(for: tab)
         }
+    }
+
+    private func layoutTabStripBeforeMeasuringSelection() {
+        guard view.window != nil else { return }
+        titleTabStack.needsLayout = true
+        titleTabBorderView.needsDisplay = true
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func updateActiveTabCutoutFrame() {
+        guard let rootView = view as? TahoeGlassRootView else { return }
+        guard let activeTabID,
+              let button = tabButtons[activeTabID],
+              button.superview != nil
+        else {
+            rootView.activeTabFrame = nil
+            return
+        }
+        rootView.activeTabFrame = button.convert(button.bounds, to: rootView)
     }
 
     private func configureSession(for tab: TerminalTab) {
@@ -1763,22 +1896,41 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 private final class DotenvApprovalAutoApprover {
     private struct Request: Decodable {
         let id: String
+        let approvalToken: String
         let mode: String
         let envFilePath: String
         let projectRoot: String
 
         private enum CodingKeys: String, CodingKey {
             case id
+            case approvalToken = "approval_token"
             case mode
             case envFilePath = "env_file_path"
             case projectRoot = "project_root"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            approvalToken = try container.decodeIfPresent(String.self, forKey: .approvalToken) ?? ""
+            mode = try container.decode(String.self, forKey: .mode)
+            envFilePath = try container.decode(String.self, forKey: .envFilePath)
+            projectRoot = try container.decode(String.self, forKey: .projectRoot)
         }
     }
 
     private struct Decision: Encodable {
         let id: String
+        let approvalToken: String
         let approved: Bool
         let reason: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case approvalToken = "approval_token"
+            case approved
+            case reason
+        }
     }
 
     private let targetProject: URL
@@ -1816,6 +1968,7 @@ private final class DotenvApprovalAutoApprover {
 
         let decision = Decision(
             id: request.id,
+            approvalToken: request.approvalToken,
             approved: true,
             reason: "approved by Vaultty for ~/src/automic-vault dotenv export"
         )

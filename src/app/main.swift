@@ -65,6 +65,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         true
     }
 
+    @objc private func closeActiveTabOrWindow(_ sender: Any?) {
+        guard let controller else {
+            window?.performClose(sender)
+            return
+        }
+        controller.closeActiveTabOrWindow(sender)
+    }
+
+    @objc private func newTab(_ sender: Any?) {
+        controller?.newTab(sender)
+    }
+
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         []
     }
@@ -164,11 +176,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
 
-        windowMenu.addItem(
+        let newTabItem = windowMenu.addItem(
+            withTitle: "New Tab",
+            action: #selector(newTab(_:)),
+            keyEquivalent: "t"
+        )
+        newTabItem.target = self
+        windowMenu.addItem(.separator())
+
+        let closeItem = windowMenu.addItem(
             withTitle: "Close",
-            action: #selector(NSWindow.performClose(_:)),
+            action: #selector(closeActiveTabOrWindow(_:)),
             keyEquivalent: "w"
         )
+        closeItem.target = self
         windowMenu.addItem(
             withTitle: "Minimize",
             action: #selector(NSWindow.performMiniaturize(_:)),
