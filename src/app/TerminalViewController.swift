@@ -659,6 +659,8 @@ private final class TerminalTab {
     var isApplicationCursorModeActive = false
     let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
     var ttyModeTimer: Timer?
+    var commandHistoryIndex: Int?
+    var commandHistoryDraft = ""
 
     init(title: String, delegate: NSTextViewDelegate) {
         self.title = title
@@ -885,6 +887,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             return true
         }
+        if commandSelector == #selector(NSResponder.moveUp(_:)) {
+            return showPreviousCommand(in: tab)
+        }
+        if commandSelector == #selector(NSResponder.moveDown(_:)) {
+            return showNextCommand(in: tab)
+        }
         return false
     }
 
@@ -1025,6 +1033,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard tab.isShellReady else { return }
         let command = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return }
+        tab.commandHistoryIndex = nil
+        tab.commandHistoryDraft = ""
         tab.inputView.string = ""
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
@@ -1049,6 +1059,44 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if command -v av >/dev/null 2>&1; then eval \"$(av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
+    }
+
+    private func showPreviousCommand(in tab: TerminalTab) -> Bool {
+        guard tab.isShellReady, !tab.blocks.isEmpty else { return false }
+
+        let nextIndex: Int
+        if let index = tab.commandHistoryIndex {
+            nextIndex = max(0, index - 1)
+        } else {
+            tab.commandHistoryDraft = tab.inputView.string
+            nextIndex = tab.blocks.count - 1
+        }
+
+        tab.commandHistoryIndex = nextIndex
+        setInput(tab.blocks[nextIndex].command, in: tab)
+        return true
+    }
+
+    private func showNextCommand(in tab: TerminalTab) -> Bool {
+        guard tab.isShellReady, let index = tab.commandHistoryIndex else { return false }
+
+        let nextIndex = index + 1
+        if nextIndex < tab.blocks.count {
+            tab.commandHistoryIndex = nextIndex
+            setInput(tab.blocks[nextIndex].command, in: tab)
+        } else {
+            tab.commandHistoryIndex = nil
+            setInput(tab.commandHistoryDraft, in: tab)
+            tab.commandHistoryDraft = ""
+        }
+        return true
+    }
+
+    private func setInput(_ value: String, in tab: TerminalTab) {
+        tab.inputView.string = value
+        let location = (value as NSString).length
+        tab.inputView.setSelectedRange(NSRange(location: location, length: 0))
+        tab.inputView.scrollRangeToVisible(NSRange(location: location, length: 0))
     }
 
     private func consumeShellOutput(_ text: String, in tab: TerminalTab) {
