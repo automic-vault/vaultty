@@ -58,6 +58,7 @@ fn run() -> Result<(), String> {
     }
 
     let previous_keys = env::var("VAULTTY_DOTENV_KEYS")
+        .or_else(|_| env::var("AV_DOTENV_KEYS"))
         .or_else(|_| env::var("AVTTY_DOTENV_KEYS"))
         .ok()
         .map(|value| {
@@ -86,9 +87,27 @@ fn run() -> Result<(), String> {
     for (key, value) in &loaded.values {
         println!("export {}={};", key, shell_quote(value));
     }
-    println!("export VAULTTY_DOTENV_FILE={};", shell_quote(&loaded.env_path));
-    println!("export VAULTTY_DOTENV_DIGEST={};", shell_quote(&loaded.env_sha256));
-    println!("export VAULTTY_DOTENV_KEYS={};", shell_quote(&loaded.keys.join(":")));
+    println!(
+        "export VAULTTY_DOTENV_FILE={};",
+        shell_quote(&loaded.env_path)
+    );
+    println!(
+        "export VAULTTY_DOTENV_DIGEST={};",
+        shell_quote(&loaded.env_sha256)
+    );
+    println!(
+        "export VAULTTY_DOTENV_KEYS={};",
+        shell_quote(&loaded.keys.join(":"))
+    );
+    println!("export AV_DOTENV_FILE={};", shell_quote(&loaded.env_path));
+    println!(
+        "export AV_DOTENV_DIGEST={};",
+        shell_quote(&loaded.env_sha256)
+    );
+    println!(
+        "export AV_DOTENV_KEYS={};",
+        shell_quote(&loaded.keys.join(":"))
+    );
     if !loaded.keys.is_empty() {
         eprintln!(
             "Vaultty dotenv: loaded {} ({})",
@@ -109,8 +128,8 @@ struct LoadedDotenv {
 fn load_dotenv(path: &Path, previous_keys: &[String]) -> Result<LoadedDotenv, String> {
     let path = fs::canonicalize(path)
         .map_err(|err| format!("failed to resolve {}: {err}", path.display()))?;
-    let contents =
-        fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let contents = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let assignments = parse_dotenv(&contents);
     let public_key = assignments
         .iter()
@@ -126,7 +145,9 @@ fn load_dotenv(path: &Path, previous_keys: &[String]) -> Result<LoadedDotenv, St
             continue;
         }
         if env::var_os(&assignment.key).is_some()
-            && !previous_keys.iter().any(|existing| existing == &assignment.key)
+            && !previous_keys
+                .iter()
+                .any(|existing| existing == &assignment.key)
         {
             continue;
         }
@@ -283,7 +304,8 @@ fn keychain_read(service: &str, account: &str) -> Result<String, String> {
         )
     };
     if value.is_null() {
-        let message = unsafe { take_c_string(error) }.unwrap_or_else(|| "keychain lookup failed".to_string());
+        let message =
+            unsafe { take_c_string(error) }.unwrap_or_else(|| "keychain lookup failed".to_string());
         if status == ERR_SEC_ITEM_NOT_FOUND {
             return Err(format!("failed to load dotenv private key: {message}"));
         }
@@ -320,6 +342,9 @@ fn print_unload(previous_keys: &[String]) {
         println!("unset VAULTTY_DOTENV_FILE;");
         println!("unset VAULTTY_DOTENV_DIGEST;");
         println!("unset VAULTTY_DOTENV_KEYS;");
+        println!("unset AV_DOTENV_FILE;");
+        println!("unset AV_DOTENV_DIGEST;");
+        println!("unset AV_DOTENV_KEYS;");
         println!("unset AVTTY_DOTENV_FILE;");
         println!("unset AVTTY_DOTENV_DIGEST;");
         println!("unset AVTTY_DOTENV_KEYS;");
@@ -388,7 +413,8 @@ fn public_key_fingerprint(public_key: &str) -> String {
 }
 
 fn sha256_file_hex(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(encode_hex(&hasher.finalize()))

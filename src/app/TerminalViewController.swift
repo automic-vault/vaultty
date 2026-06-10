@@ -1155,7 +1155,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["VAULTTY"] = "1"
-        env["VAULTTY_ENV"] = Bundle.main.path(forResource: "vaultty-env", ofType: nil)
+        env["VAULTTY_ENV"] = bundledExecutablePath(named: "vaultty-env")
         env["PROMPT"] = ""
         env["RPROMPT"] = ""
 
@@ -1166,6 +1166,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             export TERM=xterm-256color
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
             cd \(shellQuote(homeURL.path))
+            __vaultty_dotenv_hook() {
+              [ -x "$VAULTTY_ENV" ] || return 0
+              local __vaultty_dotenv
+              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
+              eval "$__vaultty_dotenv"
+            }
+            if [ -n "${ZSH_VERSION:-}" ]; then
+              autoload -Uz add-zsh-hook
+              add-zsh-hook -d chpwd __av_dotenv_hook 2>/dev/null || true
+              add-zsh-hook -d chpwd __vaultty_dotenv_hook 2>/dev/null || true
+              add-zsh-hook chpwd __vaultty_dotenv_hook 2>/dev/null || true
+            fi
             stty -echo
             PROMPT=''
             RPROMPT=''
@@ -1177,6 +1189,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         } catch {
             tab.statusLabel.stringValue = "Failed to start shell: \(error.localizedDescription)"
         }
+    }
+
+    private func bundledExecutablePath(named name: String) -> String? {
+        let helpersURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: false)
+        if FileManager.default.isExecutableFile(atPath: helpersURL.path) {
+            return helpersURL.path
+        }
+        return Bundle.main.path(forResource: name, ofType: nil)
     }
 
     private enum CompletionRequestMode {
@@ -1345,7 +1368,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if command -v av >/dev/null 2>&1; then eval \"$(av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
     }
 

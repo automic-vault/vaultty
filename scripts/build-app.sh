@@ -14,7 +14,12 @@ APP_DIR="$BUILD_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+HELPERS_DIR="$CONTENTS_DIR/Helpers"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
+ENV_HELPER="$HELPERS_DIR/vaultty-env"
+GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
+GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
 ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
@@ -65,7 +70,12 @@ APP_DIR="$BUILD_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+HELPERS_DIR="$CONTENTS_DIR/Helpers"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
+ENV_HELPER="$HELPERS_DIR/vaultty-env"
+GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
+GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
 ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
@@ -153,6 +163,19 @@ codesign_identity() {
   printf '%s' "$identity"
 }
 
+codesign_runtime() {
+  local timestamp_args=(--timestamp)
+  if [[ "$IDENTITY" == "-" ]]; then
+    timestamp_args=()
+  fi
+  codesign --force --options runtime "${timestamp_args[@]}" --sign "$IDENTITY" "$@"
+}
+
+verify_signature() {
+  local path="$1"
+  codesign --verify --strict --verbose=2 "$path"
+}
+
 bundle_icon() {
   if [[ ! -f "$ICON_SOURCE" ]]; then
     echo "App icon not found: $ICON_SOURCE" >&2
@@ -218,9 +241,9 @@ cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env
 
 echo "Building Vaultty app bundle"
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$HELPERS_DIR" "$FRAMEWORKS_DIR"
 render_info_plist
-cp "$RUST_BIN_DIR/vaultty-env" "$RESOURCES_DIR/vaultty-env"
+cp "$RUST_BIN_DIR/vaultty-env" "$ENV_HELPER"
 bundle_icon
 bundle_completions
 
@@ -239,12 +262,12 @@ if [[ "$WITH_GHOSTTY_VT" == true ]]; then
     GHOSTTY_INCLUDE="$ROOT_DIR/target/vendor/ghostty/include"
   fi
   if [[ "$GHOSTTY_LIB" == *.dylib ]]; then
-    cp "$GHOSTTY_LIB" "$RESOURCES_DIR/libghostty-vt.dylib"
+    cp "$GHOSTTY_LIB" "$GHOSTTY_DYLIB"
     GHOSTTY_SWIFT_LINK_ARGS=(
-      -L "$RESOURCES_DIR"
+      -L "$FRAMEWORKS_DIR"
       -lghostty-vt
       -Xlinker -rpath
-      -Xlinker @executable_path/../Resources
+      -Xlinker @executable_path/../Frameworks
     )
     GHOSTTY_BRIDGE_FLAGS=(-DVAULTTY_WITH_GHOSTTY=1 -I"$GHOSTTY_INCLUDE")
     clang \
@@ -252,10 +275,10 @@ if [[ "$WITH_GHOSTTY_VT" == true ]]; then
       -target "arm64-apple-macos$MIN_MACOS_VERSION" \
       -I"$GHOSTTY_INCLUDE" \
       "$ROOT_DIR/src/ghostty_probe/main.c" \
-      -L"$RESOURCES_DIR" \
+      -L"$FRAMEWORKS_DIR" \
       -lghostty-vt \
-      -Wl,-rpath,@loader_path \
-      -o "$RESOURCES_DIR/vaultty-ghostty-probe"
+      -Wl,-rpath,@loader_path/../Frameworks \
+      -o "$GHOSTTY_PROBE"
   else
     clang \
       -Os \
@@ -263,7 +286,7 @@ if [[ "$WITH_GHOSTTY_VT" == true ]]; then
       -I"$GHOSTTY_INCLUDE" \
       "$ROOT_DIR/src/ghostty_probe/main.c" \
       "$GHOSTTY_LIB" \
-      -o "$RESOURCES_DIR/vaultty-ghostty-probe"
+      -o "$GHOSTTY_PROBE"
   fi
 fi
 
@@ -289,22 +312,25 @@ swiftc \
   -o "$EXECUTABLE"
 
 echo "Signing with $IDENTITY"
-codesign --force --options runtime --sign "$IDENTITY" \
+codesign_runtime \
   --identifier "$ENV_HELPER_ID" \
-  "$RESOURCES_DIR/vaultty-env"
-if [[ -f "$RESOURCES_DIR/libghostty-vt.dylib" ]]; then
-  codesign --force --options runtime --sign "$IDENTITY" \
-    "$RESOURCES_DIR/libghostty-vt.dylib"
+  "$ENV_HELPER"
+verify_signature "$ENV_HELPER"
+if [[ -f "$GHOSTTY_DYLIB" ]]; then
+  codesign_runtime "$GHOSTTY_DYLIB"
+  verify_signature "$GHOSTTY_DYLIB"
 fi
-if [[ -x "$RESOURCES_DIR/vaultty-ghostty-probe" ]]; then
-  codesign --force --options runtime --sign "$IDENTITY" \
+if [[ -x "$GHOSTTY_PROBE" ]]; then
+  codesign_runtime \
     --identifier "$GHOSTTY_PROBE_ID" \
-    "$RESOURCES_DIR/vaultty-ghostty-probe"
+    "$GHOSTTY_PROBE"
+  verify_signature "$GHOSTTY_PROBE"
 fi
-codesign --force --options runtime --sign "$IDENTITY" \
+codesign_runtime \
   --entitlements "$ROOT_DIR/src/app/vaultty.entitlements" \
   --identifier "$APP_BUNDLE_ID" \
   "$APP_DIR"
+verify_signature "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo "$APP_DIR"
