@@ -1167,9 +1167,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
             cd \(shellQuote(homeURL.path))
             __vaultty_dotenv_hook() {
-              [ -x "$VAULTTY_ENV" ] || return 0
               local __vaultty_dotenv
-              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
+              if [ -x /usr/local/bin/av ]; then
+                __vaultty_dotenv="$(/usr/local/bin/av dotenv export --shell zsh --cwd "$PWD")" || return $?
+              elif command -v av >/dev/null 2>&1; then
+                __vaultty_dotenv="$(av dotenv export --shell zsh --cwd "$PWD")" || return $?
+              elif [ -x "$VAULTTY_ENV" ]; then
+                __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
+              else
+                return 0
+              fi
               eval "$__vaultty_dotenv"
             }
             if [ -n "${ZSH_VERSION:-}" ]; then
@@ -1368,7 +1375,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x /usr/local/bin/av ]; then eval \"$(/usr/local/bin/av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif command -v av >/dev/null 2>&1; then eval \"$(av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
     }
 
