@@ -574,6 +574,58 @@ private final class TitleAddButton: NSButton {
     }
 }
 
+private final class PtyPassthroughView: NSView {
+    var onInput: ((String) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        guard let sequence = terminalSequence(for: event) else {
+            super.keyDown(with: event)
+            return
+        }
+        onInput?(sequence)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+
+    private func terminalSequence(for event: NSEvent) -> String? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) {
+            return nil
+        }
+
+        if let special = event.charactersIgnoringModifiers?.unicodeScalars.first?.value {
+            switch special {
+            case UInt32(NSUpArrowFunctionKey):
+                return "\u{1B}[A"
+            case UInt32(NSDownArrowFunctionKey):
+                return "\u{1B}[B"
+            case UInt32(NSRightArrowFunctionKey):
+                return "\u{1B}[C"
+            case UInt32(NSLeftArrowFunctionKey):
+                return "\u{1B}[D"
+            case UInt32(NSHomeFunctionKey):
+                return "\u{1B}[H"
+            case UInt32(NSEndFunctionKey):
+                return "\u{1B}[F"
+            case UInt32(NSPageUpFunctionKey):
+                return "\u{1B}[5~"
+            case UInt32(NSPageDownFunctionKey):
+                return "\u{1B}[6~"
+            case UInt32(NSDeleteFunctionKey):
+                return "\u{1B}[3~"
+            default:
+                break
+            }
+        }
+
+        return event.characters?.isEmpty == false ? event.characters : nil
+    }
+}
+
 private final class TerminalTab {
     let id = UUID()
     let session = PtySession()
@@ -584,7 +636,11 @@ private final class TerminalTab {
     let statusLabel = NSTextField(labelWithString: "Starting shell...")
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
+    let ptyPassthroughView = PtyPassthroughView(frame: .zero)
     let title: String
+
+    var scrollBottomToCommandBarConstraint: NSLayoutConstraint?
+    var scrollBottomToRootConstraint: NSLayoutConstraint?
 
     var blocks: [TerminalBlock] = []
     var blockViews: [UUID: BlockView] = [:]
@@ -593,6 +649,9 @@ private final class TerminalTab {
     var currentCwd = FileManager.default.homeDirectoryForCurrentUser.path
     var parserBuffer = ""
     var isShellReady = false
+    var isTerminalControlActive = false
+    var isAlternateScreenActive = false
+    var ttyModeTimer: Timer?
 
     init(title: String, delegate: NSTextViewDelegate) {
         self.title = title
@@ -650,18 +709,28 @@ private final class TerminalTab {
         commandBarView.wantsLayer = true
         commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
         commandBarView.translatesAutoresizingMaskIntoConstraints = false
+        ptyPassthroughView.translatesAutoresizingMaskIntoConstraints = false
+        ptyPassthroughView.isHidden = true
+        ptyPassthroughView.onInput = { [weak self] sequence in
+            self?.session.write(sequence)
+        }
         commandBarView.addSubview(statusLabel)
         commandBarView.addSubview(inputScroll)
 
         rootView.addSubview(scrollView)
         rootView.addSubview(commandSeparator)
         rootView.addSubview(commandBarView)
+        rootView.addSubview(ptyPassthroughView)
+
+        scrollBottomToCommandBarConstraint = scrollView.bottomAnchor.constraint(equalTo: commandSeparator.topAnchor)
+        scrollBottomToRootConstraint = scrollView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor)
+        scrollBottomToRootConstraint?.isActive = false
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: rootView.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: commandSeparator.topAnchor),
+            scrollBottomToCommandBarConstraint!,
 
             commandSeparator.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             commandSeparator.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
@@ -690,7 +759,12 @@ private final class TerminalTab {
             inputScroll.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor),
             inputScroll.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 4),
             inputScroll.bottomAnchor.constraint(equalTo: commandBarView.bottomAnchor),
-            inputScroll.heightAnchor.constraint(equalToConstant: 64)
+            inputScroll.heightAnchor.constraint(equalToConstant: 64),
+
+            ptyPassthroughView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            ptyPassthroughView.topAnchor.constraint(equalTo: rootView.topAnchor),
+            ptyPassthroughView.widthAnchor.constraint(equalToConstant: 0),
+            ptyPassthroughView.heightAnchor.constraint(equalToConstant: 0)
         ])
     }
 }
@@ -778,7 +852,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     override func viewDidAppear() {
         super.viewDidAppear()
         if let tab = activeTab {
-            view.window?.makeFirstResponder(tab.inputView)
+            focusInput(for: tab)
+        }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        for tab in tabs {
+            resizePtyToViewport(for: tab)
         }
     }
 
@@ -817,6 +898,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         let wasActive = activeTabID == tab.id
+        stopTtyModePolling(for: tab)
         tab.session.stop()
         tab.rootView.removeFromSuperview()
         titleTabStack.removeArrangedSubview(button)
@@ -878,7 +960,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tabButtons[tab.id]?.isSelectedTab = tab.id == id
         }
         if let tab = activeTab {
-            view.window?.makeFirstResponder(tab.inputView)
+            focusInput(for: tab)
         }
     }
 
@@ -887,8 +969,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             guard let tab else { return }
             self?.consumeShellOutput(text, in: tab)
         }
-        tab.session.onExit = { [weak tab] status in
+        tab.session.onExit = { [weak self, weak tab] status in
             tab?.statusLabel.stringValue = "Shell exited with status \(status)"
+            if let tab {
+                self?.stopTtyModePolling(for: tab)
+                self?.setTerminalControl(false, in: tab)
+            }
         }
     }
 
@@ -931,6 +1017,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard !command.isEmpty else { return }
         tab.inputView.string = ""
         tab.isShellReady = false
+        tab.isAlternateScreenActive = false
         tab.statusLabel.stringValue = "Running..."
 
         let block = TerminalBlock(
@@ -945,6 +1032,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
         addBlockView(block, to: tab)
+        startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if command -v av >/dev/null 2>&1; then eval \"$(av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
@@ -952,6 +1040,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func consumeShellOutput(_ text: String, in tab: TerminalTab) {
+        updateTerminalControl(from: text, in: tab)
         tab.parserBuffer += text
         var visible = ""
 
@@ -1020,16 +1109,92 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
             }
             tab.activeBlockID = nil
+            tab.isAlternateScreenActive = false
             tab.isShellReady = true
+            stopTtyModePolling(for: tab)
+            setTerminalControl(false, in: tab)
             tab.statusLabel.stringValue = tab.currentCwd
             scrollToBottom(tab)
-            if activeTabID == tab.id {
-                view.window?.makeFirstResponder(tab.inputView)
-            }
+            focusInput(for: tab)
             runSelfTestIfNeeded(in: tab)
         default:
             break
         }
+    }
+
+    private func updateTerminalControl(from text: String, in tab: TerminalTab) {
+        for isActive in Ansi.alternateScreenSwitches(in: text) {
+            tab.isAlternateScreenActive = isActive
+        }
+        refreshTerminalControl(in: tab)
+    }
+
+    private func startTtyModePolling(for tab: TerminalTab) {
+        stopTtyModePolling(for: tab)
+        tab.ttyModeTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self, weak tab] timer in
+            guard let self, let tab else {
+                timer.invalidate()
+                return
+            }
+            guard self.isCommandRunning(in: tab) else {
+                self.stopTtyModePolling(for: tab)
+                return
+            }
+            self.refreshTerminalControl(in: tab)
+        }
+    }
+
+    private func stopTtyModePolling(for tab: TerminalTab) {
+        tab.ttyModeTimer?.invalidate()
+        tab.ttyModeTimer = nil
+    }
+
+    private func refreshTerminalControl(in tab: TerminalTab) {
+        let isRawInputMode = tab.session.isCanonicalInputModeEnabled() == false
+        setTerminalControl(isCommandRunning(in: tab) && (tab.isAlternateScreenActive || isRawInputMode), in: tab)
+    }
+
+    private func setTerminalControl(_ isActive: Bool, in tab: TerminalTab) {
+        guard tab.isTerminalControlActive != isActive else {
+            focusInput(for: tab)
+            return
+        }
+
+        tab.isTerminalControlActive = isActive
+        tab.commandBarView.isHidden = isActive
+        tab.commandSeparator.isHidden = isActive
+        tab.ptyPassthroughView.isHidden = !isActive
+
+        if isActive {
+            tab.scrollBottomToCommandBarConstraint?.isActive = false
+            tab.scrollBottomToRootConstraint?.isActive = true
+        } else {
+            tab.scrollBottomToRootConstraint?.isActive = false
+            tab.scrollBottomToCommandBarConstraint?.isActive = true
+        }
+
+        tab.rootView.needsLayout = true
+        tab.rootView.layoutSubtreeIfNeeded()
+        resizePtyToViewport(for: tab)
+        focusInput(for: tab)
+        scrollToBottom(tab)
+    }
+
+    private func focusInput(for tab: TerminalTab) {
+        guard activeTabID == tab.id else { return }
+        view.window?.makeFirstResponder(tab.isTerminalControlActive ? tab.ptyPassthroughView : tab.inputView)
+    }
+
+    private func resizePtyToViewport(for tab: TerminalTab) {
+        let viewport = tab.scrollView.contentView.bounds
+        guard viewport.width > 0, viewport.height > 0 else { return }
+
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let characterWidth = max(1, ceil(("W" as NSString).size(withAttributes: [.font: font]).width))
+        let lineHeight = max(1, ceil(font.ascender - font.descender + font.leading))
+        let cols = UInt16(max(20, Int(viewport.width / characterWidth)))
+        let rows = UInt16(max(5, Int(viewport.height / lineHeight)))
+        tab.session.resize(rows: rows, cols: cols)
     }
 
     private func addBlockView(_ block: TerminalBlock, to tab: TerminalTab) {

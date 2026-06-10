@@ -68,6 +68,13 @@ final class PtySession {
         _ = ioctl(master, TIOCSWINSZ, &windowSize)
     }
 
+    func isCanonicalInputModeEnabled() -> Bool? {
+        guard master >= 0 else { return nil }
+        var term = termios()
+        guard tcgetattr(master, &term) == 0 else { return nil }
+        return (term.c_lflag & UInt(ICANON)) != 0
+    }
+
     func write(_ string: String) {
         guard master >= 0, let data = string.data(using: .utf8) else { return }
         data.withUnsafeBytes { rawBuffer in
