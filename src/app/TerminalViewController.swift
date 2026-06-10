@@ -16,6 +16,7 @@ private struct TerminalBlock {
     let startedAt: Date
     var finishedAt: Date?
     var output: String
+    var attributedOutput: NSMutableAttributedString
     var state: State
 }
 
@@ -313,7 +314,9 @@ private final class BlockView: NSView {
 
     func update(with block: TerminalBlock) {
         commandLabel.stringValue = block.command
-        outputView.string = block.output.isEmpty ? " " : block.output
+        outputView.textStorage?.setAttributedString(
+            block.output.isEmpty ? Ansi.emptyAttributedOutput() : block.attributedOutput
+        )
         updateOutputHeight()
 
         var metadata = [displayCwd(block.cwd)]
@@ -744,6 +747,7 @@ private final class TerminalTab {
     var isAlternateScreenActive = false
     var isApplicationCursorModeActive = false
     let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
+    let styledRenderer = Ansi.StyledTextRenderer()
     var ttyModeTimer: Timer?
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
@@ -1127,6 +1131,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
         tab.terminalScreen.resetForCommand()
+        tab.styledRenderer.reset()
         tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
         tab.statusLabel.stringValue = "Running..."
 
@@ -1137,6 +1142,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             startedAt: Date(),
             finishedAt: nil,
             output: "",
+            attributedOutput: NSMutableAttributedString(),
             state: .running
         )
         tab.blocks.append(block)
@@ -1232,10 +1238,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isAlternateScreenActive = state.isAlternateScreenActive
             tab.isApplicationCursorModeActive = state.isApplicationCursorModeActive
             tab.blocks[index].output = state.text
+            tab.blocks[index].attributedOutput = NSMutableAttributedString(
+                attributedString: state.attributedText
+            )
         } else {
-            let cleaned = Ansi.visibleText(from: text)
-            guard !cleaned.isEmpty else { return }
-            tab.blocks[index].output += cleaned
+            let rendered = tab.styledRenderer.process(text)
+            guard !rendered.plainText.isEmpty else { return }
+            tab.blocks[index].output += rendered.plainText
+            tab.blocks[index].attributedOutput.append(rendered.attributedText)
         }
 
         tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
