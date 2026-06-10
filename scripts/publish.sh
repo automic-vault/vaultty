@@ -1,9 +1,8 @@
-#!/usr/local/bin/av inject +APPLE_PASSWORD +TEAM_IDENTIFIER +TEAM_COMMON_NAME /bin/bash
+#!/usr/local/bin/av inject +APPLE_PASSWORD /bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-vault_dir="${VAULT_DIR:-$HOME/src/automic-vault}"
 
 app_name="Vaultty"
 
@@ -62,23 +61,6 @@ die() {
 
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || die "Required tool not found: $1"
-}
-
-load_env_file() {
-  local env_file="$1"
-  [[ -f "${env_file}" ]] || return 0
-
-  local line key value
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%$'\r'}"
-    [[ -n "${line}" && "${line}" != \#* && "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
-
-    key="${line%%=*}"
-    value="${line#*=}"
-    if [[ -z "${!key+x}" ]]; then
-      export "${key}=${value}"
-    fi
-  done <"${env_file}"
 }
 
 unquote_env_value() {
@@ -395,8 +377,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-load_env_file "${vault_dir}/.env"
-load_env_file "${repo_root}/.env"
 configure_codesign_identity
 
 require_tool git
