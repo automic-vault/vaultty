@@ -576,6 +576,7 @@ private final class TitleAddButton: NSButton {
 
 private final class PtyPassthroughView: NSView {
     var onInput: ((String) -> Void)?
+    var usesApplicationCursorKeys: (() -> Bool)?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -600,13 +601,13 @@ private final class PtyPassthroughView: NSView {
         if let special = event.charactersIgnoringModifiers?.unicodeScalars.first?.value {
             switch special {
             case UInt32(NSUpArrowFunctionKey):
-                return "\u{1B}[A"
+                return cursorKey(normal: "\u{1B}[A", application: "\u{1B}OA")
             case UInt32(NSDownArrowFunctionKey):
-                return "\u{1B}[B"
+                return cursorKey(normal: "\u{1B}[B", application: "\u{1B}OB")
             case UInt32(NSRightArrowFunctionKey):
-                return "\u{1B}[C"
+                return cursorKey(normal: "\u{1B}[C", application: "\u{1B}OC")
             case UInt32(NSLeftArrowFunctionKey):
-                return "\u{1B}[D"
+                return cursorKey(normal: "\u{1B}[D", application: "\u{1B}OD")
             case UInt32(NSHomeFunctionKey):
                 return "\u{1B}[H"
             case UInt32(NSEndFunctionKey):
@@ -623,6 +624,10 @@ private final class PtyPassthroughView: NSView {
         }
 
         return event.characters?.isEmpty == false ? event.characters : nil
+    }
+
+    private func cursorKey(normal: String, application: String) -> String {
+        usesApplicationCursorKeys?() == true ? application : normal
     }
 }
 
@@ -651,6 +656,8 @@ private final class TerminalTab {
     var isShellReady = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
+    var isApplicationCursorModeActive = false
+    let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
     var ttyModeTimer: Timer?
 
     init(title: String, delegate: NSTextViewDelegate) {
@@ -713,6 +720,9 @@ private final class TerminalTab {
         ptyPassthroughView.isHidden = true
         ptyPassthroughView.onInput = { [weak self] sequence in
             self?.session.write(sequence)
+        }
+        ptyPassthroughView.usesApplicationCursorKeys = { [weak self] in
+            self?.isApplicationCursorModeActive == true
         }
         commandBarView.addSubview(statusLabel)
         commandBarView.addSubview(inputScroll)
@@ -1018,6 +1028,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.string = ""
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
+        tab.isApplicationCursorModeActive = false
+        tab.terminalScreen.resetForCommand()
         tab.statusLabel.stringValue = "Running..."
 
         let block = TerminalBlock(
@@ -1040,7 +1052,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func consumeShellOutput(_ text: String, in tab: TerminalTab) {
-        updateTerminalControl(from: text, in: tab)
         tab.parserBuffer += text
         var visible = ""
 
@@ -1069,14 +1080,31 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func flushVisible(_ text: String, in tab: TerminalTab) {
-        let cleaned = Ansi.visibleText(from: text)
-        guard !cleaned.isEmpty else { return }
-        if let activeBlockID = tab.activeBlockID,
-           let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID }) {
-            tab.blocks[index].output += cleaned
-            tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
-            scrollToBottom(tab)
+        guard !text.isEmpty,
+              let activeBlockID = tab.activeBlockID,
+              let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID })
+        else {
+            return
         }
+
+        let shouldRenderScreen = tab.isAlternateScreenActive
+            || tab.isTerminalControlActive
+            || !Ansi.alternateScreenSwitches(in: text).isEmpty
+
+        if shouldRenderScreen {
+            let state = tab.terminalScreen.process(text)
+            tab.isAlternateScreenActive = state.isAlternateScreenActive
+            tab.isApplicationCursorModeActive = state.isApplicationCursorModeActive
+            tab.blocks[index].output = state.text
+        } else {
+            let cleaned = Ansi.visibleText(from: text)
+            guard !cleaned.isEmpty else { return }
+            tab.blocks[index].output += cleaned
+        }
+
+        tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
+        refreshTerminalControl(in: tab)
+        scrollToBottom(tab)
     }
 
     private func handleMarker(_ marker: String, in tab: TerminalTab) {
@@ -1110,6 +1138,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             tab.activeBlockID = nil
             tab.isAlternateScreenActive = false
+            tab.isApplicationCursorModeActive = false
             tab.isShellReady = true
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
@@ -1195,6 +1224,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let cols = UInt16(max(20, Int(viewport.width / characterWidth)))
         let rows = UInt16(max(5, Int(viewport.height / lineHeight)))
         tab.session.resize(rows: rows, cols: cols)
+        tab.terminalScreen.resize(rows: Int(rows), cols: Int(cols))
     }
 
     private func addBlockView(_ block: TerminalBlock, to tab: TerminalTab) {
