@@ -1,4 +1,4 @@
-#!/usr/local/bin/av inject +APPLE_PASSWORD /bin/bash
+#!/usr/local/bin/av inject +APPLE_PASSWORD +TEAM_IDENTIFIER +TEAM_COMMON_NAME /bin/bash
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
