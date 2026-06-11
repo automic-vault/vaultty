@@ -13,9 +13,10 @@ It does not call `av dotenv export`.
 
 - The macOS Tahoe appearance you’ve been waiting for.
   Proper (occluding) blur, vibrancy, and translucency.
-- Warp style blocks
-- Fig autocompletions
+- [Warp](https://warp.dev) style blocks
+- [Fig](https://fig.io) autocompletions
 - Automically loads Automic Vault encrytped `.env` secrets without approval
+- [libghostty](https://github.com/mitchellh/ghostty) as the tty layer
 
 > [!IMPORTANT]
 >
