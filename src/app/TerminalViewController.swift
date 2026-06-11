@@ -825,6 +825,12 @@ private final class TitleTabButton: NSButton {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverTrackingArea {
@@ -849,14 +855,17 @@ private final class TitleTabButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
-        if !closeButton.isHidden {
-            let closePoint = closeButton.convert(point, from: self)
-            if closeButton.bounds.contains(closePoint) {
-                return closeButton
-            }
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if !closeButton.isHidden,
+           closeButton.frame.contains(point) {
+            closeButton.performClick(self)
+        } else {
+            performClick(self)
         }
-        return self
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -992,6 +1001,12 @@ private final class TitleAddButton: NSButton {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     override func updateTrackingAreas() {
