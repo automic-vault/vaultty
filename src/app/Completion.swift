@@ -77,9 +77,10 @@ final class CompletionPopupController: NSObject {
 
         let contentHeight = CompletionListView.contentHeight(forRowCount: suggestions.count)
         let visibleHeight = min(Self.maxPopupHeight, contentHeight)
+        let shouldFlashScrollers = contentHeight > visibleHeight
         let size = NSSize(width: Self.popupWidth, height: visibleHeight)
         scrollView.frame = NSRect(origin: .zero, size: size)
-        scrollView.hasVerticalScroller = contentHeight > visibleHeight
+        scrollView.hasVerticalScroller = shouldFlashScrollers
         listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: contentHeight)
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollView.contentView.scroll(to: .zero)
@@ -91,6 +92,12 @@ final class CompletionPopupController: NSObject {
             return
         }
         popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+        if shouldFlashScrollers {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.popover.isShown else { return }
+                self.scrollView.flashScrollers()
+            }
+        }
     }
 
     func dismiss() {
