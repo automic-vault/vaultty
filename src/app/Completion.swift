@@ -725,8 +725,9 @@ final class VaulttyCompletionEngine {
             return []
         }
 
-        var suggestions: [CompletionSuggestion] = entries.compactMap { url in
+        let suggestions: [CompletionSuggestion] = entries.compactMap { url in
             let name = url.lastPathComponent
+            guard name != "." && name != ".." else { return nil }
             if !filePrefix.hasPrefix("."), name.hasPrefix(".") {
                 return nil
             }
@@ -744,17 +745,6 @@ final class VaulttyCompletionEngine {
                 priority: isDirectory ? 60 : 55,
                 source: directory
             )
-        }
-
-        if foldersOnly, filePrefix.isEmpty || hasCaseInsensitivePrefix("..", filePrefix) {
-            suggestions.append(CompletionSuggestion(
-                displayText: "../",
-                insertText: pathInsertValue(prefix: prefix, suggestionName: "../", isDirectory: true),
-                description: "Parent directory",
-                kind: .folder,
-                priority: 45,
-                source: directory
-            ))
         }
         return suggestions
     }
