@@ -1161,6 +1161,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return true
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                if completionPopup.hasSingleSuggestion {
+                    acceptSelectedCompletion(in: tab)
+                    return true
+                }
                 completionPopup.selectNext()
                 return true
             }

@@ -51,6 +51,7 @@ final class CompletionPopupController: NSObject {
         guard suggestions.indices.contains(selectedIndex) else { return nil }
         return suggestions[selectedIndex]
     }
+    var hasSingleSuggestion: Bool { suggestions.count == 1 }
 
     override init() {
         super.init()
@@ -101,14 +102,14 @@ final class CompletionPopupController: NSObject {
 
     func selectNext() {
         guard !suggestions.isEmpty else { return }
-        selectedIndex = min(suggestions.count - 1, selectedIndex + 1)
+        selectedIndex = (selectedIndex + 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
     }
 
     func selectPrevious() {
         guard !suggestions.isEmpty else { return }
-        selectedIndex = max(0, selectedIndex - 1)
+        selectedIndex = (selectedIndex + suggestions.count - 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
     }

@@ -11,7 +11,8 @@ It does not call `av dotenv export`.
 
 ## Features
 
-- The macOS Tahoe appearance you have been waiting for
+- The macOS Tahoe appearance you’ve been waiting for.
+  Proper (occluding) blur, vibrancy, and translucency.
 - Warp style blocks
 - Fig autocompletions
 - Automically loads Automic Vault encrytped `.env` secrets without approval
