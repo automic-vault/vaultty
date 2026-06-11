@@ -1309,6 +1309,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         requestCompletion(in: tab, mode: .filtering)
     }
 
+    func textShouldBeginEditing(_ textObject: NSText) -> Bool {
+        guard let textView = textObject as? NSTextView,
+              let tab = tabs.first(where: { $0.inputView === textView }),
+              shouldSendInputToPty(in: tab)
+        else {
+            return true
+        }
+        focusInput(for: tab)
+        return false
+    }
+
     @objc func newTab(_ sender: Any?) {
         createTab()
     }
@@ -1746,6 +1757,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
+        updatePassthroughVisibility(for: tab)
+        focusInput(for: tab)
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
@@ -2013,7 +2026,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isTerminalControlActive = isActive
         tab.commandBarView.isHidden = isActive
         tab.commandSeparator.isHidden = isActive
-        tab.ptyPassthroughView.isHidden = !isActive
+        updatePassthroughVisibility(for: tab)
 
         if isActive {
             tab.scrollBottomToCommandBarConstraint?.isActive = false
@@ -2032,7 +2045,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func focusInput(for tab: TerminalTab) {
         guard activeTabID == tab.id else { return }
-        view.window?.makeFirstResponder(tab.isTerminalControlActive ? tab.ptyPassthroughView : tab.inputView)
+        view.window?.makeFirstResponder(shouldSendInputToPty(in: tab) ? tab.ptyPassthroughView : tab.inputView)
+    }
+
+    private func updatePassthroughVisibility(for tab: TerminalTab) {
+        tab.ptyPassthroughView.isHidden = !shouldSendInputToPty(in: tab)
+    }
+
+    private func shouldSendInputToPty(in tab: TerminalTab) -> Bool {
+        tab.isTerminalControlActive || isCommandRunning(in: tab)
     }
 
     private func resizePtyToViewport(for tab: TerminalTab) {
