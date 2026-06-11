@@ -1296,6 +1296,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let contentContainer = NSView()
     private let completionEngine = VaulttyCompletionEngine()
     private let completionQueue = DispatchQueue(label: "com.automicvault.vaultty.completion", qos: .userInitiated)
+    private let gitStateProvider = GitDirectoryStateProvider()
+    private let gitStateQueue = DispatchQueue(label: "com.automicvault.vaultty.git-state", qos: .utility)
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
@@ -2084,7 +2086,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case "R":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             tab.isShellReady = true
-            tab.statusLabel.stringValue = detailForDirectory(tab.currentCwd)
+            updateCommandBarDirectoryStatus(for: tab)
             updateTabTitleForDirectory(tab)
             runSelfTestIfNeeded(in: tab)
         case "C":
@@ -2107,7 +2109,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isShellReady = true
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
-            tab.statusLabel.stringValue = detailForDirectory(tab.currentCwd)
+            updateCommandBarDirectoryStatus(for: tab)
             updateTabTitleForDirectory(tab)
             scrollToBottom(tab)
             focusInput(for: tab)
@@ -2173,6 +2175,33 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return "~" + String(path.dropFirst(home.count))
         }
         return path
+    }
+
+    private func updateCommandBarDirectoryStatus(for tab: TerminalTab) {
+        let cwd = tab.currentCwd
+        let directoryText = detailForDirectory(cwd)
+        tab.statusLabel.stringValue = directoryText
+
+        gitStateQueue.async { [weak self, weak tab] in
+            guard let self else { return }
+            let gitSummary = self.gitStateProvider.summary(
+                forDirectory: URL(fileURLWithPath: cwd, isDirectory: true)
+            )
+
+            DispatchQueue.main.async { [weak tab] in
+                guard let tab,
+                      tab.currentCwd == cwd,
+                      tab.isShellReady
+                else {
+                    return
+                }
+                guard let gitSummary else {
+                    tab.statusLabel.stringValue = directoryText
+                    return
+                }
+                tab.statusLabel.stringValue = "\(directoryText)  \(gitSummary)"
+            }
+        }
     }
 
     private func titleForCommand(_ command: String) -> String {
