@@ -29,6 +29,11 @@ private enum TahoeGlassPalette {
     static let titleTabBottomInset: CGFloat = 0
     static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
+    static let titleTabMinimumWidth: CGFloat = 112
+    static let titleTabTitleLeadingInset: CGFloat = 16
+    static let titleTabTitleTrailingInset: CGFloat = 34
+    static let titleTabCloseButtonSize: CGFloat = 18
+    static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
         green: 0.08,
@@ -645,6 +650,7 @@ private final class BlockView: NSView {
 private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = NSButton(title: "x", target: nil, action: nil)
+    private let titleLabel = NSTextField(labelWithString: "")
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
@@ -659,7 +665,7 @@ private final class TitleTabButton: NSButton {
     init(tabID: UUID, title: String) {
         self.tabID = tabID
         super.init(frame: .zero)
-        self.title = title
+        self.title = ""
         isBordered = false
         bezelStyle = .regularSquare
         controlSize = .regular
@@ -672,6 +678,19 @@ private final class TitleTabButton: NSButton {
         layer?.backgroundColor = NSColor.clear.cgColor
         translatesAutoresizingMaskIntoConstraints = false
         contentTintColor = .secondaryLabelColor
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        titleLabel.stringValue = title
+        titleLabel.font = font
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
+        titleLabel.textColor = TahoeGlassPalette.titleText
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.cell?.truncatesLastVisibleLine = true
+        addSubview(titleLabel)
 
         closeButton.isBordered = false
         closeButton.bezelStyle = .regularSquare
@@ -686,12 +705,26 @@ private final class TitleTabButton: NSButton {
         addSubview(closeButton)
 
         NSLayoutConstraint.activate([
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            titleLabel.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: TahoeGlassPalette.titleTabTitleLeadingInset
+            ),
+            titleLabel.trailingAnchor.constraint(
+                equalTo: trailingAnchor,
+                constant: -TahoeGlassPalette.titleTabTitleTrailingInset
+            ),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            closeButton.trailingAnchor.constraint(
+                equalTo: trailingAnchor,
+                constant: -TahoeGlassPalette.titleTabCloseButtonTrailingInset
+            ),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 18),
-            closeButton.heightAnchor.constraint(equalToConstant: 18)
+            closeButton.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize),
+            closeButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize)
         ])
 
+        updateTitle(title)
         updateAppearance()
     }
 
@@ -722,10 +755,33 @@ private final class TitleTabButton: NSButton {
         isHovering = false
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        if !closeButton.isHidden {
+            let closePoint = closeButton.convert(point, from: self)
+            if closeButton.bounds.contains(closePoint) {
+                return closeButton
+            }
+        }
+        return self
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         fillColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
         super.draw(dirtyRect)
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let titleWidth = ceil((titleLabel.stringValue as NSString).size(withAttributes: [
+            .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
+        ]).width)
+        let horizontalInsets = TahoeGlassPalette.titleTabTitleLeadingInset
+            + TahoeGlassPalette.titleTabTitleTrailingInset
+        return NSSize(
+            width: max(TahoeGlassPalette.titleTabMinimumWidth, titleWidth + horizontalInsets),
+            height: TahoeGlassPalette.titleTabHeight
+        )
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -734,20 +790,25 @@ private final class TitleTabButton: NSButton {
     }
 
     func updateTitle(_ title: String, detail: String? = nil) {
-        self.title = title
+        titleLabel.stringValue = title
         toolTip = detail ?? title
+        setAccessibilityLabel(title)
+        invalidateIntrinsicContentSize()
     }
 
     private func updateAppearance() {
         if isSelectedTab {
             fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleTextActive
+            titleLabel.textColor = TahoeGlassPalette.titleTextActive
         } else if isHovering {
             fillColor = TahoeGlassPalette.titleSegmentHoverFill
             contentTintColor = TahoeGlassPalette.titleTextActive
+            titleLabel.textColor = TahoeGlassPalette.titleTextActive
         } else {
             fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleText
+            titleLabel.textColor = TahoeGlassPalette.titleText
         }
         closeButton.isHidden = !isHovering
         closeButton.contentTintColor = isHovering ? .labelColor : .secondaryLabelColor
@@ -1088,6 +1149,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         titleTabStack.orientation = .horizontal
         titleTabStack.spacing = 0
         titleTabStack.alignment = .centerY
+        titleTabStack.distribution = .fill
         titleTabStack.translatesAutoresizingMaskIntoConstraints = false
 
         newTabButton.target = self
@@ -1311,7 +1373,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tabButtons[tab.id] = button
         titleTabStack.insertArrangedSubview(button, at: max(0, titleTabStack.arrangedSubviews.count - 1))
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 156),
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: TahoeGlassPalette.titleTabMinimumWidth),
             button.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight)
         ])
     }
@@ -1823,7 +1885,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let normalizedTitle = singleLineTitle(title)
         let displayTitle = normalizedTitle.isEmpty ? fallback : normalizedTitle
         tab.title = displayTitle
-        tabButtons[tab.id]?.updateTitle(displayTitle, detail: detail)
+        if let button = tabButtons[tab.id] {
+            button.updateTitle(displayTitle, detail: detail)
+            layoutTabStripBeforeMeasuringSelection()
+            updateActiveTabCutoutFrame()
+        }
     }
 
     private func updateTabTitleForDirectory(_ tab: TerminalTab) {
