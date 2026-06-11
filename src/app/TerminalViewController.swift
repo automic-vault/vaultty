@@ -1173,7 +1173,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return true
             }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                acceptSelectedCompletion(in: tab)
+                acceptSelectedCompletion(in: tab, continuingDirectories: true)
                 return true
             }
             if commandSelector == #selector(NSResponder.moveRight(_:)) {
