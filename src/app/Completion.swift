@@ -89,6 +89,7 @@ final class CompletionPopupController: NSObject {
         popover.contentSize = size
 
         if popover.isShown {
+            popover.positioningRect = rect
             return
         }
         popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)

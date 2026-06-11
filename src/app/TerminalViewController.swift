@@ -1162,7 +1162,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
                 if completionPopup.hasSingleSuggestion {
-                    acceptSelectedCompletion(in: tab)
+                    acceptSelectedCompletion(in: tab, continuingDirectories: true)
                     return true
                 }
                 completionPopup.selectNext()
@@ -1438,6 +1438,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private enum CompletionRequestMode {
         case explicit
         case filtering
+        case continuation
     }
 
     private func requestCompletion(in tab: TerminalTab, mode: CompletionRequestMode) {
@@ -1486,7 +1487,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         activeCompletionRange = result.replacementRange
         if mode == .explicit, result.suggestions.count == 1 {
-            applyCompletion(result.suggestions[0], in: tab)
+            let suggestion = result.suggestions[0]
+            let shouldContinue = shouldContinueCompletion(afterApplying: suggestion)
+            applyCompletion(suggestion, in: tab, dismissAfterApplying: !shouldContinue)
+            if shouldContinue {
+                requestCompletion(in: tab, mode: .continuation)
+            }
             return
         }
 
@@ -1496,6 +1502,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
            prefix.utf16.count > existing.utf16.count {
             replace(range: result.replacementRange, with: prefix, in: tab)
             activeCompletionRange = NSRange(location: result.replacementRange.location, length: prefix.utf16.count)
+            if shouldContinueCompletion(afterInserting: prefix, from: result) {
+                requestCompletion(in: tab, mode: .continuation)
+                return
+            }
         }
 
         let anchor = completionAnchorRect(for: tab.inputView, in: tab.commandBarView)
@@ -1503,22 +1513,43 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             suggestions: result.suggestions,
             relativeTo: anchor,
             of: tab.commandBarView,
-            resetSelection: mode == .filtering
+            resetSelection: mode != .explicit
         )
     }
 
-    private func acceptSelectedCompletion(in tab: TerminalTab) {
+    private func acceptSelectedCompletion(in tab: TerminalTab, continuingDirectories: Bool = false) {
         guard let suggestion = completionPopup.selectedSuggestion else {
             dismissCompletion()
             return
         }
-        applyCompletion(suggestion, in: tab)
+        let shouldContinue = continuingDirectories && shouldContinueCompletion(afterApplying: suggestion)
+        applyCompletion(suggestion, in: tab, dismissAfterApplying: !shouldContinue)
+        if shouldContinue {
+            requestCompletion(in: tab, mode: .continuation)
+        }
     }
 
-    private func applyCompletion(_ suggestion: CompletionSuggestion, in tab: TerminalTab) {
+    private func applyCompletion(
+        _ suggestion: CompletionSuggestion,
+        in tab: TerminalTab,
+        dismissAfterApplying: Bool = true
+    ) {
         guard let range = activeCompletionRange else { return }
         replace(range: range, with: suggestion.insertText, in: tab)
-        dismissCompletion()
+        if dismissAfterApplying {
+            dismissCompletion()
+        }
+    }
+
+    private func shouldContinueCompletion(afterApplying suggestion: CompletionSuggestion) -> Bool {
+        suggestion.kind == .folder
+    }
+
+    private func shouldContinueCompletion(afterInserting value: String, from result: CompletionResult) -> Bool {
+        guard value.hasSuffix("/") else { return false }
+        return result.suggestions.contains { suggestion in
+            suggestion.kind == .file || suggestion.kind == .folder
+        }
     }
 
     private func replace(range: NSRange, with value: String, in tab: TerminalTab) {
