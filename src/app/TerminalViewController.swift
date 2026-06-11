@@ -24,8 +24,8 @@ private enum TahoeGlassPalette {
     static let windowCornerRadius: CGFloat = 22
     static let titleBarHeight: CGFloat = 50
     static let titleTabHeight: CGFloat = 34
-    static let titleTabTopInset: CGFloat = 8
-    static let titleTabBottomInset: CGFloat = titleTabTopInset
+    static let titleTabTopInset: CGFloat = titleBarHeight - titleTabHeight
+    static let titleTabBottomInset: CGFloat = 0
     static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
     static let windowTintStart = NSColor(
@@ -100,6 +100,7 @@ private final class TahoeGlassRootView: NSView {
         tintView.layer?.addSublayer(tintLayer)
 
         topBarLayer.fillColor = TahoeGlassPalette.topBarTint.cgColor
+        topBarLayer.fillRule = .evenOdd
         tintView.layer?.addSublayer(topBarLayer)
 
         topBarSeparatorLayer.fillColor = nil
@@ -148,28 +149,12 @@ private final class TahoeGlassRootView: NSView {
             width: bounds.width,
             height: contentTop
         )
-        guard let activeTabFrame else {
-            path.addRect(topBarFrame)
-            return path
-        }
-
-        let gapStart = max(0, floor(activeTabFrame.minX))
-        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX))
-        if gapStart > 0 {
-            path.addRect(CGRect(
-                x: 0,
-                y: topBarFrame.minY,
-                width: gapStart,
-                height: topBarFrame.height
-            ))
-        }
-        if gapEnd < bounds.width {
-            path.addRect(CGRect(
-                x: gapEnd,
-                y: topBarFrame.minY,
-                width: bounds.width - gapEnd,
-                height: topBarFrame.height
-            ))
+        path.addRect(topBarFrame)
+        if let activeTabFrame {
+            let cutoutFrame = activeTabFrame.intersection(topBarFrame)
+            if !cutoutFrame.isNull {
+                path.addRect(cutoutFrame)
+            }
         }
 
         return path
@@ -177,7 +162,10 @@ private final class TahoeGlassRootView: NSView {
 
     private func topBarSeparatorPath(y: CGFloat, activeTabFrame: CGRect?) -> CGPath {
         let path = CGMutablePath()
-        guard let activeTabFrame else {
+        guard let activeTabFrame,
+              y >= activeTabFrame.minY,
+              y <= activeTabFrame.maxY
+        else {
             path.move(to: CGPoint(x: 0, y: y))
             path.addLine(to: CGPoint(x: bounds.width, y: y))
             return path
@@ -1026,13 +1014,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             titleTabBorderView.leadingAnchor.constraint(equalTo: titleTabStack.leadingAnchor),
             titleTabBorderView.trailingAnchor.constraint(equalTo: titleTabStack.trailingAnchor),
             titleTabBorderView.topAnchor.constraint(equalTo: titleTabStack.topAnchor),
-            titleTabBorderView.bottomAnchor.constraint(
-                equalTo: view.topAnchor,
-                constant: TahoeGlassPalette.titleContentTop
-            ),
+            titleTabBorderView.bottomAnchor.constraint(equalTo: titleTabStack.bottomAnchor),
 
-            newTabButton.widthAnchor.constraint(equalToConstant: 44),
             newTabButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
+            newTabButton.widthAnchor.constraint(equalTo: newTabButton.heightAnchor),
 
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
