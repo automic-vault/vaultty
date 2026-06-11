@@ -958,7 +958,6 @@ private final class TerminalTab {
 }
 
 final class TerminalViewController: NSViewController, NSTextViewDelegate {
-    private let dotenvApproval = DotenvApprovalAutoApprover()
     private let selfTestCommand: String?
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
@@ -1031,7 +1030,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        dotenvApproval.start()
         createTab()
     }
 
@@ -1286,15 +1284,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             cd \(shellQuote(homeURL.path))
             __vaultty_dotenv_hook() {
               local __vaultty_dotenv
-              if [ -x /usr/local/bin/av ]; then
-                __vaultty_dotenv="$(/usr/local/bin/av dotenv export --shell zsh --cwd "$PWD")" || return $?
-              elif command -v av >/dev/null 2>&1; then
-                __vaultty_dotenv="$(av dotenv export --shell zsh --cwd "$PWD")" || return $?
-              elif [ -x "$VAULTTY_ENV" ]; then
-                __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
-              else
+              if [ ! -x "$VAULTTY_ENV" ]; then
                 return 0
               fi
+              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
               eval "$__vaultty_dotenv"
             }
             if [ -n "${ZSH_VERSION:-}" ]; then
@@ -1493,7 +1486,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x /usr/local/bin/av ]; then eval \"$(/usr/local/bin/av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif command -v av >/dev/null 2>&1; then eval \"$(av dotenv export --shell zsh --cwd \"$PWD\")\" 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
     }
 
@@ -1875,113 +1868,5 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-}
-
-private final class DotenvApprovalAutoApprover {
-    private struct Request: Decodable {
-        let id: String
-        let approvalToken: String
-        let mode: String
-        let envFilePath: String
-        let projectRoot: String
-
-        private enum CodingKeys: String, CodingKey {
-            case id
-            case approvalToken = "approval_token"
-            case mode
-            case envFilePath = "env_file_path"
-            case projectRoot = "project_root"
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = try container.decode(String.self, forKey: .id)
-            approvalToken = try container.decodeIfPresent(String.self, forKey: .approvalToken) ?? ""
-            mode = try container.decode(String.self, forKey: .mode)
-            envFilePath = try container.decode(String.self, forKey: .envFilePath)
-            projectRoot = try container.decode(String.self, forKey: .projectRoot)
-        }
-    }
-
-    private struct Decision: Encodable {
-        let id: String
-        let approvalToken: String
-        let approved: Bool
-        let reason: String?
-
-        private enum CodingKeys: String, CodingKey {
-            case id
-            case approvalToken = "approval_token"
-            case approved
-            case reason
-        }
-    }
-
-    private let targetProject: URL
-    private let pendingURL: URL
-    private let decisionsURL: URL
-    private var timer: Timer?
-    private var approvedIDs = Set<String>()
-
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.targetProject = home.appendingPathComponent("src/automic-vault", isDirectory: true)
-        let root = home.appendingPathComponent(
-            "Library/Application Support/Automic Vault/dotenv",
-            isDirectory: true
-        )
-        self.pendingURL = root.appendingPathComponent("pending-approval.json", isDirectory: false)
-        self.decisionsURL = root.appendingPathComponent("decisions", isDirectory: true)
-    }
-
-    func start() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            self?.approveMatchingRequest()
-        }
-    }
-
-    private func approveMatchingRequest() {
-        guard let data = try? Data(contentsOf: pendingURL),
-              let request = try? JSONDecoder().decode(Request.self, from: data),
-              request.mode == "export",
-              !approvedIDs.contains(request.id),
-              requestTargetsAutomicVault(request)
-        else {
-            return
-        }
-
-        let decision = Decision(
-            id: request.id,
-            approvalToken: request.approvalToken,
-            approved: true,
-            reason: "approved by Vaultty for ~/src/automic-vault dotenv export"
-        )
-        do {
-            try FileManager.default.createDirectory(
-                at: decisionsURL,
-                withIntermediateDirectories: true
-            )
-            let payload = try JSONEncoder().encode(decision)
-            try payload.write(
-                to: decisionsURL.appendingPathComponent("\(request.id).json", isDirectory: false),
-                options: .atomic
-            )
-            approvedIDs.insert(request.id)
-        } catch {
-            NSLog("Vaultty dotenv auto-approval failed: %@", error.localizedDescription)
-        }
-    }
-
-    private func requestTargetsAutomicVault(_ request: Request) -> Bool {
-        let project = canonicalPath(URL(fileURLWithPath: request.projectRoot))
-        let env = canonicalPath(URL(fileURLWithPath: request.envFilePath))
-        let target = canonicalPath(targetProject)
-        let targetEnv = canonicalPath(targetProject.appendingPathComponent(".env", isDirectory: false))
-        return project == target && env == targetEnv
-    }
-
-    private func canonicalPath(_ url: URL) -> String {
-        return url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 }
