@@ -21,76 +21,60 @@ enum Ansi {
     final class StyledTextRenderer {
         private var pending = ""
         private var style = TextStyle()
-        private var shouldSkipNextLineFeed = false
+        private var lines: [[Cell]] = [[]]
+        private var cursorRow = 0
+        private var cursorCol = 0
+        private var savedCursorRow = 0
+        private var savedCursorCol = 0
 
         func reset() {
             pending.removeAll()
             style = TextStyle()
-            shouldSkipNextLineFeed = false
+            lines = [[]]
+            cursorRow = 0
+            cursorCol = 0
+            savedCursorRow = 0
+            savedCursorCol = 0
         }
 
         func process(_ text: String) -> StyledOutput {
             let scalars = Array((pending + text).unicodeScalars)
             pending.removeAll()
 
-            let attributed = NSMutableAttributedString()
-            var plain = ""
-            var run = ""
-
-            func appendVisible(_ value: String) {
-                plain.append(value)
-                run.append(value)
-            }
-
-            func flushRun() {
-                guard !run.isEmpty else { return }
-                attributed.append(NSAttributedString(string: run, attributes: style.attributes()))
-                run.removeAll()
-            }
-
             var index = 0
             while index < scalars.count {
                 let scalar = scalars[index]
-                if shouldSkipNextLineFeed, scalar.value != 0x0A {
-                    shouldSkipNextLineFeed = false
-                }
 
                 switch scalar.value {
                 case 0x1B:
-                    flushRun()
                     guard processEscape(scalars, index: &index) else {
                         pending = String(String.UnicodeScalarView(scalars[index...]))
                         index = scalars.count
                         continue
                     }
+                case 0x07:
+                    index += 1
+                case 0x08:
+                    cursorCol = max(0, cursorCol - 1)
+                    index += 1
                 case 0x09:
-                    appendVisible("\t")
+                    put("\t")
                     index += 1
                 case 0x0A, 0x0B, 0x0C:
-                    if shouldSkipNextLineFeed, scalar.value == 0x0A {
-                        shouldSkipNextLineFeed = false
-                    } else {
-                        appendVisible("\n")
-                    }
+                    lineFeed()
                     index += 1
                 case 0x0D:
-                    appendVisible("\n")
+                    cursorCol = 0
                     index += 1
-                    if scalars.indices.contains(index), scalars[index].value == 0x0A {
-                        index += 1
-                    } else if index == scalars.count {
-                        shouldSkipNextLineFeed = true
-                    }
                 case 0x00..<0x20, 0x7F:
                     index += 1
                 default:
-                    appendVisible(String(scalar))
+                    put(String(scalar))
                     index += 1
                 }
             }
 
-            flushRun()
-            return StyledOutput(plainText: plain, attributedText: attributed)
+            return renderedOutput()
         }
 
         private func processEscape(_ scalars: [Unicode.Scalar], index: inout Int) -> Bool {
@@ -103,9 +87,7 @@ enum Ansi {
                     let value = scalars[cursor].value
                     if value >= 0x40 && value <= 0x7E {
                         let body = String(String.UnicodeScalarView(scalars[(index + 2)..<cursor]))
-                        if scalars[cursor] == "m" {
-                            style.applySGR(parseParameters(body))
-                        }
+                        handleCSI(body: body, final: Character(String(scalars[cursor])))
                         index = cursor + 1
                         return true
                     }
@@ -139,8 +121,188 @@ enum Ansi {
                 return true
             }
 
+            switch introducer {
+            case "7":
+                saveCursor()
+            case "8":
+                restoreCursor()
+            case "D":
+                lineFeed()
+            case "E":
+                cursorCol = 0
+                lineFeed()
+            case "M":
+                cursorRow = max(0, cursorRow - 1)
+            case "c":
+                reset()
+            default:
+                break
+            }
             index += 2
             return true
+        }
+
+        private func handleCSI(body: String, final: Character) {
+            let privateMode = body.first == "?"
+            guard !privateMode else { return }
+
+            let parameters = parseParameters(body)
+            switch final {
+            case "A":
+                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+            case "B":
+                cursorRow += parameter(parameters, at: 0, defaultValue: 1)
+                ensureCursorRow()
+            case "C":
+                cursorCol += parameter(parameters, at: 0, defaultValue: 1)
+            case "D":
+                cursorCol = max(0, cursorCol - parameter(parameters, at: 0, defaultValue: 1))
+            case "E":
+                cursorRow += parameter(parameters, at: 0, defaultValue: 1)
+                cursorCol = 0
+                ensureCursorRow()
+            case "F":
+                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+                cursorCol = 0
+            case "G":
+                cursorCol = max(0, parameter(parameters, at: 0, defaultValue: 1) - 1)
+            case "H", "f":
+                cursorRow = max(0, parameter(parameters, at: 0, defaultValue: 1) - 1)
+                cursorCol = max(0, parameter(parameters, at: 1, defaultValue: 1) - 1)
+                ensureCursorRow()
+            case "J":
+                eraseDisplay(parameter(parameters, at: 0, defaultValue: 0))
+            case "K":
+                eraseLine(parameter(parameters, at: 0, defaultValue: 0))
+            case "X":
+                eraseCharacters(parameter(parameters, at: 0, defaultValue: 1))
+            case "m":
+                style.applySGR(parameters)
+            case "s":
+                saveCursor()
+            case "u":
+                restoreCursor()
+            default:
+                break
+            }
+        }
+
+        private func put(_ value: String) {
+            ensureCursorRow()
+            while lines[cursorRow].count < cursorCol {
+                lines[cursorRow].append(Cell(text: " ", style: style))
+            }
+            if cursorCol < lines[cursorRow].count {
+                lines[cursorRow][cursorCol] = Cell(text: value, style: style)
+            } else {
+                lines[cursorRow].append(Cell(text: value, style: style))
+            }
+            cursorCol += 1
+        }
+
+        private func lineFeed() {
+            cursorRow += 1
+            cursorCol = 0
+            ensureCursorRow()
+        }
+
+        private func ensureCursorRow() {
+            while cursorRow >= lines.count {
+                lines.append([])
+            }
+        }
+
+        private func eraseDisplay(_ mode: Int) {
+            switch mode {
+            case 0:
+                eraseLine(0)
+                if cursorRow + 1 < lines.count {
+                    lines.removeSubrange((cursorRow + 1)..<lines.count)
+                }
+            case 1:
+                eraseLine(1)
+                if cursorRow > 0 {
+                    for row in 0..<cursorRow {
+                        lines[row] = []
+                    }
+                }
+            case 2, 3:
+                lines = [[]]
+                cursorRow = 0
+                cursorCol = 0
+            default:
+                break
+            }
+        }
+
+        private func eraseLine(_ mode: Int) {
+            ensureCursorRow()
+            switch mode {
+            case 0:
+                if cursorCol < lines[cursorRow].count {
+                    lines[cursorRow].removeSubrange(cursorCol..<lines[cursorRow].count)
+                }
+            case 1:
+                while lines[cursorRow].count <= cursorCol {
+                    lines[cursorRow].append(Cell(text: " ", style: style))
+                }
+                for col in 0...cursorCol {
+                    lines[cursorRow][col] = Cell(text: " ", style: style)
+                }
+            case 2:
+                lines[cursorRow] = []
+            default:
+                break
+            }
+        }
+
+        private func eraseCharacters(_ count: Int) {
+            guard count > 0 else { return }
+            ensureCursorRow()
+            let end = min(lines[cursorRow].count, cursorCol + count)
+            guard cursorCol < end else { return }
+            for col in cursorCol..<end {
+                lines[cursorRow][col] = Cell(text: " ", style: style)
+            }
+        }
+
+        private func saveCursor() {
+            savedCursorRow = cursorRow
+            savedCursorCol = cursorCol
+        }
+
+        private func restoreCursor() {
+            cursorRow = max(0, savedCursorRow)
+            cursorCol = max(0, savedCursorCol)
+            ensureCursorRow()
+        }
+
+        private func renderedOutput() -> StyledOutput {
+            let attributed = NSMutableAttributedString()
+            var plain = ""
+
+            for (rowIndex, line) in lines.enumerated() {
+                for cell in line {
+                    plain.append(cell.text)
+                    attributed.append(NSAttributedString(string: cell.text, attributes: cell.style.attributes()))
+                }
+                if rowIndex < lines.count - 1 {
+                    plain.append("\n")
+                    attributed.append(NSAttributedString(string: "\n", attributes: TextStyle().attributes()))
+                }
+            }
+
+            return StyledOutput(plainText: plain, attributedText: attributed)
+        }
+
+        private func parameter(_ parameters: [Int?], at index: Int, defaultValue: Int) -> Int {
+            guard parameters.indices.contains(index),
+                  let value = parameters[index],
+                  value != 0
+            else {
+                return defaultValue
+            }
+            return value
         }
     }
 

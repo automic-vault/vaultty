@@ -1676,9 +1676,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             )
         } else {
             let rendered = tab.styledRenderer.process(text)
-            guard !rendered.plainText.isEmpty else { return }
-            tab.blocks[index].output += rendered.plainText
-            tab.blocks[index].attributedOutput.append(rendered.attributedText)
+            tab.blocks[index].output = rendered.plainText
+            tab.blocks[index].attributedOutput = NSMutableAttributedString(
+                attributedString: rendered.attributedText
+            )
         }
 
         tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
