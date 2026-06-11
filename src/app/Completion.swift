@@ -38,7 +38,7 @@ struct CompletionSuggestion {
 
 final class CompletionPopupController: NSObject {
     private static let popupWidth: CGFloat = 360
-    private static let maxPopupHeight: CGFloat = 220
+    private static let maxPopupHeight: CGFloat = 232
 
     private let popover = NSPopover()
     private let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 44))
@@ -74,7 +74,7 @@ final class CompletionPopupController: NSObject {
         self.suggestions = suggestions
         selectedIndex = suggestions.isEmpty ? 0 : (resetSelection ? 0 : min(selectedIndex, suggestions.count - 1))
 
-        let contentHeight = max(CompletionListView.rowHeight, CGFloat(suggestions.count) * CompletionListView.rowHeight)
+        let contentHeight = CompletionListView.contentHeight(forRowCount: suggestions.count)
         let visibleHeight = min(Self.maxPopupHeight, contentHeight)
         let size = NSSize(width: Self.popupWidth, height: visibleHeight)
         scrollView.frame = NSRect(origin: .zero, size: size)
@@ -119,12 +119,19 @@ final class CompletionPopupController: NSObject {
 }
 
 private final class CompletionListView: NSView {
-    static let rowHeight: CGFloat = 34
+    static let rowHeight: CGFloat = 36
+    private static let horizontalPadding: CGFloat = 8
+    private static let verticalPadding: CGFloat = 8
+    private static let rowContentPadding: CGFloat = 10
 
     private var suggestions: [CompletionSuggestion] = []
     private var selectedIndex = 0
 
     override var isFlipped: Bool { true }
+
+    static func contentHeight(forRowCount rowCount: Int) -> CGFloat {
+        max(rowHeight, CGFloat(rowCount) * rowHeight) + verticalPadding * 2
+    }
 
     func update(suggestions: [CompletionSuggestion], selectedIndex: Int) {
         self.suggestions = suggestions
@@ -133,7 +140,12 @@ private final class CompletionListView: NSView {
     }
 
     func rowRect(for row: Int) -> NSRect {
-        NSRect(x: 0, y: CGFloat(row) * Self.rowHeight, width: bounds.width, height: Self.rowHeight)
+        NSRect(
+            x: Self.horizontalPadding,
+            y: Self.verticalPadding + CGFloat(row) * Self.rowHeight,
+            width: max(0, bounds.width - Self.horizontalPadding * 2),
+            height: Self.rowHeight
+        )
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -147,9 +159,9 @@ private final class CompletionListView: NSView {
             if isSelected {
                 NSColor.controlAccentColor.setFill()
                 NSBezierPath(
-                    roundedRect: rowRect.insetBy(dx: 8, dy: 3),
-                    xRadius: 7,
-                    yRadius: 7
+                    roundedRect: rowRect.insetBy(dx: 0, dy: 2),
+                    xRadius: 8,
+                    yRadius: 8
                 ).fill()
             }
 
@@ -167,18 +179,18 @@ private final class CompletionListView: NSView {
         let detail = suggestion.description ?? (suggestion.isFilesystemResult ? "" : suggestion.source)
         let kind = suggestion.isFilesystemResult ? "" : suggestion.kind.label
 
-        let contentRect = rowRect.insetBy(dx: 18, dy: 0)
+        let contentRect = rowRect.insetBy(dx: Self.rowContentPadding, dy: 0)
         let kindWidth: CGFloat = kind.isEmpty ? 0 : 64
         let kindRect = NSRect(
             x: contentRect.maxX - kindWidth,
-            y: rowRect.minY + 9,
+            y: rowRect.minY + 10,
             width: kindWidth,
             height: 16
         )
         let nameMaxX = kind.isEmpty ? contentRect.maxX : kindRect.minX - 8
         let nameRect = NSRect(
             x: contentRect.minX,
-            y: rowRect.minY + (detail.isEmpty ? 9 : 4),
+            y: rowRect.minY + (detail.isEmpty ? 10 : 5),
             width: max(20, nameMaxX - contentRect.minX),
             height: 17
         )
@@ -195,7 +207,7 @@ private final class CompletionListView: NSView {
         if !detail.isEmpty {
             let detailRect = NSRect(
                 x: contentRect.minX,
-                y: rowRect.minY + 19,
+                y: rowRect.minY + 20,
                 width: contentRect.width,
                 height: 13
             )
