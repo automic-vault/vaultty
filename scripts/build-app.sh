@@ -21,7 +21,8 @@ ENV_HELPER="$HELPERS_DIR/vaultty-env"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
-ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
+ICON_BUNDLE="$ROOT_DIR/assets/AppIcon.icon"
+ICON_SOURCE="$ICON_BUNDLE/Assets/Vaultty.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
 FIG_AUTOCOMPLETE_DIR="$ROOT_DIR/target/vendor/fig-autocomplete/package"
 
@@ -77,7 +78,8 @@ ENV_HELPER="$HELPERS_DIR/vaultty-env"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
-ICON_SOURCE="$ROOT_DIR/assets/Icon@2x.png"
+ICON_BUNDLE="$ROOT_DIR/assets/AppIcon.icon"
+ICON_SOURCE="$ICON_BUNDLE/Assets/Vaultty.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
 
 unquote_env_value() {
@@ -176,7 +178,7 @@ verify_signature() {
   codesign --verify --strict --verbose=2 "$path"
 }
 
-bundle_icon() {
+bundle_legacy_icon() {
   if [[ ! -f "$ICON_SOURCE" ]]; then
     echo "App icon not found: $ICON_SOURCE" >&2
     exit 1
@@ -197,6 +199,54 @@ bundle_icon() {
   sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
 
   iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/$APP_NAME.icns"
+}
+
+compile_layered_icon() {
+  if [[ ! -d "$ICON_BUNDLE" ]]; then
+    return 1
+  fi
+  if ! xcrun --find actool >/dev/null 2>&1; then
+    echo "Warning: actool not found; using legacy .icns app icon." >&2
+    return 1
+  fi
+
+  local partial_info_plist icon_file icon_name
+  partial_info_plist="$BUILD_DIR/AppIcon-PartialInfo.plist"
+
+  rm -f "$partial_info_plist" "$RESOURCES_DIR/Assets.car" "$RESOURCES_DIR/AppIcon.icns"
+
+  echo "Compiling layered app icon"
+  if ! xcrun actool \
+    --compile "$RESOURCES_DIR" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_MACOS_VERSION" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$partial_info_plist" \
+    "$ICON_BUNDLE" >/dev/null; then
+    echo "Warning: actool failed to compile $ICON_BUNDLE; using legacy .icns app icon." >&2
+    return 1
+  fi
+
+  if [[ ! -f "$RESOURCES_DIR/Assets.car" || ! -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
+    echo "Warning: actool did not produce the expected layered app icon outputs; using legacy .icns app icon." >&2
+    return 1
+  fi
+
+  icon_file="$(plutil -extract CFBundleIconFile raw "$partial_info_plist" 2>/dev/null || true)"
+  icon_name="$(plutil -extract CFBundleIconName raw "$partial_info_plist" 2>/dev/null || true)"
+  icon_file="${icon_file:-AppIcon}"
+  icon_name="${icon_name:-$icon_file}"
+
+  plutil -replace CFBundleIconFile -string "$icon_file" "$CONTENTS_DIR/Info.plist"
+  plutil -replace CFBundleIconName -string "$icon_name" "$CONTENTS_DIR/Info.plist" 2>/dev/null ||
+    plutil -insert CFBundleIconName -string "$icon_name" "$CONTENTS_DIR/Info.plist"
+}
+
+bundle_icon() {
+  bundle_legacy_icon
+  if compile_layered_icon; then
+    rm -f "$RESOURCES_DIR/$APP_NAME.icns"
+  fi
 }
 
 bundle_completions() {
