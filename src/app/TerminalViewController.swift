@@ -653,6 +653,7 @@ private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = NSButton()
     private let titleLabel = NSTextField(labelWithString: "")
+    private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
@@ -781,6 +782,11 @@ private final class TitleTabButton: NSButton {
         super.draw(dirtyRect)
     }
 
+    override func layout() {
+        super.layout()
+        updateToolTipForCurrentLayout()
+    }
+
     override var intrinsicContentSize: NSSize {
         NSSize(width: preferredWidth, height: TahoeGlassPalette.titleTabHeight)
     }
@@ -797,13 +803,16 @@ private final class TitleTabButton: NSButton {
     }
 
     private var preferredWidth: CGFloat {
-        let titleWidth = ceil((titleLabel.stringValue as NSString).size(withAttributes: [
-            .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
-        ]).width)
         let horizontalInsets = TahoeGlassPalette.titleTabTitleLeadingInset
             + TahoeGlassPalette.titleTabTitleCloseTrailingInset
             + TahoeGlassPalette.titleTabMeasurementSlack
-        return max(TahoeGlassPalette.titleTabMinimumWidth, titleWidth + horizontalInsets)
+        return max(TahoeGlassPalette.titleTabMinimumWidth, titleTextWidth + horizontalInsets)
+    }
+
+    private var titleTextWidth: CGFloat {
+        ceil((titleLabel.stringValue as NSString).size(withAttributes: [
+            .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
+        ]).width)
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -813,10 +822,24 @@ private final class TitleTabButton: NSButton {
 
     func updateTitle(_ title: String, detail: String? = nil) {
         titleLabel.stringValue = title
-        toolTip = detail ?? title
+        toolTipText = detail ?? title
         setAccessibilityLabel(title)
         preferredWidthConstraint?.constant = preferredWidth
         invalidateIntrinsicContentSize()
+        updateToolTipForCurrentLayout()
+    }
+
+    private func updateToolTipForCurrentLayout() {
+        guard titleLabel.bounds.width > 0,
+              titleTextWidth > titleLabel.bounds.width + 0.5,
+              let toolTipText,
+              !toolTipText.isEmpty
+        else {
+            toolTip = nil
+            return
+        }
+
+        toolTip = toolTipText
     }
 
     private func updateAppearance() {
