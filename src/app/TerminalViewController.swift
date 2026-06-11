@@ -1176,6 +1176,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 acceptSelectedCompletion(in: tab)
                 return true
             }
+            if commandSelector == #selector(NSResponder.moveRight(_:)) {
+                acceptSelectedCompletion(in: tab)
+                return true
+            }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 dismissCompletion()
                 return true
