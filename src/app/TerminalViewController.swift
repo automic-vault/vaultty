@@ -1326,11 +1326,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc func closeActiveTabOrWindow(_ sender: Any?) {
-        guard tabs.count > 1 else {
+        guard let activeTabID else {
             view.window?.performClose(sender)
             return
         }
-        guard let activeTabID else { return }
         closeTab(withID: activeTabID)
     }
 
@@ -1350,6 +1349,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard confirmCloseIfNeeded(tab) else {
             return false
         }
+        guard tabs.count > 1 else {
+            view.window?.performClose(nil)
+            return true
+        }
 
         let wasActive = activeTabID == tab.id
         stopTtyModePolling(for: tab)
@@ -1360,10 +1363,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tabButtons.removeValue(forKey: tab.id)
         tabs.remove(at: index)
 
-        if tabs.isEmpty {
-            activeTabID = nil
-            createTab()
-        } else if wasActive {
+        if wasActive {
             let nextIndex = min(index, tabs.count - 1)
             activateTab(tabs[nextIndex].id, tabStripLayoutChanged: true)
         } else {
