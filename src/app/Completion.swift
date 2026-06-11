@@ -1127,8 +1127,9 @@ private final class FigSpecLoader {
             return [:]
         }
 
+        let specsRootPath = specsRoot.standardizedFileURL.path
         for case let url as URL in enumerator where url.pathExtension == "js" {
-            guard url.deletingLastPathComponent() == specsRoot else { continue }
+            guard url.deletingLastPathComponent().standardizedFileURL.path == specsRootPath else { continue }
             output[url.deletingPathExtension().lastPathComponent] = url
         }
         index = output
