@@ -187,6 +187,56 @@ profile_matches_env_helper() {
      "$keychain_groups" == *"${team_identifier}.*"* ]]
 }
 
+describe_provisioning_profile() {
+  local profile_path="$1"
+  local decoded_path name app_identifier team_identifier keychain_groups
+
+  decoded_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-profile.XXXXXX")"
+  if ! decode_provisioning_profile "$profile_path" "$decoded_path"; then
+    rm -f "$decoded_path"
+    printf '  %s: unable to decode\n' "$profile_path" >&2
+    return
+  fi
+
+  name="$(profile_plist_value "$decoded_path" ":Name")"
+  app_identifier="$(profile_plist_value "$decoded_path" ":Entitlements:com.apple.application-identifier")"
+  team_identifier="$(profile_plist_value "$decoded_path" ":Entitlements:com.apple.developer.team-identifier")"
+  keychain_groups="$(profile_plist_value "$decoded_path" ":Entitlements:keychain-access-groups" | tr '\n' ' ')"
+  rm -f "$decoded_path"
+
+  printf '  %s\n' "$profile_path" >&2
+  printf '    name: %s\n' "${name:-unknown}" >&2
+  printf '    application-identifier: %s\n' "${app_identifier:-missing}" >&2
+  printf '    team: %s\n' "${team_identifier:-missing}" >&2
+  printf '    keychain-access-groups: %s\n' "${keychain_groups:-missing}" >&2
+}
+
+print_env_helper_profile_diagnostics() {
+  local search_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+  local profile found=false
+
+  printf 'No matching Developer ID provisioning profile found for %s.\n' "$ENV_HELPER_ID" >&2
+  printf 'Required application-identifier: ZU76A67LGU.%s\n' "$ENV_HELPER_ID" >&2
+  printf 'Required keychain access group: %s\n' "$DOTENV_KEYCHAIN_ACCESS_GROUP" >&2
+  printf 'Searched: %s\n' "$search_dir" >&2
+
+  if [[ -d "$search_dir" ]]; then
+    while IFS= read -r profile; do
+      if [[ "$found" == "false" ]]; then
+        printf 'Installed profiles:\n' >&2
+        found=true
+      fi
+      describe_provisioning_profile "$profile"
+    done < <(find "$search_dir" -type f \( -name '*.provisionprofile' -o -name '*.mobileprovision' \) 2>/dev/null | sort)
+  fi
+
+  if [[ "$found" == "false" ]]; then
+    printf 'Installed profiles: none\n' >&2
+  fi
+
+  printf 'Set VAULTTY_ENV_PROVISIONING_PROFILE to an explicit profile path if it is stored elsewhere.\n' >&2
+}
+
 find_env_helper_provisioning_profile() {
   local search_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
   local profile
@@ -438,8 +488,10 @@ bundle_completions() {
 IDENTITY="$(codesign_identity)"
 ENV_HELPER_PROVISIONING_PROFILE=""
 if [[ "$IDENTITY" != "-" ]]; then
-  ENV_HELPER_PROVISIONING_PROFILE="$(resolve_env_helper_provisioning_profile)" ||
-    die "Set VAULTTY_ENV_PROVISIONING_PROFILE to the Developer ID profile for $ENV_HELPER_ID with $DOTENV_KEYCHAIN_ACCESS_GROUP"
+  if ! ENV_HELPER_PROVISIONING_PROFILE="$(resolve_env_helper_provisioning_profile)"; then
+    print_env_helper_profile_diagnostics
+    exit 1
+  fi
 fi
 
 case "$CONFIGURATION" in
