@@ -1443,14 +1443,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         guard !isApplyingCompletion else { return }
-        guard completionPopup.isShown,
-              let textView = notification.object as? NSTextView,
+        guard let textView = notification.object as? NSTextView,
               let tab = tabs.first(where: { $0.inputView === textView })
         else {
             dismissCompletion()
             return
         }
-        requestCompletion(in: tab, mode: .filtering)
+        if completionPopup.isShown {
+            requestCompletion(in: tab, mode: .filtering)
+        } else if shouldStartAutomaticCompletion(in: textView) {
+            requestCompletion(in: tab, mode: .automatic)
+        } else {
+            dismissCompletion()
+        }
     }
 
     func textShouldBeginEditing(_ textObject: NSText) -> Bool {
@@ -1702,8 +1707,21 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private enum CompletionRequestMode {
         case explicit
+        case automatic
         case filtering
         case continuation
+    }
+
+    private func shouldStartAutomaticCompletion(in textView: NSTextView) -> Bool {
+        let selectedRange = textView.selectedRange()
+        guard selectedRange.length == 0 else { return false }
+
+        let parsed = ShellCompletionParser.parse(input: textView.string, cursorOffset: selectedRange.location)
+        guard parsed.commandTokenIndex != nil, !parsed.isCompletingCommand else { return false }
+
+        let prefix = (textView.string as NSString).substring(to: selectedRange.location)
+        guard let lastCharacter = prefix.last else { return false }
+        return lastCharacter.isWhitespace || !parsed.currentTokenText.isEmpty
     }
 
     private func requestCompletion(in tab: TerminalTab, mode: CompletionRequestMode) {
