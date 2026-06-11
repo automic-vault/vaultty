@@ -1700,27 +1700,57 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return NSRect(x: x, y: y, width: width, height: height)
         }
 
+        func rectInTextViewCoordinates(from textContainerRect: NSRect) -> NSRect {
+            let origin = textView.textContainerOrigin
+            return NSRect(
+                x: origin.x + textContainerRect.minX,
+                y: origin.y + textContainerRect.minY,
+                width: textContainerRect.width,
+                height: textContainerRect.height
+            )
+        }
+
         let textViewRect = textView.convert(textView.bounds, to: containerView)
+        let lineHeight = textView.font.map { textView.layoutManager?.defaultLineHeight(for: $0) ?? $0.boundingRectForFont.height } ?? 16
         let fallbackRect = NSRect(
             x: textViewRect.minX + textView.textContainerInset.width,
             y: textViewRect.minY + textView.textContainerInset.height,
             width: 1,
-            height: textView.font?.boundingRectForFont.height ?? 16
+            height: lineHeight
         )
 
-        let selectedRange = textView.selectedRange()
-        var actualRange = NSRange(location: 0, length: 0)
-        let screenRect = textView.firstRect(
-            forCharacterRange: NSRange(location: selectedRange.location, length: 0),
-            actualRange: &actualRange
-        )
-        guard let window = textView.window, !screenRect.isEmpty else {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer
+        else {
             return boundedAnchorRect(fallbackRect)
         }
 
-        let windowRect = window.convertFromScreen(screenRect)
-        let localRect = containerView.convert(windowRect, from: nil)
-        return boundedAnchorRect(localRect)
+        layoutManager.ensureLayout(for: textContainer)
+
+        let selectedRange = textView.selectedRange()
+        let textLength = (textView.string as NSString).length
+        let cursorLocation = min(max(0, selectedRange.location), textLength)
+        guard textLength > 0, layoutManager.numberOfGlyphs > 0 else {
+            return boundedAnchorRect(fallbackRect)
+        }
+
+        let characterLocation = cursorLocation < textLength ? cursorLocation : textLength - 1
+        let glyphIndex = min(
+            layoutManager.glyphIndexForCharacter(at: characterLocation),
+            max(0, layoutManager.numberOfGlyphs - 1)
+        )
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1),
+            in: textContainer
+        )
+        let caretX = cursorLocation < textLength ? glyphRect.minX : glyphRect.maxX
+        let textCaretRect = rectInTextViewCoordinates(from: NSRect(
+            x: caretX,
+            y: glyphRect.minY,
+            width: 1,
+            height: max(lineHeight, glyphRect.height)
+        ))
+        return boundedAnchorRect(textView.convert(textCaretRect, to: containerView))
     }
 
     private func submitCommand(in tab: TerminalTab) {
