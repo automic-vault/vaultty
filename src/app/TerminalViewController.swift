@@ -31,7 +31,9 @@ private enum TahoeGlassPalette {
     static let titleTabLeadingInset: CGFloat = 104
     static let titleTabMinimumWidth: CGFloat = 112
     static let titleTabTitleLeadingInset: CGFloat = 16
-    static let titleTabTitleTrailingInset: CGFloat = 34
+    static let titleTabTitleTrailingInset: CGFloat = 16
+    static let titleTabTitleCloseTrailingInset: CGFloat = 34
+    static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 18
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let windowTintStart = NSColor(
@@ -651,6 +653,8 @@ private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = NSButton(title: "x", target: nil, action: nil)
     private let titleLabel = NSTextField(labelWithString: "")
+    private var titleTrailingConstraint: NSLayoutConstraint?
+    private var preferredWidthConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
@@ -704,15 +708,18 @@ private final class TitleTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
 
+        let titleTrailingConstraint = titleLabel.trailingAnchor.constraint(
+            equalTo: trailingAnchor,
+            constant: -TahoeGlassPalette.titleTabTitleTrailingInset
+        )
+        self.titleTrailingConstraint = titleTrailingConstraint
+
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(
                 equalTo: leadingAnchor,
                 constant: TahoeGlassPalette.titleTabTitleLeadingInset
             ),
-            titleLabel.trailingAnchor.constraint(
-                equalTo: trailingAnchor,
-                constant: -TahoeGlassPalette.titleTabTitleTrailingInset
-            ),
+            titleTrailingConstraint,
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             closeButton.trailingAnchor.constraint(
@@ -773,15 +780,28 @@ private final class TitleTabButton: NSButton {
     }
 
     override var intrinsicContentSize: NSSize {
+        NSSize(width: preferredWidth, height: TahoeGlassPalette.titleTabHeight)
+    }
+
+    var widthConstraints: [NSLayoutConstraint] {
+        let preferredWidthConstraint = widthAnchor.constraint(equalToConstant: preferredWidth)
+        preferredWidthConstraint.priority = .defaultHigh
+        self.preferredWidthConstraint = preferredWidthConstraint
+
+        return [
+            preferredWidthConstraint,
+            widthAnchor.constraint(greaterThanOrEqualToConstant: TahoeGlassPalette.titleTabMinimumWidth)
+        ]
+    }
+
+    private var preferredWidth: CGFloat {
         let titleWidth = ceil((titleLabel.stringValue as NSString).size(withAttributes: [
             .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
         ]).width)
         let horizontalInsets = TahoeGlassPalette.titleTabTitleLeadingInset
-            + TahoeGlassPalette.titleTabTitleTrailingInset
-        return NSSize(
-            width: max(TahoeGlassPalette.titleTabMinimumWidth, titleWidth + horizontalInsets),
-            height: TahoeGlassPalette.titleTabHeight
-        )
+            + TahoeGlassPalette.titleTabTitleCloseTrailingInset
+            + TahoeGlassPalette.titleTabMeasurementSlack
+        return max(TahoeGlassPalette.titleTabMinimumWidth, titleWidth + horizontalInsets)
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -793,10 +813,16 @@ private final class TitleTabButton: NSButton {
         titleLabel.stringValue = title
         toolTip = detail ?? title
         setAccessibilityLabel(title)
+        preferredWidthConstraint?.constant = preferredWidth
         invalidateIntrinsicContentSize()
     }
 
     private func updateAppearance() {
+        titleTrailingConstraint?.constant = -(isHovering
+            ? TahoeGlassPalette.titleTabTitleCloseTrailingInset
+            : TahoeGlassPalette.titleTabTitleTrailingInset
+        )
+
         if isSelectedTab {
             fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleTextActive
@@ -1373,8 +1399,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         button.configureClose(target: self, action: #selector(closeTab(_:)))
         tabButtons[tab.id] = button
         titleTabStack.insertArrangedSubview(button, at: max(0, titleTabStack.arrangedSubviews.count - 1))
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: TahoeGlassPalette.titleTabMinimumWidth),
+        NSLayoutConstraint.activate(button.widthConstraints + [
             button.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight)
         ])
     }
