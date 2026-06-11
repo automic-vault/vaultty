@@ -3,22 +3,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+static NSString *const VAULTTY_DOTENV_KEYCHAIN_ACCESS_GROUP =
+    @"ZU76A67LGU.com.automicvault.dotenv";
+
 static NSMutableDictionary *vaultty_password_query(NSString *service,
                                                    NSString *account) {
   NSMutableDictionary *query = [@{
     (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
     (__bridge id)kSecAttrService: service,
     (__bridge id)kSecAttrAccount: account,
+    (__bridge id)kSecUseDataProtectionKeychain: @YES,
+    (__bridge id)kSecAttrAccessGroup: VAULTTY_DOTENV_KEYCHAIN_ACCESS_GROUP,
   } mutableCopy];
-
-  SecKeychainRef defaultKeychain = NULL;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  OSStatus status = SecKeychainCopyDefault(&defaultKeychain);
-#pragma clang diagnostic pop
-  if (status == errSecSuccess && defaultKeychain != NULL) {
-    query[(__bridge id)kSecUseKeychain] = CFBridgingRelease(defaultKeychain);
-  }
 
   return query;
 }

@@ -7,7 +7,9 @@ CONFIGURATION="${CONFIGURATION:-release}"
 APP_NAME="Vaultty"
 APP_BUNDLE_ID="com.automicvault.vaultty"
 ENV_HELPER_ID="com.automicvault.vaultty.env"
+ENV_HELPER_APP_NAME="VaulttyEnv"
 GHOSTTY_PROBE_ID="com.automicvault.vaultty.ghostty-probe"
+DOTENV_KEYCHAIN_ACCESS_GROUP="${VAULTTY_DOTENV_KEYCHAIN_ACCESS_GROUP:-${AV_DOTENV_KEYCHAIN_ACCESS_GROUP:-ZU76A67LGU.com.automicvault.dotenv}}"
 MIN_MACOS_VERSION="26.1"
 BUILD_DIR="$ROOT_DIR/target/app/$CONFIGURATION"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
@@ -17,7 +19,12 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 HELPERS_DIR="$CONTENTS_DIR/Helpers"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
-ENV_HELPER="$HELPERS_DIR/vaultty-env"
+ENV_HELPER_APP_DIR="$HELPERS_DIR/$ENV_HELPER_APP_NAME.app"
+ENV_HELPER_APP_CONTENTS_DIR="$ENV_HELPER_APP_DIR/Contents"
+ENV_HELPER_APP_MACOS_DIR="$ENV_HELPER_APP_CONTENTS_DIR/MacOS"
+ENV_HELPER_APP_RESOURCES_DIR="$ENV_HELPER_APP_CONTENTS_DIR/Resources"
+ENV_HELPER="$ENV_HELPER_APP_MACOS_DIR/vaultty-env"
+ENV_HELPER_ENTITLEMENTS="$BUILD_DIR/vaultty-env.entitlements"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
@@ -74,7 +81,12 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 HELPERS_DIR="$CONTENTS_DIR/Helpers"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 EXECUTABLE="$MACOS_DIR/$APP_NAME"
-ENV_HELPER="$HELPERS_DIR/vaultty-env"
+ENV_HELPER_APP_DIR="$HELPERS_DIR/$ENV_HELPER_APP_NAME.app"
+ENV_HELPER_APP_CONTENTS_DIR="$ENV_HELPER_APP_DIR/Contents"
+ENV_HELPER_APP_MACOS_DIR="$ENV_HELPER_APP_CONTENTS_DIR/MacOS"
+ENV_HELPER_APP_RESOURCES_DIR="$ENV_HELPER_APP_CONTENTS_DIR/Resources"
+ENV_HELPER="$ENV_HELPER_APP_MACOS_DIR/vaultty-env"
+ENV_HELPER_ENTITLEMENTS="$BUILD_DIR/vaultty-env.entitlements"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
 GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
@@ -110,6 +122,117 @@ env_file_value() {
   ' "$file"
 }
 
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+normalize_profile_path() {
+  local path="$1"
+  path="$(unquote_env_value "$path")"
+  if [[ "$path" == "~/"* ]]; then
+    path="$HOME/${path#~/}"
+  fi
+  printf '%s' "$path"
+}
+
+decode_provisioning_profile() {
+  local profile_path="$1"
+  local output_path="$2"
+
+  if /usr/bin/security cms -D -i "$profile_path" >"$output_path" 2>/dev/null; then
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1 &&
+      openssl smime \
+        -inform DER \
+        -verify \
+        -noverify \
+        -in "$profile_path" \
+        -out "$output_path" \
+        >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+profile_plist_value() {
+  local plist_path="$1"
+  local key_path="$2"
+  /usr/libexec/PlistBuddy -c "Print $key_path" "$plist_path" 2>/dev/null || true
+}
+
+profile_matches_env_helper() {
+  local profile_path="$1"
+  local decoded_path app_identifier team_identifier expected_app_identifier keychain_groups
+
+  decoded_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-profile.XXXXXX")"
+  if ! decode_provisioning_profile "$profile_path" "$decoded_path"; then
+    rm -f "$decoded_path"
+    return 1
+  fi
+
+  app_identifier="$(profile_plist_value "$decoded_path" ":Entitlements:com.apple.application-identifier")"
+  team_identifier="$(profile_plist_value "$decoded_path" ":Entitlements:com.apple.developer.team-identifier")"
+  keychain_groups="$(profile_plist_value "$decoded_path" ":Entitlements:keychain-access-groups")"
+  rm -f "$decoded_path"
+
+  expected_app_identifier="${team_identifier}.${ENV_HELPER_ID}"
+  [[ -n "$team_identifier" ]] || return 1
+  [[ "$app_identifier" == "$expected_app_identifier" ]] || return 1
+  [[ "$DOTENV_KEYCHAIN_ACCESS_GROUP" == "${team_identifier}."* ]] || return 1
+  [[ "$keychain_groups" == *"$DOTENV_KEYCHAIN_ACCESS_GROUP"* ||
+     "$keychain_groups" == *"${team_identifier}.*"* ]]
+}
+
+find_env_helper_provisioning_profile() {
+  local search_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+  local profile
+  [[ -d "$search_dir" ]] || return 1
+
+  while IFS= read -r profile; do
+    if profile_matches_env_helper "$profile"; then
+      printf '%s\n' "$profile"
+      return 0
+    fi
+  done < <(find "$search_dir" -type f \( -name '*.provisionprofile' -o -name '*.mobileprovision' \) 2>/dev/null | sort)
+
+  return 1
+}
+
+resolve_env_helper_provisioning_profile() {
+  local profile="${VAULTTY_ENV_PROVISIONING_PROFILE:-${AV_VAULTTY_ENV_PROVISIONING_PROFILE:-}}"
+  if [[ -n "$profile" ]]; then
+    profile="$(normalize_profile_path "$profile")"
+    [[ -f "$profile" ]] || die "Vaultty env helper provisioning profile not found: $profile"
+    if ! profile_matches_env_helper "$profile"; then
+      die "Vaultty env helper provisioning profile does not match $ENV_HELPER_ID and $DOTENV_KEYCHAIN_ACCESS_GROUP: $profile"
+    fi
+    printf '%s\n' "$profile"
+    return 0
+  fi
+
+  find_env_helper_provisioning_profile || return 1
+}
+
+write_env_helper_entitlements() {
+  cat >"$ENV_HELPER_ENTITLEMENTS" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>${DOTENV_KEYCHAIN_ACCESS_GROUP}</string>
+  </array>
+</dict>
+</plist>
+PLIST
+}
+
 app_version() {
   local pkgid version
   pkgid="$(cargo pkgid --manifest-path "$ROOT_DIR/Cargo.toml")"
@@ -138,6 +261,42 @@ render_info_plist() {
     -e "s/@APP_VERSION@/$escaped_version/g" \
     -e "s/@APP_BUILD_NUMBER@/$escaped_build_number/g" \
     "$ROOT_DIR/src/app/Info.plist.in" >"$CONTENTS_DIR/Info.plist"
+}
+
+write_env_helper_info_plist() {
+  local version build_number
+  version="${APP_VERSION:-$(app_version)}"
+  build_number="${APP_BUILD_NUMBER:-$(app_build_number)}"
+
+  cat >"$ENV_HELPER_APP_CONTENTS_DIR/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>vaultty-env</string>
+  <key>CFBundleIdentifier</key>
+  <string>${ENV_HELPER_ID}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Vaultty Env</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${version}</string>
+  <key>CFBundleVersion</key>
+  <string>${build_number}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>${MIN_MACOS_VERSION}</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+PLIST
 }
 
 codesign_identity() {
@@ -176,6 +335,16 @@ codesign_runtime() {
 verify_signature() {
   local path="$1"
   codesign --verify --strict --verbose=2 "$path"
+}
+
+verify_env_helper_entitlement() {
+  local output
+  output="$(codesign -d --entitlements - "$ENV_HELPER_APP_DIR" 2>/dev/null)" ||
+    die "Failed to read entitlements for $ENV_HELPER_APP_DIR"
+  if [[ "$output" != *"$DOTENV_KEYCHAIN_ACCESS_GROUP"* ]]; then
+    echo "$output" >&2
+    die "$ENV_HELPER_APP_DIR is missing keychain access group $DOTENV_KEYCHAIN_ACCESS_GROUP"
+  fi
 }
 
 bundle_legacy_icon() {
@@ -267,6 +436,11 @@ bundle_completions() {
 }
 
 IDENTITY="$(codesign_identity)"
+ENV_HELPER_PROVISIONING_PROFILE=""
+if [[ "$IDENTITY" != "-" ]]; then
+  ENV_HELPER_PROVISIONING_PROFILE="$(resolve_env_helper_provisioning_profile)" ||
+    die "Set VAULTTY_ENV_PROVISIONING_PROFILE to the Developer ID profile for $ENV_HELPER_ID with $DOTENV_KEYCHAIN_ACCESS_GROUP"
+fi
 
 case "$CONFIGURATION" in
   debug)
@@ -291,9 +465,19 @@ cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env
 
 echo "Building Vaultty app bundle"
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$HELPERS_DIR" "$FRAMEWORKS_DIR"
+mkdir -p \
+  "$MACOS_DIR" \
+  "$RESOURCES_DIR" \
+  "$HELPERS_DIR" \
+  "$FRAMEWORKS_DIR" \
+  "$ENV_HELPER_APP_MACOS_DIR" \
+  "$ENV_HELPER_APP_RESOURCES_DIR"
 render_info_plist
+write_env_helper_info_plist
 cp "$RUST_BIN_DIR/vaultty-env" "$ENV_HELPER"
+if [[ -n "$ENV_HELPER_PROVISIONING_PROFILE" ]]; then
+  cp "$ENV_HELPER_PROVISIONING_PROFILE" "$ENV_HELPER_APP_CONTENTS_DIR/embedded.provisionprofile"
+fi
 bundle_icon
 bundle_completions
 
@@ -362,10 +546,13 @@ swiftc \
   -o "$EXECUTABLE"
 
 echo "Signing with $IDENTITY"
+write_env_helper_entitlements
 codesign_runtime \
+  --entitlements "$ENV_HELPER_ENTITLEMENTS" \
   --identifier "$ENV_HELPER_ID" \
-  "$ENV_HELPER"
-verify_signature "$ENV_HELPER"
+  "$ENV_HELPER_APP_DIR"
+verify_signature "$ENV_HELPER_APP_DIR"
+verify_env_helper_entitlement
 if [[ -f "$GHOSTTY_DYLIB" ]]; then
   codesign_runtime "$GHOSTTY_DYLIB"
   verify_signature "$GHOSTTY_DYLIB"

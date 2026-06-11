@@ -1412,6 +1412,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func bundledExecutablePath(named name: String) -> String? {
+        if name == "vaultty-env" {
+            let nestedHelperURL = Bundle.main.bundleURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Helpers", isDirectory: true)
+                .appendingPathComponent("VaulttyEnv.app", isDirectory: true)
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("MacOS", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: false)
+            if FileManager.default.isExecutableFile(atPath: nestedHelperURL.path) {
+                return nestedHelperURL.path
+            }
+        }
+
         let helpersURL = Bundle.main.bundleURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
