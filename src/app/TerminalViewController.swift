@@ -25,6 +25,7 @@ private enum TahoeGlassPalette {
     static let titleBarHeight: CGFloat = 50
     static let titleTabHeight: CGFloat = 34
     static let titleTabTopInset: CGFloat = titleBarHeight - titleTabHeight
+    static let titleTabCornerRadius: CGFloat = max(0, windowCornerRadius - (titleTabTopInset * 0.535))
     static let titleTabBottomInset: CGFloat = 0
     static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
@@ -67,6 +68,12 @@ private final class TahoeGlassRootView: NSView {
     var activeTabFrame: CGRect? {
         didSet {
             guard activeTabFrame != oldValue else { return }
+            needsLayout = true
+        }
+    }
+    var tabStripFrame: CGRect? {
+        didSet {
+            guard tabStripFrame != oldValue else { return }
             needsLayout = true
         }
     }
@@ -132,7 +139,8 @@ private final class TahoeGlassRootView: NSView {
         topBarLayer.frame = bounds
         topBarLayer.path = topBarPath(
             contentTop: contentTop,
-            activeTabFrame: activeTabFrame
+            activeTabFrame: activeTabFrame,
+            tabStripFrame: tabStripFrame
         )
         topBarSeparatorLayer.frame = bounds
         topBarSeparatorLayer.path = topBarSeparatorPath(
@@ -141,7 +149,11 @@ private final class TahoeGlassRootView: NSView {
         )
     }
 
-    private func topBarPath(contentTop: CGFloat, activeTabFrame: CGRect?) -> CGPath {
+    private func topBarPath(
+        contentTop: CGFloat,
+        activeTabFrame: CGRect?,
+        tabStripFrame: CGRect?
+    ) -> CGPath {
         let path = CGMutablePath()
         let topBarFrame = CGRect(
             x: 0,
@@ -153,10 +165,65 @@ private final class TahoeGlassRootView: NSView {
         if let activeTabFrame {
             let cutoutFrame = activeTabFrame.intersection(topBarFrame)
             if !cutoutFrame.isNull {
-                path.addRect(cutoutFrame)
+                let roundsLeadingCorner = tabStripFrame.map {
+                    abs(cutoutFrame.minX - $0.minX) < 0.5
+                } ?? false
+                let roundsTrailingCorner = tabStripFrame.map {
+                    abs(cutoutFrame.maxX - $0.maxX) < 0.5
+                } ?? false
+                path.addPath(topRoundedRectPath(
+                    in: cutoutFrame,
+                    radius: TahoeGlassPalette.titleTabCornerRadius,
+                    roundsLeadingCorner: roundsLeadingCorner,
+                    roundsTrailingCorner: roundsTrailingCorner
+                ))
             }
         }
 
+        return path
+    }
+
+    private func topRoundedRectPath(
+        in rect: CGRect,
+        radius requestedRadius: CGFloat,
+        roundsLeadingCorner: Bool,
+        roundsTrailingCorner: Bool
+    ) -> CGPath {
+        guard roundsLeadingCorner || roundsTrailingCorner else {
+            let path = CGMutablePath()
+            path.addRect(rect)
+            return path
+        }
+
+        let radius = min(requestedRadius, rect.width / 2, rect.height)
+        let controlOffset = radius * 0.5522847498307936
+        let path = CGMutablePath()
+
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        if roundsLeadingCorner {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+            path.addCurve(
+                to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+                control1: CGPoint(x: rect.minX, y: rect.maxY - radius + controlOffset),
+                control2: CGPoint(x: rect.minX + radius - controlOffset, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
+
+        if roundsTrailingCorner {
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+                control1: CGPoint(x: rect.maxX - radius + controlOffset, y: rect.maxY),
+                control2: CGPoint(x: rect.maxX, y: rect.maxY - radius + controlOffset)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
+
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
         return path
     }
 
@@ -216,12 +283,19 @@ private final class TitleTabBorderView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        TahoeGlassPalette.titleTopHairline.setStroke()
+        let outline = topRoundedOutlinePath(
+            in: bounds.insetBy(dx: 0.5, dy: 0.5),
+            radius: TahoeGlassPalette.titleTabCornerRadius
+        )
+        outline.lineWidth = 1
+        outline.stroke()
+
         TahoeGlassPalette.titleTopHairline.setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
-        NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill()
 
         guard let tabStack else { return }
-        for subview in tabStack.arrangedSubviews where !subview.isHidden {
+        let visibleSubviews = tabStack.arrangedSubviews.filter { !$0.isHidden }
+        for subview in visibleSubviews.dropLast() {
             let rect = subview.convert(subview.bounds, to: self)
             NSRect(
                 x: floor(rect.maxX) - 1,
@@ -230,6 +304,29 @@ private final class TitleTabBorderView: NSView {
                 height: bounds.height
             ).fill()
         }
+    }
+
+    private func topRoundedOutlinePath(in rect: NSRect, radius requestedRadius: CGFloat) -> NSBezierPath {
+        let radius = min(requestedRadius, rect.width / 2, rect.height)
+        let controlOffset = radius * 0.5522847498307936
+        let path = NSBezierPath()
+
+        path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + radius))
+        path.curve(
+            to: NSPoint(x: rect.minX + radius, y: rect.minY),
+            controlPoint1: NSPoint(x: rect.minX, y: rect.minY + radius - controlOffset),
+            controlPoint2: NSPoint(x: rect.minX + radius - controlOffset, y: rect.minY)
+        )
+        path.line(to: NSPoint(x: rect.maxX - radius, y: rect.minY))
+        path.curve(
+            to: NSPoint(x: rect.maxX, y: rect.minY + radius),
+            controlPoint1: NSPoint(x: rect.maxX - radius + controlOffset, y: rect.minY),
+            controlPoint2: NSPoint(x: rect.maxX, y: rect.minY + radius - controlOffset)
+        )
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+
+        return path
     }
 }
 
@@ -1236,6 +1333,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func updateActiveTabCutoutFrame() {
         guard let rootView = view as? TahoeGlassRootView else { return }
+        rootView.tabStripFrame = titleTabStack.convert(titleTabStack.bounds, to: rootView)
         guard let activeTabID,
               let button = tabButtons[activeTabID],
               button.superview != nil

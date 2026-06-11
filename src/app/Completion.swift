@@ -619,6 +619,14 @@ final class VaulttyCompletionEngine {
     }
 
     private func commandSuggestions(prefix: String, request: CompletionRequest) -> [CompletionSuggestion] {
+        if shouldCompleteCommandAsPath(prefix: prefix) {
+            return rankedSuggestions(
+                commandPathSuggestions(prefix: prefix, cwd: request.cwd),
+                prefix: prefix,
+                limit: request.limit
+            )
+        }
+
         let cacheKey = request.environment["PATH"] ?? ""
         if let cached = commandCache[cacheKey] {
             return cached.filter { matches(prefix: prefix, candidate: $0.displayText) }
@@ -649,6 +657,25 @@ final class VaulttyCompletionEngine {
         }
         commandCache[cacheKey] = suggestions
         return suggestions.filter { matches(prefix: prefix, candidate: $0.displayText) }
+    }
+
+    private func shouldCompleteCommandAsPath(prefix: String) -> Bool {
+        prefix.contains("/")
+    }
+
+    private func commandPathSuggestions(prefix: String, cwd: String) -> [CompletionSuggestion] {
+        pathSuggestions(prefix: prefix, cwd: cwd, foldersOnly: false).filter { suggestion in
+            switch suggestion.kind {
+            case .folder:
+                return true
+            case .file:
+                let executablePath = (suggestion.source as NSString)
+                    .appendingPathComponent(suggestion.displayText)
+                return fileManager.isExecutableFile(atPath: executablePath)
+            default:
+                return false
+            }
+        }
     }
 
     private func pathSuggestions(prefix: String, cwd: String, foldersOnly: Bool) -> [CompletionSuggestion] {
@@ -718,7 +745,13 @@ final class VaulttyCompletionEngine {
         } else {
             let nsPrefix = prefix as NSString
             let directoryName = nsPrefix.deletingLastPathComponent
-            basePrefix = directoryName.isEmpty || directoryName == "." ? "" : directoryName + "/"
+            if directoryName.isEmpty {
+                basePrefix = ""
+            } else if directoryName == "." {
+                basePrefix = prefix.hasPrefix("./") ? "./" : ""
+            } else {
+                basePrefix = directoryName + "/"
+            }
         }
         let raw = basePrefix + suggestionName
         return shellEscapePath(raw) + (isDirectory ? "" : " ")

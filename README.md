@@ -7,7 +7,9 @@ persistent shell process, private OSC lifecycle markers, and a bundled
 `vaultty-env` helper that reads Automic Vault dotenv keys directly from Keychain.
 It does not call `av dotenv export`.
 
-Build:
+![Vaultty screenshot](assets/screenshot.webp)
+
+## Build
 
 ```sh
 scripts/build-app.sh --release
@@ -16,7 +18,7 @@ scripts/build-app.sh --release
 The build script signs the app with the Developer ID identity associated with
 `TEAM_COMMON_NAME` in `~/src/automic-vault/.env`.
 
-Versioning:
+## Versioning
 
 `Cargo.toml` is the source of truth. Bump `package.version` to release a new
 app version. `scripts/build-app.sh` stamps that into
@@ -24,7 +26,7 @@ app version. `scripts/build-app.sh` stamps that into
 and `scripts/publish.sh` publishes GitHub release tag `vX.Y.Z` from the built app
 bundle.
 
-Ghostty integration:
+## Ghostty Integration
 
 ```sh
 scripts/build-libghostty-vt.sh
