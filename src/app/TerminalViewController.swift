@@ -337,6 +337,77 @@ private final class TitleTabBorderView: NSView {
     }
 }
 
+private func titleSegmentFillPath(
+    in rect: NSRect,
+    isFlipped: Bool,
+    roundsLeadingTopCorner: Bool,
+    roundsTrailingTopCorner: Bool
+) -> NSBezierPath {
+    let radius = min(TahoeGlassPalette.titleTabCornerRadius, rect.width / 2, rect.height)
+    let controlOffset = radius * 0.5522847498307936
+    let path = NSBezierPath()
+
+    guard roundsLeadingTopCorner || roundsTrailingTopCorner else {
+        path.appendRect(rect)
+        return path
+    }
+
+    if isFlipped {
+        path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
+        if roundsLeadingTopCorner {
+            path.line(to: NSPoint(x: rect.minX, y: rect.minY + radius))
+            path.curve(
+                to: NSPoint(x: rect.minX + radius, y: rect.minY),
+                controlPoint1: NSPoint(x: rect.minX, y: rect.minY + radius - controlOffset),
+                controlPoint2: NSPoint(x: rect.minX + radius - controlOffset, y: rect.minY)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.minX, y: rect.minY))
+        }
+
+        if roundsTrailingTopCorner {
+            path.line(to: NSPoint(x: rect.maxX - radius, y: rect.minY))
+            path.curve(
+                to: NSPoint(x: rect.maxX, y: rect.minY + radius),
+                controlPoint1: NSPoint(x: rect.maxX - radius + controlOffset, y: rect.minY),
+                controlPoint2: NSPoint(x: rect.maxX, y: rect.minY + radius - controlOffset)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+        }
+
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+    } else {
+        path.move(to: NSPoint(x: rect.minX, y: rect.minY))
+        if roundsLeadingTopCorner {
+            path.line(to: NSPoint(x: rect.minX, y: rect.maxY - radius))
+            path.curve(
+                to: NSPoint(x: rect.minX + radius, y: rect.maxY),
+                controlPoint1: NSPoint(x: rect.minX, y: rect.maxY - radius + controlOffset),
+                controlPoint2: NSPoint(x: rect.minX + radius - controlOffset, y: rect.maxY)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.minX, y: rect.maxY))
+        }
+
+        if roundsTrailingTopCorner {
+            path.line(to: NSPoint(x: rect.maxX - radius, y: rect.maxY))
+            path.curve(
+                to: NSPoint(x: rect.maxX, y: rect.maxY - radius),
+                controlPoint1: NSPoint(x: rect.maxX - radius + controlOffset, y: rect.maxY),
+                controlPoint2: NSPoint(x: rect.maxX, y: rect.maxY - radius + controlOffset)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+        }
+
+        path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+    }
+
+    path.close()
+    return path
+}
+
 private final class FlippedDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
@@ -661,6 +732,18 @@ private final class TitleTabButton: NSButton {
     var isSelectedTab = false {
         didSet { updateAppearance() }
     }
+    var roundsLeadingTopCorner = false {
+        didSet {
+            guard roundsLeadingTopCorner != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+    var roundsTrailingTopCorner = false {
+        didSet {
+            guard roundsTrailingTopCorner != oldValue else { return }
+            needsDisplay = true
+        }
+    }
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
         didSet { updateAppearance() }
@@ -778,7 +861,13 @@ private final class TitleTabButton: NSButton {
 
     override func draw(_ dirtyRect: NSRect) {
         fillColor.setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
+        let fillRect = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1))
+        titleSegmentFillPath(
+            in: fillRect,
+            isFlipped: isFlipped,
+            roundsLeadingTopCorner: roundsLeadingTopCorner,
+            roundsTrailingTopCorner: roundsTrailingTopCorner
+        ).fill()
         super.draw(dirtyRect)
     }
 
@@ -873,6 +962,18 @@ private final class TitleAddButton: NSButton {
     private var isHovering = false {
         didSet { updateAppearance() }
     }
+    var roundsLeadingTopCorner = false {
+        didSet {
+            guard roundsLeadingTopCorner != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+    var roundsTrailingTopCorner = false {
+        didSet {
+            guard roundsTrailingTopCorner != oldValue else { return }
+            needsDisplay = true
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -918,7 +1019,13 @@ private final class TitleAddButton: NSButton {
 
     override func draw(_ dirtyRect: NSRect) {
         fillColor.setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1)).fill()
+        let fillRect = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - 1))
+        titleSegmentFillPath(
+            in: fillRect,
+            isFlipped: isFlipped,
+            roundsLeadingTopCorner: roundsLeadingTopCorner,
+            roundsTrailingTopCorner: roundsTrailingTopCorner
+        ).fill()
         super.draw(dirtyRect)
     }
 
@@ -1208,6 +1315,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         view.addSubview(titleTabBorderView)
         view.addSubview(contentContainer)
         titleTabStack.addArrangedSubview(newTabButton)
+        updateTitleSegmentCornerMasks()
 
         NSLayoutConstraint.activate([
             titleTabStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: TahoeGlassPalette.titleTabLeadingInset),
@@ -1247,6 +1355,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        updateTitleSegmentCornerMasks()
         updateActiveTabCutoutFrame()
         titleTabBorderView.needsDisplay = true
         for tab in tabs {
@@ -1430,6 +1539,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         button.configureClose(target: self, action: #selector(closeTab(_:)))
         tabButtons[tab.id] = button
         titleTabStack.insertArrangedSubview(button, at: max(0, titleTabStack.arrangedSubviews.count - 1))
+        updateTitleSegmentCornerMasks()
         NSLayoutConstraint.activate(button.widthConstraints + [
             button.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight)
         ])
@@ -1452,10 +1562,27 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func layoutTabStripBeforeMeasuringSelection() {
         guard view.window != nil else { return }
+        updateTitleSegmentCornerMasks()
         titleTabStack.needsLayout = true
         titleTabBorderView.needsDisplay = true
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
+    }
+
+    private func updateTitleSegmentCornerMasks() {
+        let visibleSegments = titleTabStack.arrangedSubviews.filter { !$0.isHidden }
+        for segment in visibleSegments {
+            let roundsLeading = segment === visibleSegments.first
+            let roundsTrailing = segment === visibleSegments.last
+
+            if let tabButton = segment as? TitleTabButton {
+                tabButton.roundsLeadingTopCorner = roundsLeading
+                tabButton.roundsTrailingTopCorner = roundsTrailing
+            } else if let addButton = segment as? TitleAddButton {
+                addButton.roundsLeadingTopCorner = roundsLeading
+                addButton.roundsTrailingTopCorner = roundsTrailing
+            }
+        }
     }
 
     private func updateActiveTabCutoutFrame() {
