@@ -1554,19 +1554,39 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func completionAnchorRect(for textView: NSTextView, in containerView: NSView) -> NSRect {
+        func boundedAnchorRect(_ rect: NSRect) -> NSRect {
+            let width = max(1, rect.width)
+            let height = max(1, rect.height)
+            let minX = containerView.bounds.minX
+            let maxX = max(minX, containerView.bounds.maxX - width)
+            let minY = containerView.bounds.minY
+            let maxY = max(minY, containerView.bounds.maxY - height)
+            let x = min(max(rect.minX, minX), maxX)
+            let y = min(max(rect.minY, minY), maxY)
+            return NSRect(x: x, y: y, width: width, height: height)
+        }
+
+        let textViewRect = textView.convert(textView.bounds, to: containerView)
+        let fallbackRect = NSRect(
+            x: textViewRect.minX + textView.textContainerInset.width,
+            y: textViewRect.minY + textView.textContainerInset.height,
+            width: 1,
+            height: textView.font?.boundingRectForFont.height ?? 16
+        )
+
         let selectedRange = textView.selectedRange()
         var actualRange = NSRange(location: 0, length: 0)
-        var x: CGFloat = 12
         let screenRect = textView.firstRect(
             forCharacterRange: NSRange(location: selectedRange.location, length: 0),
             actualRange: &actualRange
         )
-        if let window = textView.window, !screenRect.isEmpty {
-            let windowRect = window.convertFromScreen(screenRect)
-            let localRect = containerView.convert(windowRect, from: nil)
-            x = min(max(localRect.midX, 12), max(12, containerView.bounds.width - 12))
+        guard let window = textView.window, !screenRect.isEmpty else {
+            return boundedAnchorRect(fallbackRect)
         }
-        return NSRect(x: x, y: containerView.bounds.maxY - 1, width: 1, height: 1)
+
+        let windowRect = window.convertFromScreen(screenRect)
+        let localRect = containerView.convert(windowRect, from: nil)
+        return boundedAnchorRect(localRect)
     }
 
     private func submitCommand(in tab: TerminalTab) {
