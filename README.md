@@ -9,6 +9,20 @@ It does not call `av dotenv export`.
 
 ![Vaultty screenshot](assets/screenshot.webp)
 
+## Features
+
+- The macOS Tahoe appearance you have been waiting for
+- Warp style blocks
+- Fig autocompletions
+- Automically loads Automic Vault encrytped `.env` secrets without approval
+
+> [!IMPORTANT]
+>
+> Yes this means an agent with Computer Use could use Vaultty to exfilitrate
+> secrets. But Computer Use also means that the agent could approve in Automic
+> Vault too. If you are not using the AV iPhone app, or tranfering approvals
+> to another machine then Vaultty is convenient and as-secure.
+
 ## Build
 
 ```sh
