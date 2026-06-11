@@ -1234,12 +1234,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 completionPopup.selectPrevious()
                 return true
             }
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
+                commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
                 acceptSelectedCompletion(in: tab, continuingDirectories: true)
                 return true
             }
             if commandSelector == #selector(NSResponder.moveRight(_:)) {
-                acceptSelectedCompletion(in: tab)
+                acceptSelectedCompletion(in: tab, continuingDirectories: true)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
@@ -1608,7 +1609,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func shouldContinueCompletion(afterApplying suggestion: CompletionSuggestion) -> Bool {
-        suggestion.kind == .folder
+        suggestion.kind == .folder || suggestion.insertText.hasSuffix("/")
     }
 
     private func shouldContinueCompletion(afterInserting value: String, from result: CompletionResult) -> Bool {
