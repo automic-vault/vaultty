@@ -2576,6 +2576,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func interruptCommand(in tab: TerminalTab) {
         guard isCommandRunning(in: tab) else { return }
+        renderInterruptEcho(in: tab)
         tab.session.sendInterrupt()
         tab.parserBuffer.removeAll()
         finishRunningBlocks(in: tab, status: 130)
@@ -2590,6 +2591,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         updateCommandBarVisibility(for: tab)
         updateTabTitleForDirectory(tab)
         focusInput(for: tab)
+    }
+
+    private func renderInterruptEcho(in tab: TerminalTab) {
+        guard let activeBlockID = tab.activeBlockID,
+              tab.blocks.contains(where: { $0.id == activeBlockID })
+        else {
+            return
+        }
+        flushVisible("^C\n", in: tab)
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
