@@ -359,7 +359,11 @@ bump_cargo_version() {
       or die "Unable to update package.version in Cargo.toml\n";
   ' "${repo_root}/Cargo.toml"
 
-  cargo metadata --manifest-path "${repo_root}/Cargo.toml" --format-version 1 --no-deps >/dev/null
+  cargo update \
+    --manifest-path "${repo_root}/Cargo.toml" \
+    -p vaultty \
+    --precise "${version}" \
+    >/dev/null
 }
 
 commit_release_version() {
