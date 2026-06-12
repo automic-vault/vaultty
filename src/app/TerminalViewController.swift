@@ -36,10 +36,29 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
-    static let nativeResizeContentInset: CGFloat = 8
+    static let windowTintStart = NSColor(
+        calibratedRed: 0.05,
+        green: 0.08,
+        blue: 0.18,
+        alpha: 0.30
+    )
+    static let windowTintMid = NSColor(
+        calibratedRed: 0.24,
+        green: 0.08,
+        blue: 0.27,
+        alpha: 0.26
+    )
+    static let windowTintEnd = NSColor(
+        calibratedRed: 0.46,
+        green: 0.16,
+        blue: 0.09,
+        alpha: 0.24
+    )
+    static let topBarTint = NSColor.black.withAlphaComponent(0.26)
     static let surfaceTint = NSColor.black.withAlphaComponent(0.18)
     static let failureSurfaceTint = NSColor.systemRed.withAlphaComponent(0.22)
     static let commandTint = NSColor.black.withAlphaComponent(0.22)
+    static let hairline = NSColor.white.withAlphaComponent(0.12)
     static let titleTopHairline = NSColor.white.withAlphaComponent(0.20)
     static let titleText = NSColor.white.withAlphaComponent(0.44)
     static let titleTextActive = NSColor.white.withAlphaComponent(0.62)
@@ -58,12 +77,212 @@ private final class SeparatorView: NSBox {
     }
 }
 
-private final class TerminalRootView: NSView {
+private final class NonHitTestingView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class NonHitTestingVisualEffectView: NSVisualEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class TahoeGlassRootView: NSView {
+    private let materialView = NonHitTestingVisualEffectView()
+    private let tintView = NonHitTestingView()
+    private let tintLayer = CAGradientLayer()
+    private let topBarLayer = CAShapeLayer()
+    private let topBarSeparatorLayer = CAShapeLayer()
+
     var onLayout: (() -> Void)?
+
+    var activeTabFrame: CGRect? {
+        didSet {
+            guard activeTabFrame != oldValue else { return }
+            needsLayout = true
+        }
+    }
+    var tabStripFrame: CGRect? {
+        didSet {
+            guard tabStripFrame != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = TahoeGlassPalette.windowCornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+
+        materialView.material = .underWindowBackground
+        materialView.blendingMode = .behindWindow
+        materialView.state = .active
+        materialView.appearance = NSAppearance(named: .darkAqua)
+        materialView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(materialView, positioned: .below, relativeTo: nil)
+
+        tintView.wantsLayer = true
+        tintView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(tintView, positioned: .above, relativeTo: materialView)
+
+        tintLayer.colors = [
+            TahoeGlassPalette.windowTintStart.cgColor,
+            TahoeGlassPalette.windowTintMid.cgColor,
+            TahoeGlassPalette.windowTintEnd.cgColor
+        ]
+        tintLayer.locations = [0, 0.48, 1]
+        tintLayer.startPoint = CGPoint(x: 0, y: 0)
+        tintLayer.endPoint = CGPoint(x: 1, y: 1)
+        tintView.layer?.addSublayer(tintLayer)
+
+        topBarLayer.fillColor = TahoeGlassPalette.topBarTint.cgColor
+        topBarLayer.fillRule = .evenOdd
+        tintView.layer?.addSublayer(topBarLayer)
+
+        topBarSeparatorLayer.fillColor = nil
+        topBarSeparatorLayer.strokeColor = TahoeGlassPalette.hairline.cgColor
+        topBarSeparatorLayer.lineWidth = 1
+        tintView.layer?.addSublayer(topBarSeparatorLayer)
+
+        NSLayoutConstraint.activate([
+            materialView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            materialView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            materialView.topAnchor.constraint(equalTo: topAnchor),
+            materialView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            tintView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tintView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            tintView.topAnchor.constraint(equalTo: topAnchor),
+            tintView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func layout() {
         super.layout()
         onLayout?()
+        tintLayer.frame = bounds
+        let contentTop = TahoeGlassPalette.titleContentTop
+        topBarLayer.frame = bounds
+        topBarLayer.path = topBarPath(
+            contentTop: contentTop,
+            activeTabFrame: activeTabFrame,
+            tabStripFrame: tabStripFrame
+        )
+        topBarSeparatorLayer.frame = bounds
+        topBarSeparatorLayer.path = topBarSeparatorPath(
+            y: max(0, bounds.height - contentTop),
+            activeTabFrame: activeTabFrame
+        )
+    }
+
+    private func topBarPath(
+        contentTop: CGFloat,
+        activeTabFrame: CGRect?,
+        tabStripFrame: CGRect?
+    ) -> CGPath {
+        let path = CGMutablePath()
+        let topBarFrame = CGRect(
+            x: 0,
+            y: bounds.height - contentTop,
+            width: bounds.width,
+            height: contentTop
+        )
+        path.addRect(topBarFrame)
+        if let activeTabFrame {
+            let cutoutFrame = activeTabFrame.intersection(topBarFrame)
+            if !cutoutFrame.isNull {
+                let roundsLeadingCorner = tabStripFrame.map {
+                    abs(cutoutFrame.minX - $0.minX) < 0.5
+                } ?? false
+                let roundsTrailingCorner = tabStripFrame.map {
+                    abs(cutoutFrame.maxX - $0.maxX) < 0.5
+                } ?? false
+                path.addPath(topRoundedRectPath(
+                    in: cutoutFrame,
+                    radius: TahoeGlassPalette.titleTabCornerRadius,
+                    roundsLeadingCorner: roundsLeadingCorner,
+                    roundsTrailingCorner: roundsTrailingCorner
+                ))
+            }
+        }
+
+        return path
+    }
+
+    private func topRoundedRectPath(
+        in rect: CGRect,
+        radius requestedRadius: CGFloat,
+        roundsLeadingCorner: Bool,
+        roundsTrailingCorner: Bool
+    ) -> CGPath {
+        guard roundsLeadingCorner || roundsTrailingCorner else {
+            let path = CGMutablePath()
+            path.addRect(rect)
+            return path
+        }
+
+        let radius = min(requestedRadius, rect.width / 2, rect.height)
+        let controlOffset = radius * 0.5522847498307936
+        let path = CGMutablePath()
+
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        if roundsLeadingCorner {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+            path.addCurve(
+                to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+                control1: CGPoint(x: rect.minX, y: rect.maxY - radius + controlOffset),
+                control2: CGPoint(x: rect.minX + radius - controlOffset, y: rect.maxY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
+
+        if roundsTrailingCorner {
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+                control1: CGPoint(x: rect.maxX - radius + controlOffset, y: rect.maxY),
+                control2: CGPoint(x: rect.maxX, y: rect.maxY - radius + controlOffset)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
+
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+
+    private func topBarSeparatorPath(y: CGFloat, activeTabFrame: CGRect?) -> CGPath {
+        let path = CGMutablePath()
+        guard let activeTabFrame,
+              y >= activeTabFrame.minY,
+              y <= activeTabFrame.maxY
+        else {
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: bounds.width, y: y))
+            return path
+        }
+
+        let gapStart = max(0, floor(activeTabFrame.minX))
+        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX))
+        if gapStart > 0 {
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: gapStart, y: y))
+        }
+        if gapEnd < bounds.width {
+            path.move(to: CGPoint(x: gapEnd, y: y))
+            path.addLine(to: CGPoint(x: bounds.width, y: y))
+        }
+        return path
     }
 }
 
@@ -1110,7 +1329,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     override func loadView() {
-        let rootView = TerminalRootView()
+        let rootView = TahoeGlassRootView()
         rootView.onLayout = { [weak self] in
             self?.handleRootLayout()
         }
@@ -1138,16 +1357,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             titleTabStack.leadingAnchor.constraint(
                 equalTo: view.leadingAnchor,
                 constant: TahoeGlassPalette.titleTabLeadingInset
-                    + TahoeGlassPalette.nativeResizeContentInset
             ),
             titleTabStack.trailingAnchor.constraint(
                 lessThanOrEqualTo: view.trailingAnchor,
-                constant: -(20 + TahoeGlassPalette.nativeResizeContentInset)
+                constant: -20
             ),
             titleTabStack.topAnchor.constraint(
                 equalTo: view.topAnchor,
                 constant: TahoeGlassPalette.titleTabTopInset
-                    + TahoeGlassPalette.nativeResizeContentInset
             ),
             titleTabStack.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
 
@@ -1160,21 +1377,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             newTabButton.widthAnchor.constraint(equalTo: newTabButton.heightAnchor),
 
             contentContainer.leadingAnchor.constraint(
-                equalTo: view.leadingAnchor,
-                constant: TahoeGlassPalette.nativeResizeContentInset
+                equalTo: view.leadingAnchor
             ),
             contentContainer.trailingAnchor.constraint(
-                equalTo: view.trailingAnchor,
-                constant: -TahoeGlassPalette.nativeResizeContentInset
+                equalTo: view.trailingAnchor
             ),
             contentContainer.topAnchor.constraint(
                 equalTo: view.topAnchor,
                 constant: TahoeGlassPalette.titleContentTop
-                    + TahoeGlassPalette.nativeResizeContentInset
             ),
             contentContainer.bottomAnchor.constraint(
-                equalTo: view.bottomAnchor,
-                constant: -TahoeGlassPalette.nativeResizeContentInset
+                equalTo: view.bottomAnchor
             )
         ])
     }
@@ -1202,6 +1415,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func handleRootLayout() {
         updateTitleSegmentCornerMasks()
+        updateActiveTabCutoutFrame()
         titleTabBorderView.needsDisplay = true
         for tab in tabs {
             resizePtyToViewport(for: tab)
@@ -1350,7 +1564,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             activateTab(tabs[nextIndex].id, tabStripLayoutChanged: true)
         } else {
             layoutTabStripBeforeMeasuringSelection()
-            titleTabBorderView.needsDisplay = true
+            updateActiveTabCutoutFrame()
         }
         return true
     }
@@ -1404,7 +1618,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if tabStripLayoutChanged {
             layoutTabStripBeforeMeasuringSelection()
         }
-        titleTabBorderView.needsDisplay = true
+        updateActiveTabCutoutFrame()
         if let tab = activeTab {
             focusInput(for: tab)
         }
@@ -1433,6 +1647,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 addButton.roundsTrailingTopCorner = roundsTrailing
             }
         }
+    }
+
+    private func updateActiveTabCutoutFrame() {
+        guard let rootView = view as? TahoeGlassRootView else { return }
+        rootView.tabStripFrame = titleTabStack.convert(titleTabStack.bounds, to: rootView)
+        guard let activeTabID,
+              let button = tabButtons[activeTabID],
+              button.superview != nil
+        else {
+            rootView.activeTabFrame = nil
+            return
+        }
+        rootView.activeTabFrame = button.convert(button.bounds, to: rootView)
     }
 
     private func configureSession(for tab: TerminalTab) {
@@ -1963,7 +2190,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let button = tabButtons[tab.id] {
             button.updateTitle(displayTitle, detail: detail)
             layoutTabStripBeforeMeasuringSelection()
-            titleTabBorderView.needsDisplay = true
+            updateActiveTabCutoutFrame()
         }
     }
 
