@@ -1986,6 +1986,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 self?.stopTtyModePolling(for: tab)
                 tab.ptyPassthroughView.usesPagerKeyBindings = false
                 self?.setTerminalControl(false, in: tab)
+                self?.clearCommandInput(in: tab)
                 self?.updateCommandBarVisibility(for: tab)
             }
         }
@@ -2312,15 +2313,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard !command.isEmpty else { return }
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
-        tab.inputView.string = ""
-        tab.inputView.resetPlainTextAttributes()
+        tab.inputView.isEditable = false
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
         tab.terminalScreen.resetForCommand()
         tab.styledRenderer.reset()
         tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
-        tab.statusLabel.stringValue = "Running..."
+        updateCommandBarRunningStatus(for: tab)
         updateTabTitle(titleForCommand(command), detail: command, in: tab)
 
         let block = TerminalBlock(
@@ -2336,7 +2336,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         )
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
-        addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
         startTtyModePolling(for: tab)
 
@@ -2358,6 +2357,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         stopTtyModePolling(for: tab)
         tab.isShellReady = true
         setTerminalControl(false, in: tab)
+        clearCommandInput(in: tab)
         updateCommandBarDirectoryStatus(for: tab)
         updateCommandBarVisibility(for: tab)
         updateTabTitleForDirectory(tab)
@@ -2460,6 +2460,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         tab.blocks[index].outputRevision += 1
 
+        ensureBlockView(for: activeBlockID, in: tab)
         tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
         refreshTerminalControl(in: tab)
         scrollToBottom(tab)
@@ -2494,6 +2495,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID }) {
                 tab.blocks[index].finishedAt = Date()
                 tab.blocks[index].state = .completed(status)
+                ensureBlockView(for: activeBlockID, in: tab)
                 tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
             }
             tab.activeBlockID = nil
@@ -2503,6 +2505,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isShellReady = true
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
+            clearCommandInput(in: tab)
             updateCommandBarDirectoryStatus(for: tab)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
@@ -2599,6 +2602,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private func updateCommandBarRunningStatus(for tab: TerminalTab) {
+        tab.statusLabel.stringValue = "\(detailForDirectory(tab.currentCwd))  Running…"
+    }
+
+    private func clearCommandInput(in tab: TerminalTab) {
+        tab.inputView.string = ""
+        tab.inputView.resetPlainTextAttributes()
+        tab.inputView.isEditable = true
+    }
+
     private func titleForCommand(_ command: String) -> String {
         singleLineTitle(command)
     }
@@ -2668,7 +2681,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateCommandBarVisibility(for tab: TerminalTab) {
-        let shouldShowCommandBar = !tab.isTerminalControlActive && !isCommandRunning(in: tab)
+        let shouldShowCommandBar = !tab.isTerminalControlActive
         tab.commandBarView.isHidden = !shouldShowCommandBar
         tab.commandSeparator.isHidden = !shouldShowCommandBar
         tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
@@ -2756,6 +2769,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         scrollToBottom(tab)
     }
 
+    private func ensureBlockView(for blockID: UUID, in tab: TerminalTab) {
+        guard tab.blockViews[blockID] == nil,
+              let block = tab.blocks.first(where: { $0.id == blockID })
+        else {
+            return
+        }
+        addBlockView(block, to: tab)
+    }
+
     private func rebuildBlockViews(for tab: TerminalTab) {
         for view in tab.stackView.arrangedSubviews {
             tab.stackView.removeArrangedSubview(view)
@@ -2806,6 +2828,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             if case .running = tab.blocks[index].state {
                 tab.blocks[index].finishedAt = finishedAt
                 tab.blocks[index].state = .completed(status)
+                ensureBlockView(for: tab.blocks[index].id, in: tab)
                 tab.blockViews[tab.blocks[index].id]?.update(with: tab.blocks[index])
             }
         }
