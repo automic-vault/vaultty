@@ -5,9 +5,10 @@ final class PtySession {
     var onOutput: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
 
-    private var process: Process?
+    private var childPid: pid_t = -1
     private var master: Int32 = -1
     private var readSource: DispatchSourceRead?
+    private var exitSource: DispatchSourceProcess?
     private let queue = DispatchQueue(label: "com.automicvault.vaultty.pty")
 
     deinit {
@@ -16,50 +17,47 @@ final class PtySession {
 
     func start(shellPath: String, environment: [String: String], workingDirectory: URL) throws {
         var masterFd: Int32 = -1
-        var slaveFd: Int32 = -1
         var windowSize = winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0)
-        guard openpty(&masterFd, &slaveFd, nil, nil, &windowSize) == 0 else {
+        let pid = forkpty(&masterFd, nil, nil, &windowSize)
+        guard pid >= 0 else {
             throw NSError(
                 domain: NSPOSIXErrorDomain,
                 code: Int(errno),
-                userInfo: [NSLocalizedDescriptionKey: "openpty failed: \(String(cString: strerror(errno)))"]
+                userInfo: [NSLocalizedDescriptionKey: "forkpty failed: \(String(cString: strerror(errno)))"]
             )
         }
 
-        var term = termios()
-        if tcgetattr(slaveFd, &term) == 0 {
-            term.c_lflag &= ~UInt(ECHO)
-            _ = tcsetattr(slaveFd, TCSANOW, &term)
-        }
-
-        let slaveInput = FileHandle(fileDescriptor: dup(slaveFd), closeOnDealloc: true)
-        let slaveOutput = FileHandle(fileDescriptor: dup(slaveFd), closeOnDealloc: true)
-        let slaveError = FileHandle(fileDescriptor: slaveFd, closeOnDealloc: true)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: shellPath)
-        process.arguments = ["-l"]
-        process.environment = environment
-        process.currentDirectoryURL = workingDirectory
-        process.standardInput = slaveInput
-        process.standardOutput = slaveOutput
-        process.standardError = slaveError
-        process.terminationHandler = { [weak self] process in
-            DispatchQueue.main.async {
-                self?.onExit?(process.terminationStatus)
+        if pid == 0 {
+            workingDirectory.path.withCString { path in
+                _ = chdir(path)
             }
-        }
-
-        do {
-            try process.run()
-        } catch {
-            close(masterFd)
-            throw error
+            for (key, value) in environment {
+                key.withCString { keyPointer in
+                    value.withCString { valuePointer in
+                        _ = setenv(keyPointer, valuePointer, 1)
+                    }
+                }
+            }
+            let shellName = URL(fileURLWithPath: shellPath).lastPathComponent
+            let loginShell = "-" + shellName
+            var argv: [UnsafeMutablePointer<CChar>?] = [
+                strdup(loginShell),
+                nil
+            ]
+            shellPath.withCString { shellPointer in
+                argv.withUnsafeMutableBufferPointer { argvBuffer in
+                    _ = execv(shellPointer, argvBuffer.baseAddress)
+                }
+            }
+            perror("exec")
+            _exit(127)
         }
 
         self.master = masterFd
-        self.process = process
+        self.childPid = pid
+        disableEcho(fd: masterFd)
         startReading(fd: masterFd)
+        startWaiting(pid: pid)
     }
 
     func resize(rows: UInt16, cols: UInt16) {
@@ -75,6 +73,22 @@ final class PtySession {
         return (term.c_lflag & UInt(ICANON)) != 0
     }
 
+    func sendInterrupt() {
+        guard master >= 0 else { return }
+        if isSignalInputModeEnabled() == true {
+            var foregroundProcessGroup: Int32 = 0
+            if ioctl(master, TIOCGPGRP, &foregroundProcessGroup) == 0,
+               foregroundProcessGroup > 0,
+               kill(-foregroundProcessGroup, SIGINT) == 0 {
+                return
+            }
+            if childPid > 0, kill(-childPid, SIGINT) == 0 {
+                return
+            }
+        }
+        write("\u{3}")
+    }
+
     func write(_ string: String) {
         guard master >= 0, let data = string.data(using: .utf8) else { return }
         data.withUnsafeBytes { rawBuffer in
@@ -86,14 +100,31 @@ final class PtySession {
     func stop() {
         readSource?.cancel()
         readSource = nil
+        exitSource?.cancel()
+        exitSource = nil
         if master >= 0 {
             close(master)
             master = -1
         }
-        if let process, process.isRunning {
-            process.terminate()
+        if childPid > 0 {
+            _ = kill(-childPid, SIGTERM)
         }
-        process = nil
+        childPid = -1
+    }
+
+    private func disableEcho(fd: Int32) {
+        var term = termios()
+        if tcgetattr(fd, &term) == 0 {
+            term.c_lflag &= ~UInt(ECHO)
+            _ = tcsetattr(fd, TCSANOW, &term)
+        }
+    }
+
+    private func isSignalInputModeEnabled() -> Bool? {
+        guard master >= 0 else { return nil }
+        var term = termios()
+        guard tcgetattr(master, &term) == 0 else { return nil }
+        return (term.c_lflag & UInt(ISIG)) != 0
     }
 
     private func startReading(fd: Int32) {
@@ -114,5 +145,30 @@ final class PtySession {
         }
         source.resume()
         self.readSource = source
+    }
+
+    private func startWaiting(pid: pid_t) {
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+        source.setEventHandler { [weak self] in
+            var status: Int32 = 0
+            _ = waitpid(pid, &status, 0)
+            let exitStatus = Self.exitStatus(fromWaitStatus: status)
+            if self?.childPid == pid {
+                self?.childPid = -1
+                self?.exitSource = nil
+            }
+            DispatchQueue.main.async {
+                self?.onExit?(exitStatus)
+            }
+        }
+        source.resume()
+        self.exitSource = source
+    }
+
+    private static func exitStatus(fromWaitStatus status: Int32) -> Int32 {
+        if status & 0x7f == 0 {
+            return (status >> 8) & 0xff
+        }
+        return 128 + (status & 0x7f)
     }
 }

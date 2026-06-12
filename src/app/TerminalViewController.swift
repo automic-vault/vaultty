@@ -1340,7 +1340,11 @@ private final class TerminalTab {
         ptyPassthroughView.translatesAutoresizingMaskIntoConstraints = false
         ptyPassthroughView.isHidden = true
         ptyPassthroughView.onInput = { [weak self] sequence in
-            self?.session.write(sequence)
+            if sequence == "\u{3}" {
+                self?.session.sendInterrupt()
+            } else {
+                self?.session.write(sequence)
+            }
         }
         ptyPassthroughView.usesApplicationCursorKeys = { [weak self] in
             self?.isApplicationCursorModeActive == true
@@ -1631,6 +1635,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 dismissCompletion()
                 return true
             }
+        }
+
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)),
+           isCommandRunning(in: tab) {
+            tab.session.sendInterrupt()
+            return true
         }
 
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
