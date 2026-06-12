@@ -139,7 +139,22 @@ final class CompletionPopupController: NSObject {
     }
 
     private func scrollRowToVisible(_ row: Int) {
-        listView.scrollToVisible(listView.rowRect(for: row))
+        let rowRect = listView.rowRect(for: row)
+        let visibleRect = scrollView.contentView.bounds
+
+        let targetY: CGFloat
+        if rowRect.minY < visibleRect.minY {
+            targetY = rowRect.minY
+        } else if rowRect.maxY > visibleRect.maxY {
+            targetY = rowRect.maxY - visibleRect.height
+        } else {
+            return
+        }
+
+        let maxY = max(0, listView.bounds.height - visibleRect.height)
+        let clampedY = min(max(0, targetY), maxY)
+        scrollView.contentView.scroll(to: NSPoint(x: visibleRect.minX, y: clampedY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 
