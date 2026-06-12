@@ -406,7 +406,6 @@ final class VaulttyCompletionEngine {
                 spec,
                 commandName: commandName,
                 argumentTokens: argumentTokens,
-                currentTokenIndex: parsed.tokens.count - commandIndex - 1,
                 currentPrefix: currentPrefix,
                 request: request
             ))
@@ -440,13 +439,13 @@ final class VaulttyCompletionEngine {
         _ spec: LoadedFigSpec,
         commandName: String,
         argumentTokens: [ShellCompletionParser.Token],
-        currentTokenIndex: Int,
         currentPrefix: String,
         request: CompletionRequest
     ) -> [CompletionSuggestion] {
         var node = FigNode(value: spec.value)
         let consumed = max(0, argumentTokens.count - 1)
         var pendingOptionArgs: [FigArg] = []
+        var positionalArgIndex = 0
 
         if consumed > 0 {
             for token in argumentTokens.prefix(consumed) {
@@ -464,7 +463,11 @@ final class VaulttyCompletionEngine {
                 }
                 if let subcommand = node.subcommand(named: token.text) {
                     node = subcommand
+                    positionalArgIndex = 0
+                    pendingOptionArgs.removeAll()
+                    continue
                 }
+                positionalArgIndex += 1
             }
         }
 
@@ -496,7 +499,7 @@ final class VaulttyCompletionEngine {
                 }
             })
 
-            let arg = pendingOptionArgs.first ?? node.args.first
+            let arg = pendingOptionArgs.first ?? node.argument(at: positionalArgIndex)
             if let arg {
                 suggestions.append(contentsOf: suggestionsFromArg(
                     arg,
@@ -620,7 +623,7 @@ final class VaulttyCompletionEngine {
         }
 
         if let postProcess = generator.postProcess, postProcess.isObject {
-            let value = postProcess.call(withArguments: [output.stdout, request.input])
+            let value = postProcess.call(withArguments: [output.stdout.trimmingTrailingLineBreaks(), request.input])
             return suggestions(from: value, kind: .argument, source: commandName)
         }
 
@@ -1293,6 +1296,16 @@ private struct FigNode {
     func option(named name: String) -> FigOption? {
         options.first { $0.names.contains(name) }
     }
+
+    func argument(at index: Int) -> FigArg? {
+        let availableArgs = args
+        guard !availableArgs.isEmpty else { return nil }
+        if availableArgs.indices.contains(index) {
+            return availableArgs[index]
+        }
+        guard let last = availableArgs.last, last.isVariadic else { return nil }
+        return last
+    }
 }
 
 private struct FigOption {
@@ -1320,6 +1333,20 @@ private struct FigArg {
             generators.append(FigGenerator(value: generatorValue))
         }
         return generators
+    }
+
+    var isVariadic: Bool {
+        value.forProperty("isVariadic")?.toBool() == true
+    }
+}
+
+private extension String {
+    func trimmingTrailingLineBreaks() -> String {
+        var output = self
+        while output.last == "\n" || output.last == "\r" {
+            output.removeLast()
+        }
+        return output
     }
 }
 
