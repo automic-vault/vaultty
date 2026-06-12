@@ -1288,6 +1288,7 @@ private final class TerminalTab {
         inputView.wantsLayer = true
         inputView.layer?.cornerRadius = 0
         inputView.layer?.borderWidth = 0
+        configureCommandInputTextSystem(inputView)
         inputView.setAccessibilityLabel("Vaultty command input")
 
         let inputScroll = NSScrollView()
@@ -1365,6 +1366,19 @@ private final class TerminalTab {
             ptyPassthroughView.widthAnchor.constraint(equalToConstant: 0),
             ptyPassthroughView.heightAnchor.constraint(equalToConstant: 0)
         ])
+    }
+
+    private func configureCommandInputTextSystem(_ textView: NSTextView) {
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.smartInsertDeleteEnabled = false
     }
 }
 
