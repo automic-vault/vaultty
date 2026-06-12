@@ -58,6 +58,15 @@ private final class SeparatorView: NSBox {
     }
 }
 
+private final class TerminalRootView: NSView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
 private final class TitleTabBorderView: NSView {
     weak var tabStack: NSStackView?
 
@@ -1101,9 +1110,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     override func loadView() {
-        view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let rootView = TerminalRootView()
+        rootView.onLayout = { [weak self] in
+            self?.handleRootLayout()
+        }
+        view = rootView
 
         titleTabStack.orientation = .horizontal
         titleTabStack.spacing = 0
@@ -1175,6 +1186,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        windowDidAttach()
+    }
+
+    func windowDidAttach() {
         if let tab = activeTab {
             focusInput(for: tab)
         }
@@ -1182,6 +1197,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        handleRootLayout()
+    }
+
+    private func handleRootLayout() {
         updateTitleSegmentCornerMasks()
         titleTabBorderView.needsDisplay = true
         for tab in tabs {

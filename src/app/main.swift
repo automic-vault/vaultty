@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let selfTestCommand = args.enumerated().first { $0.element == "--self-test" }
             .flatMap { index, _ in args.indices.contains(index + 1) ? args[index + 1] : nil }
         let controller = TerminalViewController(selfTestCommand: selfTestCommand)
+        controller.loadViewIfNeeded()
         self.controller = controller
 
         let styleMask: NSWindow.StyleMask = [
@@ -37,16 +38,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isRestorable = false
         window.titleVisibility = .visible
         window.titlebarAppearsTransparent = false
-        window.contentViewController = controller
         window.minSize = NSWindow.frameRect(
             forContentRect: NSRect(origin: .zero, size: AppWindowMetrics.minimumContentSize),
             styleMask: styleMask
         ).size
         window.contentMinSize = AppWindowMetrics.minimumContentSize
-        controller.preferredContentSize = AppWindowMetrics.defaultContentSize
         window.setContentSize(AppWindowMetrics.defaultContentSize)
         window.center()
+        if let nativeContentView = window.contentView {
+            controller.view.frame = nativeContentView.bounds
+            controller.view.autoresizingMask = [.width, .height]
+            nativeContentView.addSubview(controller.view)
+        }
         window.makeKeyAndOrderFront(nil)
+        window.makeMain()
+        NSApp.activate(ignoringOtherApps: true)
+        controller.windowDidAttach()
         self.window = window
     }
 
