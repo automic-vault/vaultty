@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     private var window: NSWindow?
     private var controller: TerminalViewController?
     private var titleToolbar: NSToolbar?
+    private var pendingDirectoryURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
@@ -64,9 +65,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         }
         window.makeKeyAndOrderFront(nil)
         window.makeMain()
+        self.window = window
         NSApp.activate(ignoringOtherApps: true)
         controller.windowDidAttach()
-        self.window = window
+        openPendingDirectoryURLs()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        _ = openDirectoryURLs(from: urls)
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        openDirectoryURLs(from: [URL(fileURLWithPath: filename)])
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let didOpen = openDirectoryURLs(from: filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: didOpen ? .success : .failure)
+    }
+
+    private func openDirectoryURLs(from urls: [URL]) -> Bool {
+        let directoryURLs = urls.compactMap(Self.directoryURL)
+        guard !directoryURLs.isEmpty else { return false }
+
+        if controller == nil {
+            pendingDirectoryURLs.append(contentsOf: directoryURLs)
+            return true
+        }
+
+        openDirectoryURLs(directoryURLs)
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -98,6 +126,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     @objc private func newTab(_ sender: Any?) {
         controller?.newTab(sender)
+    }
+
+    private func openPendingDirectoryURLs() {
+        guard !pendingDirectoryURLs.isEmpty else { return }
+        let directoryURLs = pendingDirectoryURLs
+        pendingDirectoryURLs.removeAll()
+        openDirectoryURLs(directoryURLs)
+    }
+
+    private func openDirectoryURLs(_ directoryURLs: [URL]) {
+        guard let controller else {
+            pendingDirectoryURLs.append(contentsOf: directoryURLs)
+            return
+        }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        for url in directoryURLs {
+            controller.newTab(at: url)
+        }
+    }
+
+    private static func directoryURL(from url: URL) -> URL? {
+        guard url.isFileURL else { return nil }
+        let standardizedURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardizedURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return nil
+        }
+        return standardizedURL
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {

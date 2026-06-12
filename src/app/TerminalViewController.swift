@@ -1642,6 +1642,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         createTab()
     }
 
+    func newTab(at directoryURL: URL) {
+        createTab(workingDirectory: directoryURL)
+    }
+
     @objc private func selectTab(_ sender: TitleTabButton) {
         activateTab(sender.tabID)
     }
@@ -1699,15 +1703,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return tabs.first { $0.id == activeTabID }
     }
 
-    private func createTab() {
-        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
-        let tab = TerminalTab(title: titleForDirectory(homePath), delegate: self)
+    private func createTab(workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        let directoryURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let directoryPath = directoryURL.path
+        let tab = TerminalTab(title: titleForDirectory(directoryPath), delegate: self)
+        tab.currentCwd = directoryPath
         tabs.append(tab)
         configureSession(for: tab)
         installTabView(tab)
         installTabButton(tab)
         activateTab(tab.id, tabStripLayoutChanged: true)
-        startShell(for: tab)
+        startShell(for: tab, workingDirectory: directoryURL)
     }
 
     private func installTabView(_ tab: TerminalTab) {
@@ -1833,8 +1839,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func startShell(for tab: TerminalTab) {
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+    private func startShell(for tab: TerminalTab, workingDirectory: URL) {
         let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap {
             FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil
         } ?? "/bin/zsh"
@@ -1847,12 +1852,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         env["RPROMPT"] = ""
 
         do {
-            try tab.session.start(shellPath: shell, environment: env, workingDirectory: homeURL)
+            try tab.session.start(shellPath: shell, environment: env, workingDirectory: workingDirectory)
             let initScript = """
             export VAULTTY=1
             export TERM=xterm-256color
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
-            cd \(shellQuote(homeURL.path))
+            cd \(shellQuote(workingDirectory.path))
             __vaultty_dotenv_hook() {
               local __vaultty_dotenv
               if [ ! -x "$VAULTTY_ENV" ]; then
