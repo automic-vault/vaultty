@@ -135,11 +135,31 @@ private final class CommandInputTextView: NSTextView {
         resetPlainTextAttributes()
     }
 
+    func renderMutedCompletionPreview(mutedRange: NSRange) {
+        normalizePlainTextStorage()
+        guard mutedRange.length > 0,
+              mutedRange.location >= 0,
+              mutedRange.location + mutedRange.length <= (string as NSString).length
+        else {
+            return
+        }
+        textStorage?.addAttribute(
+            .foregroundColor,
+            value: mutedCompletionTextColor,
+            range: mutedRange
+        )
+        resetPlainTextAttributes()
+    }
+
     private var commandTextAttributes: [NSAttributedString.Key: Any] {
         [
             .font: font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
             .foregroundColor: textColor ?? NSColor.labelColor
         ]
+    }
+
+    private var mutedCompletionTextColor: NSColor {
+        (textColor ?? NSColor.labelColor).withAlphaComponent(0.38)
     }
 
     private func configurePlainTextInput() {
@@ -1711,6 +1731,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let cols: UInt16
     }
 
+    private struct CompletionPreviewState {
+        let baseText: String
+        let replacementRange: NSRange
+        var renderedRange: NSRange
+    }
+
     private let selfTestCommand: String?
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
@@ -1731,6 +1757,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
+    private var completionPreviewState: CompletionPreviewState?
     private var isApplyingCompletion = false
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
@@ -1834,6 +1861,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        completionPopup.onExternalDismiss = { [weak self] in
+            self?.dismissCompletion()
+        }
         createTab()
         installTabMouseDownMonitor()
     }
@@ -1929,11 +1959,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         if completionPopup.isShown {
             if commandSelector == #selector(NSResponder.moveUp(_:)) {
-                completionPopup.selectPrevious()
+                if let suggestion = completionPopup.selectPrevious() {
+                    renderCompletionPreview(suggestion, in: tab)
+                }
                 return true
             }
             if commandSelector == #selector(NSResponder.moveDown(_:)) {
-                completionPopup.selectNext()
+                if let suggestion = completionPopup.selectNext() {
+                    renderCompletionPreview(suggestion, in: tab)
+                }
                 return true
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
@@ -1941,11 +1975,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     acceptSelectedCompletion(in: tab, continuingDirectories: true)
                     return true
                 }
-                completionPopup.selectNext()
+                let suggestion = completionPreviewState == nil
+                    ? completionPopup.selectedSuggestion
+                    : completionPopup.selectNext()
+                if let suggestion {
+                    renderCompletionPreview(suggestion, in: tab)
+                }
                 return true
             }
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
-                completionPopup.selectPrevious()
+                if let suggestion = completionPopup.selectPrevious() {
+                    renderCompletionPreview(suggestion, in: tab)
+                }
                 return true
             }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
@@ -2000,6 +2041,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return
         }
         tab.inputView.normalizePlainTextStorage()
+        if completionPreviewState != nil {
+            completionPreviewState = nil
+            activeCompletionRange = nil
+            completionPopup.dismiss()
+            completionRequestSerial += 1
+            return
+        }
         if completionPopup.isShown {
             requestCompletion(in: tab, mode: .filtering)
         } else if shouldStartAutomaticCompletion(in: textView) {
@@ -2404,16 +2452,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         activeCompletionRange = result.replacementRange
-        if mode == .explicit, result.suggestions.count == 1 {
-            let suggestion = result.suggestions[0]
-            let shouldContinue = shouldContinueCompletion(afterApplying: suggestion)
-            applyCompletion(suggestion, in: tab, dismissAfterApplying: !shouldContinue)
-            if shouldContinue {
-                requestCompletion(in: tab, mode: .continuation)
-            }
-            return
-        }
-
         if mode == .explicit,
            let prefix = result.commonPrefix,
            let existing = substring(in: tab.inputView.string, range: result.replacementRange),
@@ -2433,6 +2471,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             of: tab.commandBarView,
             resetSelection: mode != .explicit
         )
+        let shouldRenderPreview = mode == .explicit || mode == .continuation
+        if shouldRenderPreview, let suggestion = completionPopup.selectedSuggestion {
+            renderCompletionPreview(suggestion, in: tab)
+        }
     }
 
     private func acceptSelectedCompletion(in tab: TerminalTab, continuingDirectories: Bool = false) {
@@ -2461,11 +2503,76 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         in tab: TerminalTab,
         dismissAfterApplying: Bool = true
     ) {
-        guard let range = activeCompletionRange else { return }
-        replace(range: range, with: suggestion.insertText, in: tab)
-        if dismissAfterApplying {
-            dismissCompletion()
+        if !commitCompletionPreview(in: tab) {
+            guard let range = activeCompletionRange else { return }
+            replace(range: range, with: suggestion.insertText, in: tab)
         }
+        if dismissAfterApplying {
+            dismissCompletion(restoringPreview: false)
+        }
+    }
+
+    private func renderCompletionPreview(_ suggestion: CompletionSuggestion, in tab: TerminalTab) {
+        guard let replacementRange = completionPreviewState?.replacementRange ?? activeCompletionRange else { return }
+        let baseText = completionPreviewState?.baseText ?? tab.inputView.string
+        guard let existing = substring(in: baseText, range: replacementRange) else { return }
+
+        let updated = (baseText as NSString).replacingCharacters(in: replacementRange, with: suggestion.insertText)
+        let renderedRange = NSRange(
+            location: replacementRange.location,
+            length: (suggestion.insertText as NSString).length
+        )
+        let typedPrefixLength = commonPrefixLength(existing, suggestion.insertText)
+        let mutedRange = NSRange(
+            location: renderedRange.location + typedPrefixLength,
+            length: max(0, renderedRange.length - typedPrefixLength)
+        )
+
+        isApplyingCompletion = true
+        tab.inputView.string = updated
+        tab.inputView.renderMutedCompletionPreview(mutedRange: mutedRange)
+        let cursor = renderedRange.location + renderedRange.length
+        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
+        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
+        isApplyingCompletion = false
+
+        completionPreviewState = CompletionPreviewState(
+            baseText: baseText,
+            replacementRange: replacementRange,
+            renderedRange: renderedRange
+        )
+    }
+
+    @discardableResult
+    private func commitCompletionPreview(in tab: TerminalTab) -> Bool {
+        guard let preview = completionPreviewState else { return false }
+        isApplyingCompletion = true
+        tab.inputView.normalizePlainTextStorage()
+        let cursor = preview.renderedRange.location + preview.renderedRange.length
+        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
+        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
+        isApplyingCompletion = false
+        completionPreviewState = nil
+        activeCompletionRange = preview.renderedRange
+        return true
+    }
+
+    private func clearCompletionPreview(in tab: TerminalTab, restoringOriginal: Bool) {
+        guard let preview = completionPreviewState else { return }
+        completionPreviewState = nil
+        isApplyingCompletion = true
+        if restoringOriginal {
+            tab.inputView.string = preview.baseText
+            tab.inputView.normalizePlainTextStorage()
+            let cursor = preview.replacementRange.location + preview.replacementRange.length
+            tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
+            tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
+            activeCompletionRange = preview.replacementRange
+        } else {
+            tab.inputView.normalizePlainTextStorage()
+            activeCompletionRange = preview.renderedRange
+        }
+        isApplyingCompletion = false
     }
 
     private func shouldContinueCompletion(afterApplying suggestion: CompletionSuggestion) -> Bool {
@@ -2496,10 +2603,29 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         isApplyingCompletion = false
     }
 
-    private func dismissCompletion() {
+    private func dismissCompletion(restoringPreview: Bool = true) {
+        if let tab = activeTab {
+            clearCompletionPreview(in: tab, restoringOriginal: restoringPreview)
+        } else {
+            completionPreviewState = nil
+        }
         activeCompletionRange = nil
         completionPopup.dismiss()
         completionRequestSerial += 1
+    }
+
+    private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
+        var length = 0
+        var lhsIndex = lhs.startIndex
+        var rhsIndex = rhs.startIndex
+        while lhsIndex < lhs.endIndex,
+              rhsIndex < rhs.endIndex,
+              lhs[lhsIndex] == rhs[rhsIndex] {
+            length += String(lhs[lhsIndex]).utf16.count
+            lhsIndex = lhs.index(after: lhsIndex)
+            rhsIndex = rhs.index(after: rhsIndex)
+        }
+        return length
     }
 
     private func substring(in value: String, range: NSRange) -> String? {

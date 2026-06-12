@@ -36,7 +36,7 @@ struct CompletionSuggestion {
     let source: String
 }
 
-final class CompletionPopupController: NSObject {
+final class CompletionPopupController: NSObject, NSPopoverDelegate {
     private static let popupWidth: CGFloat = 360
     private static let maxPopupHeight: CGFloat = 232
 
@@ -48,8 +48,10 @@ final class CompletionPopupController: NSObject {
     private weak var presentationView: NSView?
     private var presentationEdge: NSRectEdge?
     private var placementSerial = 0
+    private var suppressCloseNotification = false
 
     var isShown: Bool { popover.isShown }
+    var onExternalDismiss: (() -> Void)?
     var selectedSuggestion: CompletionSuggestion? {
         guard suggestions.indices.contains(selectedIndex) else { return nil }
         return suggestions[selectedIndex]
@@ -72,6 +74,7 @@ final class CompletionPopupController: NSObject {
         popover.contentViewController = viewController
         popover.behavior = .semitransient
         popover.animates = false
+        popover.delegate = self
     }
 
     func show(suggestions: [CompletionSuggestion], relativeTo rect: NSRect, of view: NSView, resetSelection: Bool = true) {
@@ -180,21 +183,40 @@ final class CompletionPopupController: NSObject {
         presentationEdge = nil
         placementSerial += 1
         listView.update(suggestions: [], selectedIndex: 0)
+        suppressCloseNotification = true
         popover.performClose(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.suppressCloseNotification = false
+        }
     }
 
-    func selectNext() {
-        guard !suggestions.isEmpty else { return }
+    func popoverDidClose(_ notification: Notification) {
+        guard !suppressCloseNotification else { return }
+        suggestions.removeAll()
+        selectedIndex = 0
+        presentationView = nil
+        presentationEdge = nil
+        placementSerial += 1
+        listView.update(suggestions: [], selectedIndex: 0)
+        onExternalDismiss?()
+    }
+
+    @discardableResult
+    func selectNext() -> CompletionSuggestion? {
+        guard !suggestions.isEmpty else { return nil }
         selectedIndex = (selectedIndex + 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
+        return selectedSuggestion
     }
 
-    func selectPrevious() {
-        guard !suggestions.isEmpty else { return }
+    @discardableResult
+    func selectPrevious() -> CompletionSuggestion? {
+        guard !suggestions.isEmpty else { return nil }
         selectedIndex = (selectedIndex + suggestions.count - 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
+        return selectedSuggestion
     }
 
     private func scrollRowToVisible(_ row: Int) {
