@@ -36,11 +36,12 @@ The build script signs the app with the Developer ID identity associated with
 
 ## Versioning
 
-`Cargo.toml` is the source of truth. Bump `package.version` to release a new
-app version. `scripts/build-app.sh` stamps that into
-`CFBundleShortVersionString`, sets `CFBundleVersion` from the git commit count,
-and `scripts/publish.sh` publishes GitHub release tag `vX.Y.Z` from the built app
-bundle.
+`Cargo.toml` is the source of truth. `scripts/publish.sh` asks Codex for release
+notes and the next semantic version based on changes since the last release,
+updates `Cargo.toml` and `Cargo.lock`, commits `vX.Y.Z`, pushes the branch, then
+publishes GitHub release tag `vX.Y.Z` from the built app bundle.
+`scripts/build-app.sh` stamps the Cargo version into `CFBundleShortVersionString`
+and sets `CFBundleVersion` from the git commit count.
 
 ## Ghostty Integration
 

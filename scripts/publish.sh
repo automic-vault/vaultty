@@ -1,4 +1,5 @@
 #!/usr/local/bin/av inject +APPLE_PASSWORD /bin/bash
+# shellcheck shell=bash disable=SC2096
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +30,14 @@ usage() {
   cat <<'EOF'
 Usage: scripts/publish.sh [--output PATH] [--with-ghostty-vt] [--clobber]
 
-Build, notarize, and publish the Vaultty DMG to a GitHub release.
+Plan, build, notarize, and publish the Vaultty DMG to a GitHub release.
+
+The script asks Codex to produce:
+  1. Release Notes
+  2. New Semantic Version based on the changes since the last release
+
+It then updates Cargo.toml and Cargo.lock, commits vX.Y.Z, pushes the branch,
+and publishes GitHub release vX.Y.Z.
 
 The shebang injects APPLE_PASSWORD from Automic Vault before the script starts.
 
@@ -113,6 +121,37 @@ plist_value() {
   /usr/libexec/PlistBuddy -c "Print :${key}" "${plist}" 2>/dev/null
 }
 
+package_version() {
+  local pkgid version
+  pkgid="$(cargo pkgid --manifest-path "${repo_root}/Cargo.toml")"
+  version="${pkgid##*#}"
+  printf '%s\n' "${version##*@}"
+}
+
+version_gt() {
+  local left="$1"
+  local right="$2"
+  local left_major left_minor left_patch right_major right_minor right_patch
+
+  IFS=. read -r left_major left_minor left_patch <<<"${left}"
+  IFS=. read -r right_major right_minor right_patch <<<"${right}"
+
+  if (( 10#${left_major} != 10#${right_major} )); then
+    (( 10#${left_major} > 10#${right_major} ))
+  elif (( 10#${left_minor} != 10#${right_minor} )); then
+    (( 10#${left_minor} > 10#${right_minor} ))
+  else
+    (( 10#${left_patch} > 10#${right_patch} ))
+  fi
+}
+
+ensure_clean_worktree() {
+  git -C "${repo_root}" diff --quiet ||
+    die "Working tree has unstaged changes; commit or stash them before publishing"
+  git -C "${repo_root}" diff --cached --quiet ||
+    die "Index has staged changes; commit or stash them before publishing"
+}
+
 build_release_app() {
   local -a build_app_args
   local build_output app_path
@@ -188,28 +227,23 @@ notarize_dmg() {
   /usr/bin/xcrun stapler staple "${dmg_path}" >&2
 }
 
-latest_release_tag_before() {
-  local target_tag="$1"
-  local release_tag releases
+latest_release_tag() {
+  local release_tag
 
-  if ! releases="$(
+  require_tool gh
+
+  if ! release_tag="$(
     gh release list \
       --exclude-drafts \
-      --limit 50 \
+      --limit 1 \
       --json tagName \
-      --jq '.[].tagName'
+      --jq '.[0].tagName'
   )"; then
     die "Unable to list GitHub releases"
   fi
 
-  while IFS= read -r release_tag; do
-    if [[ -n "${release_tag}" && "${release_tag}" != "${target_tag}" ]]; then
-      printf '%s\n' "${release_tag}"
-      return 0
-    fi
-  done <<<"${releases}"
-
-  return 1
+  [[ -n "${release_tag}" && "${release_tag}" != "null" ]] || return 1
+  printf '%s\n' "${release_tag}"
 }
 
 ensure_git_tag_available() {
@@ -224,111 +258,173 @@ ensure_git_tag_available() {
     die "Unable to fetch release tag ${tag}"
 }
 
-generate_release_notes() {
-  local tag="$1"
-  local target_ref="$2"
-  local notes_path previous_tag prompt
+generate_release_plan() {
+  local current_version="$1"
+  local plan_path notes_path version_path previous_tag compare_range prompt
+  local target_ref
+
+  target_ref="$(git -C "${repo_root}" rev-parse HEAD)"
 
   require_tool codex
   require_tool gh
 
+  plan_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-plan.XXXXXX")"
   notes_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-notes.XXXXXX")"
+  version_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-version.XXXXXX")"
 
-  if previous_tag="$(latest_release_tag_before "${tag}")"; then
+  if previous_tag="$(latest_release_tag)"; then
     ensure_git_tag_available "${previous_tag}"
-    prompt="Summarize the user-facing changes in Vaultty since the last release.
+    compare_range="${previous_tag}..${target_ref}"
+    prompt="Plan the next Vaultty release.
 
 Repository: ${repo_root}
 Previous release tag: ${previous_tag}
-New release tag: ${tag}
-Compare range: ${previous_tag}..${target_ref}
+Current Cargo package version: ${current_version}
+Compare range: ${compare_range}
 
-Inspect the git history and diff for that range. Write concise GitHub release notes in Markdown.
-Focus on behavior, fixes, user-visible improvements, packaging, and operational changes.
-Do not include a title, preamble, commit hashes, contributor lists, or references to GitHub auto-generated notes.
+Inspect the git history and diff for that range. Choose the next SemVer version based on the changes since the previous release.
+Use patch for compatible fixes, minor for new user-visible behavior, and major only for intentional breaking changes.
+Write concise GitHub release notes in Markdown focused on behavior, fixes, user-visible improvements, packaging, and operational changes.
 Do not edit files or create commits.
-Use short bullets grouped under clear headings only when useful."
+Output exactly this format, with no code fence, no title, no preamble, no commit hashes, no contributor list, and no GitHub auto-generated notes references:
+1. Release Notes
+<release notes markdown>
+2. New Semantic Version
+<X.Y.Z>"
   else
-    prompt="Write initial GitHub release notes for Vaultty.
+    prompt="Plan the initial Vaultty release.
 
 Repository: ${repo_root}
-New release tag: ${tag}
+Current Cargo package version: ${current_version}
 Target ref: ${target_ref}
 
-Inspect the repository and recent git history. Write concise GitHub release notes in Markdown.
-Focus on behavior, fixes, user-visible improvements, packaging, and operational changes.
-Do not include a title, preamble, commit hashes, contributor lists, or references to GitHub auto-generated notes.
+Inspect the repository and recent git history. Choose the next SemVer version.
+Write concise GitHub release notes in Markdown focused on behavior, fixes, user-visible improvements, packaging, and operational changes.
 Do not edit files or create commits.
-Use short bullets grouped under clear headings only when useful."
+Output exactly this format, with no code fence, no title, no preamble, no commit hashes, no contributor list, and no GitHub auto-generated notes references:
+1. Release Notes
+<release notes markdown>
+2. New Semantic Version
+<X.Y.Z>"
   fi
 
-  step "Generating release notes with Codex"
+  step "Generating release plan with Codex"
   codex exec \
     --cd "${repo_root}" \
     --sandbox read-only \
     --config approval_policy=\"never\" \
     --color never \
     --ephemeral \
-    --output-last-message "${notes_path}" \
+    --output-last-message "${plan_path}" \
     "${prompt}" \
     >&2 ||
-    die "Codex release note generation failed"
+    die "Codex release planning failed"
 
-  [[ -s "${notes_path}" ]] || die "Codex generated empty release notes"
-  printf '%s\n' "${notes_path}"
+  [[ -s "${plan_path}" ]] || die "Codex generated an empty release plan"
+
+  awk '
+    /^[[:space:]]*(1\.)?[[:space:]]*Release Notes[[:space:]]*$/ { in_notes = 1; next }
+    /^[[:space:]]*(2\.)?[[:space:]]*New Semantic Version[[:space:]]*$/ { exit }
+    in_notes { print }
+  ' "${plan_path}" >"${notes_path}"
+
+  awk '
+    /^[[:space:]]*(2\.)?[[:space:]]*New Semantic Version[[:space:]]*$/ { in_version = 1; next }
+    in_version && match($0, /[0-9]+\.[0-9]+\.[0-9]+/) {
+      print substr($0, RSTART, RLENGTH)
+      exit
+    }
+  ' "${plan_path}" >"${version_path}"
+
+  [[ -s "${notes_path}" ]] || die "Codex release plan did not include release notes"
+  [[ -s "${version_path}" ]] || die "Codex release plan did not include an X.Y.Z version"
+
+  info "1. Release Notes"
+  sed 's/^/  /' "${notes_path}" >&2
+  info "2. New Semantic Version"
+  sed 's/^/  /' "${version_path}" >&2
+
+  printf '%s\n%s\n' "${notes_path}" "${version_path}"
+}
+
+bump_cargo_version() {
+  local version="$1"
+
+  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "Release publishing requires an X.Y.Z version, got: ${version}"
+
+  VERSION="${version}" perl -0pi -e '
+    my $version = $ENV{VERSION};
+    s/(\[package\](?:(?!^\[).)*?^version\s*=\s*")[^"]+(")/$1$version$2/ms
+      or die "Unable to update package.version in Cargo.toml\n";
+  ' "${repo_root}/Cargo.toml"
+
+  cargo metadata --manifest-path "${repo_root}/Cargo.toml" --format-version 1 --no-deps >/dev/null
+}
+
+commit_release_version() {
+  local version="$1"
+  local tag="v${version}"
+
+  git -C "${repo_root}" add Cargo.toml Cargo.lock
+
+  if git -C "${repo_root}" diff --cached --quiet; then
+    die "Cargo.toml and Cargo.lock were unchanged after version bump"
+  fi
+
+  step "Committing ${tag}"
+  git -C "${repo_root}" commit -m "${tag}" >&2
+}
+
+push_current_branch() {
+  local branch
+
+  branch="$(git -C "${repo_root}" rev-parse --abbrev-ref HEAD)"
+  [[ "${branch}" != "HEAD" ]] || die "Cannot push release commit from detached HEAD"
+
+  step "Pushing ${branch}"
+  git -C "${repo_root}" push >&2
 }
 
 clobber_github_release() {
   local tag="$1"
-  local notes_path view_error
+  local view_error
 
   require_tool gh
-  notes_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-notes.XXXXXX")"
   view_error="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-view.XXXXXX")"
 
-  if ! gh release view "${tag}" --json body --jq '.body' >"${notes_path}" 2>"${view_error}"; then
+  if ! gh release view "${tag}" >/dev/null 2>"${view_error}"; then
     if grep -Eiq 'release not found|not found|HTTP 404' "${view_error}"; then
       rm -f "${view_error}"
-      printf 'Rebuilt release %s.\n' "${tag}" >"${notes_path}"
-      printf '%s\n' "${notes_path}"
       return 0
     fi
 
     cat "${view_error}" >&2
-    rm -f "${notes_path}" "${view_error}"
+    rm -f "${view_error}"
     die "Unable to check existing GitHub release ${tag}"
   fi
 
   rm -f "${view_error}"
-  if [[ ! -s "${notes_path}" ]]; then
-    printf 'Rebuilt release %s.\n' "${tag}" >"${notes_path}"
-  fi
 
   step "Clobbering existing GitHub release ${tag}"
   gh release delete "${tag}" --yes --cleanup-tag >&2 ||
     die "Unable to clobber existing GitHub release ${tag}"
-
-  printf '%s\n' "${notes_path}"
 }
 
 publish_github_release() {
   local tag="$1"
   local version="$2"
   local dmg_path="$3"
-  local asset_label target_ref release_notes_path
+  local release_notes_path="$4"
+  local asset_label target_ref
   local -a release_args
 
   require_tool gh
   asset_label="$(basename "${dmg_path}")"
-  target_ref="$(git -C "${repo_root}" rev-parse --abbrev-ref HEAD)"
-  if [[ "${target_ref}" == "HEAD" ]]; then
-    target_ref="$(git -C "${repo_root}" rev-parse HEAD)"
-  fi
+  target_ref="$(git -C "${repo_root}" rev-parse HEAD)"
 
   if [[ "${clobber_release}" == "true" ]]; then
-    release_notes_path="$(clobber_github_release "${tag}")"
-  else
-    release_notes_path="$(generate_release_notes "${tag}" "${target_ref}")"
+    clobber_github_release "${tag}"
   fi
 
   release_args=(
@@ -380,6 +476,7 @@ done
 configure_codesign_identity
 
 require_tool git
+require_tool cargo
 git -C "${repo_root}" rev-parse --is-inside-work-tree >/dev/null ||
   die "scripts/publish.sh must run inside a git repository"
 git -C "${repo_root}" rev-parse --verify HEAD >/dev/null 2>&1 ||
@@ -387,13 +484,33 @@ git -C "${repo_root}" rev-parse --verify HEAD >/dev/null 2>&1 ||
 if ! git -C "${repo_root}" remote get-url origin >/dev/null 2>&1 && [[ -z "${GH_REPO:-}" ]]; then
   die "Set a git origin remote or GH_REPO before publishing"
 fi
+ensure_clean_worktree
+
+current_version="$(package_version)"
+release_plan="$(generate_release_plan "${current_version}")"
+release_notes_path="$(printf '%s\n' "${release_plan}" | sed -n '1p')"
+version_path="$(printf '%s\n' "${release_plan}" | sed -n '2p')"
+version="$(<"${version_path}")"
+
+if ! version_gt "${version}" "${current_version}"; then
+  die "Codex proposed ${version}, which is not newer than current Cargo version ${current_version}"
+fi
+
+if [[ "${clobber_release}" != "true" ]] &&
+    git -C "${repo_root}" rev-parse --verify --quiet "v${version}^{commit}" >/dev/null; then
+  die "Tag v${version} already exists"
+fi
+
+bump_cargo_version "${version}"
+commit_release_version "${version}"
+push_current_branch
 
 app_path="$(build_release_app)"
 plist_path="${app_path}/Contents/Info.plist"
-version="$(plist_value CFBundleShortVersionString "${plist_path}")"
-[[ -n "${version}" ]] || die "Unable to read CFBundleShortVersionString from ${plist_path}"
-[[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-  die "Release publishing requires an X.Y.Z version, got: ${version}"
+built_version="$(plist_value CFBundleShortVersionString "${plist_path}")"
+[[ -n "${built_version}" ]] || die "Unable to read CFBundleShortVersionString from ${plist_path}"
+[[ "${built_version}" == "${version}" ]] ||
+  die "Built app version ${built_version} does not match planned release version ${version}"
 
 if [[ -z "${output_path}" ]]; then
   output_path="${target_dir}/${app_name}-${version}.dmg"
@@ -407,7 +524,7 @@ info "Output: ${final_dmg}"
 
 create_dmg "${app_path}" "${final_dmg}"
 notarize_dmg "${final_dmg}"
-publish_github_release "v${version}" "${version}" "${final_dmg}"
+publish_github_release "v${version}" "${version}" "${final_dmg}" "${release_notes_path}"
 
 done_msg "Published Vaultty ${version}"
 printf '%s\n' "${final_dmg}"
