@@ -2291,19 +2291,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isApplicationCursorModeActive = false
         tab.ptyPassthroughView.usesPagerKeyBindings = false
         stopTtyModePolling(for: tab)
+        tab.isShellReady = true
         setTerminalControl(false, in: tab)
-        tab.statusLabel.stringValue = "Interrupting..."
+        updateCommandBarDirectoryStatus(for: tab)
         updateCommandBarVisibility(for: tab)
         updateTabTitleForDirectory(tab)
         focusInput(for: tab)
-        resyncShellReadiness(in: tab)
-    }
-
-    private func resyncShellReadiness(in tab: TerminalTab) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak tab] in
-            guard let tab, !tab.isShellReady else { return }
-            tab.session.write("printf '\\033]133;R;%s\\a' \"$(pwd | base64)\"\\n")
-        }
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
