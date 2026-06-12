@@ -92,13 +92,29 @@ final class CompletionPopupController: NSObject {
             popover.positioningRect = rect
             return
         }
-        popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+        popover.show(
+            relativeTo: rect,
+            of: view,
+            preferredEdge: preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
+        )
         if shouldFlashScrollers {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.popover.isShown else { return }
                 self.scrollView.flashScrollers()
             }
         }
+    }
+
+    private func preferredEdge(for rect: NSRect, of view: NSView, popupHeight: CGFloat) -> NSRectEdge {
+        guard let window = view.window else { return .maxY }
+
+        let windowRect = view.convert(rect, to: nil)
+        let screenRect = window.convertToScreen(windowRect)
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let bottomMargin: CGFloat = 12
+        let availableBelow = screenRect.minY - (visibleFrame?.minY ?? 0)
+
+        return availableBelow >= popupHeight + bottomMargin ? .minY : .maxY
     }
 
     func dismiss() {
