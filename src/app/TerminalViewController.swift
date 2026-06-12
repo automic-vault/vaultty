@@ -645,12 +645,12 @@ private final class BlockView: NSView {
         layer?.borderWidth = 0
         layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
 
-        commandLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+        commandLabel.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         commandLabel.textColor = .labelColor
         commandLabel.lineBreakMode = .byWordWrapping
         commandLabel.maximumNumberOfLines = 0
 
-        metaLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        metaLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         metaLabel.textColor = .secondaryLabelColor
         metaLabel.lineBreakMode = .byTruncatingMiddle
         metaLabel.maximumNumberOfLines = 1
@@ -688,7 +688,8 @@ private final class BlockView: NSView {
 
         let content = NSStackView(views: [header, commandLabel, outputView])
         content.orientation = .vertical
-        content.spacing = 6
+        content.spacing = 0
+        content.setCustomSpacing(6, after: commandLabel)
         content.alignment = .leading
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
@@ -699,7 +700,7 @@ private final class BlockView: NSView {
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            content.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             header.widthAnchor.constraint(equalTo: content.widthAnchor),
             header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
@@ -739,7 +740,7 @@ private final class BlockView: NSView {
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
-            metadata.append(MetadataSegment(text: "running", color: .secondaryLabelColor))
+            metadata.append(MetadataSegment(text: "Running…", color: .secondaryLabelColor))
         case .completed(let code):
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
@@ -2491,14 +2492,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard !command.isEmpty else { return }
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
-        tab.inputView.isEditable = false
+        clearCommandInput(in: tab)
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
         tab.terminalScreen.resetForCommand()
         tab.styledRenderer.reset()
         tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
-        updateCommandBarRunningStatus(for: tab)
         updateTabTitle(titleForCommand(command), detail: command, in: tab)
 
         let block = TerminalBlock(
@@ -2514,6 +2514,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         )
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
+        addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
         startTtyModePolling(for: tab)
 
@@ -2792,10 +2793,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func updateCommandBarRunningStatus(for tab: TerminalTab) {
-        tab.statusLabel.stringValue = "\(detailForDirectory(tab.currentCwd))  Running…"
-    }
-
     private func clearCommandInput(in tab: TerminalTab) {
         tab.inputView.string = ""
         tab.inputView.resetPlainTextAttributes()
@@ -2871,7 +2868,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateCommandBarVisibility(for tab: TerminalTab) {
-        let shouldShowCommandBar = !tab.isTerminalControlActive
+        let shouldShowCommandBar = !tab.isTerminalControlActive && !isCommandRunning(in: tab)
         tab.commandBarView.isHidden = !shouldShowCommandBar
         tab.commandSeparator.isHidden = !shouldShowCommandBar
         tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
