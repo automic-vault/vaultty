@@ -116,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.endWindowResizeTooltip()
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        controller?.stopAllSessions()
+    }
+
     @objc private func closeActiveTabOrWindow(_ sender: Any?) {
         guard let controller else {
             window?.performClose(sender)

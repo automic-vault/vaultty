@@ -5,6 +5,8 @@ final class PtySession {
     var onOutput: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
 
+    private static let reaperQueue = DispatchQueue(label: "com.automicvault.vaultty.pty-reaper", qos: .utility)
+
     private var childPid: pid_t = -1
     private var master: Int32 = -1
     private var readSource: DispatchSourceRead?
@@ -98,16 +100,27 @@ final class PtySession {
     }
 
     func stop() {
+        let pid = childPid
+        let fd = master
+        let processGroups = processGroupsToTerminate(masterFd: fd, childPid: pid)
+
+        if !processGroups.isEmpty {
+            send(signal: SIGTERM, toProcessGroups: processGroups)
+        }
+        if pid > 0 {
+            _ = kill(pid, SIGTERM)
+        }
+
         readSource?.cancel()
         readSource = nil
         exitSource?.cancel()
         exitSource = nil
-        if master >= 0 {
-            close(master)
+        if fd >= 0 {
+            close(fd)
             master = -1
         }
-        if childPid > 0 {
-            _ = kill(-childPid, SIGTERM)
+        if pid > 0 {
+            Self.reapChild(pid: pid)
         }
         childPid = -1
     }
@@ -125,6 +138,39 @@ final class PtySession {
         var term = termios()
         guard tcgetattr(master, &term) == 0 else { return nil }
         return (term.c_lflag & UInt(ISIG)) != 0
+    }
+
+    private func processGroupsToTerminate(masterFd: Int32, childPid: pid_t) -> [pid_t] {
+        var groups: [pid_t] = []
+
+        if masterFd >= 0 {
+            var foregroundProcessGroup: pid_t = 0
+            if ioctl(masterFd, TIOCGPGRP, &foregroundProcessGroup) == 0,
+               foregroundProcessGroup > 0 {
+                groups.append(foregroundProcessGroup)
+            }
+        }
+
+        if childPid > 0 {
+            groups.append(childPid)
+        }
+
+        var seen = Set<pid_t>()
+        return groups.filter { seen.insert($0).inserted }
+    }
+
+    private func send(signal: Int32, toProcessGroups processGroups: [pid_t]) {
+        for processGroup in processGroups {
+            _ = kill(-processGroup, signal)
+        }
+    }
+
+    private static func reapChild(pid: pid_t) {
+        reaperQueue.async {
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) == -1 && errno == EINTR {
+            }
+        }
     }
 
     private func startReading(fd: Int32) {

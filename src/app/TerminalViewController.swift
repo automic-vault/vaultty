@@ -1537,6 +1537,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tabMouseDownMonitor {
             NSEvent.removeMonitor(tabMouseDownMonitor)
         }
+        stopAllSessions()
     }
 
     override func viewDidAppear() {
@@ -1547,6 +1548,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     func windowDidAttach() {
         if let tab = activeTab {
             focusInput(for: tab)
+        }
+    }
+
+    func stopAllSessions() {
+        for tab in tabs {
+            stopTtyModePolling(for: tab)
+            tab.session.stop()
         }
     }
 
@@ -1752,14 +1760,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard confirmCloseIfNeeded(tab) else {
             return false
         }
+        stopTtyModePolling(for: tab)
+        tab.session.stop()
         guard tabs.count > 1 else {
             view.window?.performClose(nil)
             return true
         }
 
         let wasActive = activeTabID == tab.id
-        stopTtyModePolling(for: tab)
-        tab.session.stop()
         tab.rootView.removeFromSuperview()
         titleTabStack.removeArrangedSubview(button)
         button.removeFromSuperview()
