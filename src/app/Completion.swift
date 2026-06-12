@@ -45,6 +45,9 @@ final class CompletionPopupController: NSObject {
     private let listView = CompletionListView(frame: .zero)
     private var suggestions: [CompletionSuggestion] = []
     private var selectedIndex = 0
+    private weak var presentationView: NSView?
+    private var presentationEdge: NSRectEdge?
+    private var placementSerial = 0
 
     var isShown: Bool { popover.isShown }
     var selectedSuggestion: CompletionSuggestion? {
@@ -88,20 +91,51 @@ final class CompletionPopupController: NSObject {
         popover.contentViewController?.preferredContentSize = size
         popover.contentSize = size
 
+        let edge = preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
+        let positioningRect = clampedPositioningRect(for: rect, in: view)
+        placementSerial += 1
+        let serial = placementSerial
+
         if popover.isShown {
-            popover.positioningRect = rect
+            if presentationView !== view || presentationEdge != edge {
+                popover.performClose(nil)
+                present(relativeTo: positioningRect, of: view, preferredEdge: edge)
+            } else {
+                popover.positioningRect = positioningRect
+                reapplyPositioningRect(positioningRect, serial: serial)
+            }
             return
         }
-        popover.show(
-            relativeTo: rect,
-            of: view,
-            preferredEdge: preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
-        )
+
+        present(relativeTo: positioningRect, of: view, preferredEdge: edge)
+        reapplyPositioningRect(positioningRect, serial: serial)
         if shouldFlashScrollers {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.popover.isShown else { return }
                 self.scrollView.flashScrollers()
             }
+        }
+    }
+
+    private func present(relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge) {
+        presentationView = view
+        presentationEdge = preferredEdge
+        popover.show(
+            relativeTo: rect,
+            of: view,
+            preferredEdge: preferredEdge
+        )
+    }
+
+    private func reapplyPositioningRect(_ rect: NSRect, serial: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.popover.isShown,
+                  self.placementSerial == serial
+            else {
+                return
+            }
+            self.popover.positioningRect = rect
         }
     }
 
@@ -117,9 +151,34 @@ final class CompletionPopupController: NSObject {
         return availableBelow >= popupHeight + bottomMargin ? .minY : .maxY
     }
 
+    private func clampedPositioningRect(for rect: NSRect, in view: NSView) -> NSRect {
+        let halfPopupWidth = Self.popupWidth / 2
+        let horizontalMargin: CGFloat = 8
+        let minMidX = view.bounds.minX + halfPopupWidth + horizontalMargin
+        let maxMidX = view.bounds.maxX - halfPopupWidth - horizontalMargin
+        let rectWidth = max(1, rect.width)
+        let boundedMidX: CGFloat
+
+        if minMidX <= maxMidX {
+            boundedMidX = min(max(rect.midX, minMidX), maxMidX)
+        } else {
+            boundedMidX = view.bounds.midX
+        }
+
+        return NSRect(
+            x: boundedMidX - rectWidth / 2,
+            y: rect.minY,
+            width: rectWidth,
+            height: max(1, rect.height)
+        )
+    }
+
     func dismiss() {
         suggestions.removeAll()
         selectedIndex = 0
+        presentationView = nil
+        presentationEdge = nil
+        placementSerial += 1
         listView.update(suggestions: [], selectedIndex: 0)
         popover.performClose(nil)
     }
@@ -589,9 +648,9 @@ final class VaulttyCompletionEngine {
         spec: LoadedFigSpec
     ) -> [CompletionSuggestion] {
         let executeCommand: @convention(block) (JSValue) -> JSValue = { [request] commandValue in
-            let command = commandValue.forProperty("command")?.toString()
+            let command = FigReader.string(commandValue.forProperty("command"))
             let argsValue = commandValue.forProperty("args")
-            let cwd = commandValue.forProperty("cwd")?.toString() ?? request.cwd
+            let cwd = FigReader.string(commandValue.forProperty("cwd")) ?? request.cwd
             let args = FigReader.stringArray(argsValue)
             guard let command,
                   let output = ShellCommandRunner.run(
@@ -658,11 +717,11 @@ final class VaulttyCompletionEngine {
                 return CompletionSuggestion(displayText: name, insertText: name + " ", description: nil, kind: kind, priority: 50, source: source)
             }
             guard let name = FigReader.names(from: item).first else { return nil }
-            let insertValue = item.forProperty("insertValue")?.toString() ?? name
+            let insertValue = FigReader.string(item.forProperty("insertValue")) ?? name
             return CompletionSuggestion(
                 displayText: name,
                 insertText: insertValue + " ",
-                description: item.forProperty("description")?.toString(),
+                description: FigReader.string(item.forProperty("description")),
                 kind: kind,
                 priority: Int(item.forProperty("priority")?.toInt32() ?? 50),
                 source: source
@@ -1222,7 +1281,7 @@ private struct FigNode {
     let value: JSValue
 
     var names: [String] { FigReader.names(from: value) }
-    var description: String? { value.forProperty("description")?.toString() }
+    var description: String? { FigReader.string(value.forProperty("description")) }
     var subcommands: [FigNode] { FigReader.arrayValues(value.forProperty("subcommands")).map(FigNode.init) }
     var options: [FigOption] { FigReader.arrayValues(value.forProperty("options")).map(FigOption.init) }
     var args: [FigArg] { FigReader.args(from: value.forProperty("args")) }
@@ -1240,7 +1299,7 @@ private struct FigOption {
     let value: JSValue
 
     var names: [String] { FigReader.names(from: value) }
-    var description: String? { value.forProperty("description")?.toString() }
+    var description: String? { FigReader.string(value.forProperty("description")) }
     var args: [FigArg] { FigReader.args(from: value.forProperty("args")) }
 }
 
@@ -1269,7 +1328,7 @@ private struct FigGenerator {
 
     var templates: [String] { FigReader.templates(from: value) }
     var suggestions: [FigStaticSuggestion] { FigReader.suggestions(from: value.forProperty("suggestions")) }
-    var splitOn: String? { value.forProperty("splitOn")?.toString() }
+    var splitOn: String? { FigReader.string(value.forProperty("splitOn")) }
     var postProcess: JSValue? { value.forProperty("postProcess") }
     var custom: JSValue? { value.forProperty("custom") }
 
@@ -1284,9 +1343,9 @@ private struct FigGenerator {
             return FigScript(command: command, args: Array(parts.dropFirst()), cwd: nil)
         }
         if scriptValue.isObject {
-            let command = scriptValue.forProperty("command")?.toString()
+            let command = FigReader.string(scriptValue.forProperty("command"))
             let args = FigReader.stringArray(scriptValue.forProperty("args"))
-            let cwd = scriptValue.forProperty("cwd")?.toString()
+            let cwd = FigReader.string(scriptValue.forProperty("cwd"))
             if let command {
                 return FigScript(command: command, args: args, cwd: cwd)
             }
@@ -1336,9 +1395,14 @@ private enum FigReader {
             return [value.toString()].compactMap { $0 }
         }
         if value.isArray {
-            return arrayValues(value).compactMap { $0.toString() }
+            return arrayValues(value).compactMap { string($0) }
         }
         return []
+    }
+
+    static func string(_ value: JSValue?) -> String? {
+        guard let value, !value.isUndefined, !value.isNull else { return nil }
+        return value.toString()
     }
 
     static func templates(from value: JSValue?) -> [String] {
@@ -1357,8 +1421,8 @@ private enum FigReader {
             guard let name = names(from: item).first else { return nil }
             return FigStaticSuggestion(
                 name: name,
-                insertValue: item.forProperty("insertValue")?.toString(),
-                description: item.forProperty("description")?.toString(),
+                insertValue: string(item.forProperty("insertValue")),
+                description: string(item.forProperty("description")),
                 priority: Int(item.forProperty("priority")?.toInt32() ?? 50)
             )
         }
