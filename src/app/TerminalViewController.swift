@@ -2531,7 +2531,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         isApplyingCompletion = true
         tab.inputView.string = updated
         tab.inputView.renderMutedCompletionPreview(mutedRange: mutedRange)
-        let cursor = renderedRange.location + renderedRange.length
+        let cursor = replacementRange.location + replacementRange.length
         tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
         isApplyingCompletion = false
