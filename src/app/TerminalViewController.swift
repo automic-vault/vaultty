@@ -1161,6 +1161,7 @@ private final class TitleAddButton: NSButton {
 
 private final class PtyPassthroughView: NSView {
     var onInput: ((String) -> Void)?
+    var onInterrupt: (() -> Void)?
     var usesApplicationCursorKeys: (() -> Bool)?
     var usesPagerKeyBindings = false
 
@@ -1171,11 +1172,15 @@ private final class PtyPassthroughView: NSView {
             super.keyDown(with: event)
             return
         }
+        if sequence == "\u{3}" {
+            onInterrupt?()
+            return
+        }
         onInput?(sequence)
     }
 
     override func cancelOperation(_ sender: Any?) {
-        onInput?("\u{3}")
+        onInterrupt?()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1340,11 +1345,7 @@ private final class TerminalTab {
         ptyPassthroughView.translatesAutoresizingMaskIntoConstraints = false
         ptyPassthroughView.isHidden = true
         ptyPassthroughView.onInput = { [weak self] sequence in
-            if sequence == "\u{3}" {
-                self?.session.sendInterrupt()
-            } else {
-                self?.session.write(sequence)
-            }
+            self?.session.write(sequence)
         }
         ptyPassthroughView.usesApplicationCursorKeys = { [weak self] in
             self?.isApplicationCursorModeActive == true
@@ -1639,7 +1640,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         if commandSelector == #selector(NSResponder.cancelOperation(_:)),
            isCommandRunning(in: tab) {
-            tab.session.sendInterrupt()
+            interruptCommand(in: tab)
             return true
         }
 
@@ -1787,6 +1788,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.currentCwd = directoryPath
         tabs.append(tab)
         configureSession(for: tab)
+        configureInterruptHandling(for: tab)
         installTabView(tab)
         installTabButton(tab)
         activateTab(tab.id, tabStripLayoutChanged: true)
@@ -1915,6 +1917,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 self?.setTerminalControl(false, in: tab)
                 self?.updateCommandBarVisibility(for: tab)
             }
+        }
+    }
+
+    private func configureInterruptHandling(for tab: TerminalTab) {
+        tab.ptyPassthroughView.onInterrupt = { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.interruptCommand(in: tab)
         }
     }
 
@@ -2263,6 +2272,30 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session.write(script)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
+    }
+
+    private func interruptCommand(in tab: TerminalTab) {
+        guard isCommandRunning(in: tab) else { return }
+        tab.session.sendInterrupt()
+        tab.parserBuffer.removeAll()
+        finishRunningBlocks(in: tab, status: 130)
+        tab.isAlternateScreenActive = false
+        tab.isApplicationCursorModeActive = false
+        tab.ptyPassthroughView.usesPagerKeyBindings = false
+        stopTtyModePolling(for: tab)
+        setTerminalControl(false, in: tab)
+        tab.statusLabel.stringValue = "Interrupting..."
+        updateCommandBarVisibility(for: tab)
+        updateTabTitleForDirectory(tab)
+        focusInput(for: tab)
+        resyncShellReadiness(in: tab)
+    }
+
+    private func resyncShellReadiness(in tab: TerminalTab) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak tab] in
+            guard let tab, !tab.isShellReady else { return }
+            tab.session.write("printf '\\033]133;R;%s\\a' \"$(pwd | base64)\"\\n")
+        }
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
