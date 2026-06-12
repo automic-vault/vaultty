@@ -39,6 +39,7 @@ private enum TahoeGlassPalette {
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let titleTabShieldSize: CGFloat = 14
     static let titleTabShieldTextGap: CGFloat = 5
+    static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
         green: 0.08,
@@ -385,8 +386,9 @@ private final class TahoeGlassRootView: NSView {
             return path
         }
 
-        let gapStart = max(0, floor(activeTabFrame.minX))
-        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX))
+        let endpointGap = TahoeGlassPalette.titleHairlineEndpointGap
+        let gapStart = max(0, floor(activeTabFrame.minX) - endpointGap)
+        let gapEnd = min(bounds.width, ceil(activeTabFrame.maxX) + endpointGap)
         if gapStart > 0 {
             path.move(to: CGPoint(x: 0, y: y))
             path.addLine(to: CGPoint(x: gapStart, y: y))
@@ -430,13 +432,17 @@ private final class TitleTabBorderView: NSView {
 
         guard let tabStack else { return }
         let visibleSubviews = tabStack.arrangedSubviews.filter { !$0.isHidden }
+        let separatorEndpointInset = min(
+            TahoeGlassPalette.titleHairlineEndpointGap,
+            bounds.height / 2
+        )
         for subview in visibleSubviews.dropLast() {
             let rect = subview.convert(subview.bounds, to: self)
             NSRect(
                 x: floor(rect.maxX) - 1,
-                y: 0,
+                y: separatorEndpointInset,
                 width: 1,
-                height: bounds.height
+                height: max(0, bounds.height - (separatorEndpointInset * 2))
             ).fill()
         }
     }
