@@ -1525,6 +1525,7 @@ private final class TerminalTab {
     let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
     let styledRenderer = Ansi.StyledTextRenderer()
     var ttyModeTimer: Timer?
+    var commandHistory: [String] = []
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
 
@@ -2539,6 +2540,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard tab.isShellReady else { return }
         let command = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return }
+        tab.commandHistory.append(command)
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
         clearCommandInput(in: tab)
@@ -2603,18 +2605,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
-        guard tab.isShellReady, !tab.blocks.isEmpty else { return false }
+        guard tab.isShellReady, !tab.commandHistory.isEmpty else { return false }
 
         let nextIndex: Int
         if let index = tab.commandHistoryIndex {
             nextIndex = max(0, index - 1)
         } else {
             tab.commandHistoryDraft = tab.inputView.string
-            nextIndex = tab.blocks.count - 1
+            nextIndex = tab.commandHistory.count - 1
         }
 
         tab.commandHistoryIndex = nextIndex
-        setInput(tab.blocks[nextIndex].command, in: tab)
+        setInput(tab.commandHistory[nextIndex], in: tab)
         return true
     }
 
@@ -2622,9 +2624,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard tab.isShellReady, let index = tab.commandHistoryIndex else { return false }
 
         let nextIndex = index + 1
-        if nextIndex < tab.blocks.count {
+        if nextIndex < tab.commandHistory.count {
             tab.commandHistoryIndex = nextIndex
-            setInput(tab.blocks[nextIndex].command, in: tab)
+            setInput(tab.commandHistory[nextIndex], in: tab)
         } else {
             tab.commandHistoryIndex = nil
             setInput(tab.commandHistoryDraft, in: tab)
