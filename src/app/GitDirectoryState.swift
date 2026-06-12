@@ -10,8 +10,8 @@ final class GitDirectoryStateProvider {
     private let lock = NSLock()
     private let cacheTTL: TimeInterval
     private var cache: [String: CacheEntry] = [:]
-    private var didResolveTools = false
-    private var toolURLs: [URL] = []
+    private var didResolveGit = false
+    private var gitURL: URL?
 
     init(cacheTTL: TimeInterval = 2) {
         self.cacheTTL = cacheTTL
@@ -62,40 +62,31 @@ final class GitDirectoryStateProvider {
     }
 
     private func loadSummary(for path: String) -> String? {
-        for toolURL in resolvedToolURLs() {
-            guard let output = runStatus(toolURL: toolURL, repositoryPath: path),
-                  let summary = parseStatus(output)
-            else {
-                continue
-            }
-            return summary
+        guard let gitURL = resolvedGitURL(),
+              let output = runStatus(gitURL: gitURL, repositoryPath: path)
+        else {
+            return nil
         }
-        return nil
+        return parseStatus(output)
     }
 
-    private func resolvedToolURLs() -> [URL] {
+    private func resolvedGitURL() -> URL? {
         lock.lock()
-        if didResolveTools {
-            let urls = toolURLs
+        if didResolveGit {
+            let url = gitURL
             lock.unlock()
-            return urls
+            return url
         }
         lock.unlock()
 
-        var urls: [URL] = []
-        for name in ["grit", "git"] {
-            if let url = executableURL(named: name),
-               !urls.contains(url) {
-                urls.append(url)
-            }
-        }
+        let url = executableURL(named: "git")
 
         lock.lock()
-        if !didResolveTools {
-            toolURLs = urls
-            didResolveTools = true
+        if !didResolveGit {
+            gitURL = url
+            didResolveGit = true
         }
-        let resolved = toolURLs
+        let resolved = gitURL
         lock.unlock()
         return resolved
     }
@@ -111,9 +102,9 @@ final class GitDirectoryStateProvider {
         return nil
     }
 
-    private func runStatus(toolURL: URL, repositoryPath: String) -> String? {
+    private func runStatus(gitURL: URL, repositoryPath: String) -> String? {
         let process = Process()
-        process.executableURL = toolURL
+        process.executableURL = gitURL
         process.arguments = ["-C", repositoryPath, "status", "--short", "--branch"]
         process.currentDirectoryURL = URL(fileURLWithPath: repositoryPath)
         process.standardInput = FileHandle.nullDevice
