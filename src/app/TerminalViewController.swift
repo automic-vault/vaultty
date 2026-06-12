@@ -1150,6 +1150,10 @@ private final class PtyPassthroughView: NSView {
         onInput?(sequence)
     }
 
+    override func cancelOperation(_ sender: Any?) {
+        onInput?("\u{3}")
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         return nil
     }
@@ -1158,6 +1162,9 @@ private final class PtyPassthroughView: NSView {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             return nil
+        }
+        if flags.contains(.control), event.charactersIgnoringModifiers?.lowercased() == "c" {
+            return "\u{3}"
         }
 
         if usesPagerKeyBindings {
