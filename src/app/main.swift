@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
         window.isRestorable = false
-        window.titleVisibility = .hidden
+        window.titleVisibility = .visible
         window.titlebarAppearsTransparent = false
         window.contentViewController = controller
         window.minSize = NSWindow.frameRect(
