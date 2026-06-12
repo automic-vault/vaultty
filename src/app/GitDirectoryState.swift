@@ -107,10 +107,10 @@ final class GitDirectoryStateProvider {
         )
 
         if counts.isClean {
-            return "git \(branch)"
+            return "git \(branch) clean"
         }
 
-        var parts = ["git", branch]
+        var parts = ["git", branch, "dirty"]
         if counts.additions > 0 {
             parts.append("+\(counts.additions)")
         }
