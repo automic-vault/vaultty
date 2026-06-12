@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class GitDirectoryStateProvider {
@@ -6,12 +7,30 @@ final class GitDirectoryStateProvider {
         let summary: String?
     }
 
+    private struct RepositoryLocation {
+        let worktreePath: String
+        let gitDirectoryPath: String
+    }
+
+    private struct IndexEntry {
+        let path: String
+        let mtimeSeconds: Int
+        let size: UInt32
+    }
+
+    private struct ChangeCounts {
+        var additions = 0
+        var deletions = 0
+
+        var isClean: Bool {
+            additions == 0 && deletions == 0
+        }
+    }
+
     private let fileManager = FileManager.default
     private let lock = NSLock()
     private let cacheTTL: TimeInterval
     private var cache: [String: CacheEntry] = [:]
-    private var didResolveGit = false
-    private var gitURL: URL?
 
     init(cacheTTL: TimeInterval = 2) {
         self.cacheTTL = cacheTTL
@@ -19,40 +38,38 @@ final class GitDirectoryStateProvider {
 
     func summary(forDirectory url: URL) -> String? {
         let path = url.standardizedFileURL.path
-        guard let rootPath = gitWorktreeRoot(containing: path) else { return nil }
-        return summary(forGitDirectory: URL(fileURLWithPath: rootPath, isDirectory: true))
-    }
-
-    private func summary(forGitDirectory url: URL) -> String? {
-        let path = url.standardizedFileURL.path
-        guard containsGitMetadata(at: path) else { return nil }
+        guard let location = repositoryLocation(containing: path) else { return nil }
 
         let now = Date()
         lock.lock()
-        if let entry = cache[path], entry.expiresAt > now {
+        if let entry = cache[location.worktreePath], entry.expiresAt > now {
             lock.unlock()
             return entry.summary
         }
         lock.unlock()
 
-        let summary = loadSummary(for: path)
+        let summary = loadSummary(for: location)
         lock.lock()
-        cache[path] = CacheEntry(expiresAt: now.addingTimeInterval(cacheTTL), summary: summary)
+        cache[location.worktreePath] = CacheEntry(
+            expiresAt: now.addingTimeInterval(cacheTTL),
+            summary: summary
+        )
         lock.unlock()
         return summary
     }
 
-    private func containsGitMetadata(at path: String) -> Bool {
-        let gitPath = (path as NSString).appendingPathComponent(".git")
-        return fileManager.fileExists(atPath: gitPath)
-    }
-
-    private func gitWorktreeRoot(containing path: String) -> String? {
+    private func repositoryLocation(containing path: String) -> RepositoryLocation? {
         var cursor = (path as NSString).standardizingPath
         while true {
-            if containsGitMetadata(at: cursor) {
-                return cursor
+            let gitPath = (cursor as NSString).appendingPathComponent(".git")
+            if directoryExists(at: gitPath) {
+                return RepositoryLocation(worktreePath: cursor, gitDirectoryPath: gitPath)
             }
+            if fileManager.fileExists(atPath: gitPath),
+               let redirectedGitPath = redirectedGitDirectory(from: gitPath, relativeTo: cursor) {
+                return RepositoryLocation(worktreePath: cursor, gitDirectoryPath: redirectedGitPath)
+            }
+
             let parent = (cursor as NSString).deletingLastPathComponent
             if parent == cursor || parent.isEmpty {
                 return nil
@@ -61,140 +78,261 @@ final class GitDirectoryStateProvider {
         }
     }
 
-    private func loadSummary(for path: String) -> String? {
-        guard let gitURL = resolvedGitURL(),
-              let output = runStatus(gitURL: gitURL, repositoryPath: path)
-        else {
+    private func redirectedGitDirectory(from gitFilePath: String, relativeTo worktreePath: String) -> String? {
+        guard let contents = try? String(contentsOfFile: gitFilePath, encoding: .utf8) else {
             return nil
         }
-        return parseStatus(output)
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("gitdir:") else { return nil }
+
+        let rawPath = trimmed.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+        if rawPath.hasPrefix("/") {
+            return (rawPath as NSString).standardizingPath
+        }
+        return ((worktreePath as NSString).appendingPathComponent(rawPath) as NSString).standardizingPath
     }
 
-    private func resolvedGitURL() -> URL? {
-        lock.lock()
-        if didResolveGit {
-            let url = gitURL
-            lock.unlock()
-            return url
-        }
-        lock.unlock()
-
-        let url = executableURL(named: "git")
-
-        lock.lock()
-        if !didResolveGit {
-            gitURL = url
-            didResolveGit = true
-        }
-        let resolved = gitURL
-        lock.unlock()
-        return resolved
-    }
-
-    private func executableURL(named name: String) -> URL? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        for directory in path.split(separator: ":").map(String.init) {
-            let candidate = (directory as NSString).appendingPathComponent(name)
-            if fileManager.isExecutableFile(atPath: candidate) {
-                return URL(fileURLWithPath: candidate)
-            }
-        }
-        return nil
-    }
-
-    private func runStatus(gitURL: URL, repositoryPath: String) -> String? {
-        let process = Process()
-        process.executableURL = gitURL
-        process.arguments = ["-C", repositoryPath, "status", "--short", "--branch"]
-        process.currentDirectoryURL = URL(fileURLWithPath: repositoryPath)
-        process.standardInput = FileHandle.nullDevice
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        do {
-            try process.run()
-        } catch {
+    private func loadSummary(for location: RepositoryLocation) -> String? {
+        guard let branch = branchName(in: location.gitDirectoryPath) else {
             return nil
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in semaphore.signal() }
-        if semaphore.wait(timeout: .now() + 0.45) == .timedOut {
-            process.terminate()
-            _ = semaphore.wait(timeout: .now() + 0.1)
-            return nil
+        guard let indexEntries = readIndexEntries(in: location.gitDirectoryPath) else {
+            return "git \(branch)"
         }
 
-        guard process.terminationStatus == 0 else { return nil }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
-    }
+        let counts = changeCounts(
+            worktreePath: location.worktreePath,
+            entries: indexEntries
+        )
 
-    private func parseStatus(_ output: String) -> String? {
-        let lines = output
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-        guard !lines.isEmpty else { return nil }
-
-        var branch = "HEAD"
-        var ahead = 0
-        var behind = 0
-        var changed = 0
-        var untracked = 0
-
-        for line in lines {
-            if line.hasPrefix("## ") {
-                let branchLine = String(line.dropFirst(3))
-                branch = parseBranchName(branchLine)
-                ahead = parseCount(named: "ahead", in: branchLine)
-                behind = parseCount(named: "behind", in: branchLine)
-                continue
-            }
-
-            if line.hasPrefix("??") {
-                untracked += 1
-            } else if !line.hasPrefix("!!") {
-                changed += 1
-            }
+        if counts.isClean {
+            return "git \(branch)"
         }
 
         var parts = ["git", branch]
-        if changed == 0 && untracked == 0 {
-            parts.append("clean")
-        } else {
-            if changed > 0 {
-                parts.append("\(changed) changed")
-            }
-            if untracked > 0 {
-                parts.append("\(untracked) untracked")
-            }
+        if counts.additions > 0 {
+            parts.append("+\(counts.additions)")
         }
-        if ahead > 0 {
-            parts.append("ahead \(ahead)")
-        }
-        if behind > 0 {
-            parts.append("behind \(behind)")
+        if counts.deletions > 0 {
+            parts.append("-\(counts.deletions)")
         }
         return parts.joined(separator: " ")
     }
 
-    private func parseBranchName(_ branchLine: String) -> String {
-        if branchLine.hasPrefix("No commits yet on ") {
-            return String(branchLine.dropFirst("No commits yet on ".count))
+    private func branchName(in gitDirectoryPath: String) -> String? {
+        let headPath = (gitDirectoryPath as NSString).appendingPathComponent("HEAD")
+        guard let contents = try? String(contentsOfFile: headPath, encoding: .utf8) else {
+            return nil
         }
-        let beforeTracking = branchLine.components(separatedBy: "...").first ?? branchLine
-        let beforeDetails = beforeTracking.components(separatedBy: " [").first ?? beforeTracking
-        return beforeDetails.isEmpty ? "HEAD" : beforeDetails
+
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("ref:") {
+            let refName = trimmed.dropFirst("ref:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            if refName.hasPrefix("refs/heads/") {
+                return String(refName.dropFirst("refs/heads/".count))
+            }
+            return String(refName)
+        }
+        return String(trimmed.prefix(7))
     }
 
-    private func parseCount(named name: String, in text: String) -> Int {
-        let pattern = "\(name) [0-9]+"
-        guard let range = text.range(of: pattern, options: .regularExpression) else {
+    private func readIndexEntries(in gitDirectoryPath: String) -> [IndexEntry]? {
+        let indexPath = (gitDirectoryPath as NSString).appendingPathComponent("index")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: indexPath)),
+              data.count >= 12,
+              data[0] == 0x44,
+              data[1] == 0x49,
+              data[2] == 0x52,
+              data[3] == 0x43
+        else {
+            return nil
+        }
+
+        let version = readUInt32(data, at: 4)
+        guard version == 2 || version == 3 else {
+            return nil
+        }
+
+        let entryCount = Int(readUInt32(data, at: 8))
+        var offset = 12
+        var entries: [IndexEntry] = []
+        entries.reserveCapacity(min(entryCount, 4096))
+
+        for _ in 0..<entryCount {
+            guard offset + 62 <= data.count else { return nil }
+            let entryStart = offset
+            let mtimeSeconds = Int(readUInt32(data, at: offset + 8))
+            let size = readUInt32(data, at: offset + 36)
+            let flags = readUInt16(data, at: offset + 60)
+            offset += 62
+            if version == 3 && (flags & 0x4000) != 0 {
+                guard offset + 2 <= data.count else { return nil }
+                offset += 2
+            }
+
+            let declaredPathLength = Int(flags & 0x0FFF)
+            let pathEnd: Int
+            if declaredPathLength < 0x0FFF {
+                pathEnd = min(offset + declaredPathLength, data.count)
+            } else if let nul = data[offset...].firstIndex(of: 0) {
+                pathEnd = nul
+            } else {
+                return nil
+            }
+
+            guard pathEnd <= data.count,
+                  let path = String(data: data[offset..<pathEnd], encoding: .utf8)
+            else {
+                return nil
+            }
+            entries.append(IndexEntry(path: path, mtimeSeconds: mtimeSeconds, size: size))
+
+            offset = pathEnd
+            while offset < data.count && data[offset] != 0 {
+                offset += 1
+            }
+            guard offset < data.count else { return nil }
+            offset += 1
+
+            let entryLength = offset - entryStart
+            let padding = (8 - (entryLength % 8)) % 8
+            offset += padding
+        }
+
+        return entries
+    }
+
+    private func changeCounts(worktreePath: String, entries: [IndexEntry]) -> ChangeCounts {
+        var counts = ChangeCounts()
+        var trackedPaths = Set<String>()
+        var trackedDirectories = Set<String>()
+
+        for entry in entries {
+            trackedPaths.insert(entry.path)
+            var directory = (entry.path as NSString).deletingLastPathComponent
+            while !directory.isEmpty && directory != "." {
+                trackedDirectories.insert(directory)
+                directory = (directory as NSString).deletingLastPathComponent
+            }
+
+            switch trackedFileState(worktreePath: worktreePath, entry: entry) {
+            case .unchanged:
+                break
+            case .changed:
+                counts.additions += 1
+            case .deleted:
+                counts.deletions += 1
+            }
+        }
+
+        counts.additions += untrackedCount(
+            worktreePath: worktreePath,
+            trackedPaths: trackedPaths,
+            trackedDirectories: trackedDirectories
+        )
+        return counts
+    }
+
+    private enum TrackedFileState {
+        case unchanged
+        case changed
+        case deleted
+    }
+
+    private func trackedFileState(worktreePath: String, entry: IndexEntry) -> TrackedFileState {
+        let path = (worktreePath as NSString).appendingPathComponent(entry.path)
+        var fileStat = stat()
+        let result = URL(fileURLWithPath: path).withUnsafeFileSystemRepresentation { representation in
+            lstat(representation, &fileStat)
+        }
+        guard result == 0 else {
+            return errno == ENOENT ? .deleted : .changed
+        }
+
+        let size = UInt32(clamping: fileStat.st_size)
+        let mtimeSeconds = Int(fileStat.st_mtimespec.tv_sec)
+        if size != entry.size || mtimeSeconds != entry.mtimeSeconds {
+            return .changed
+        }
+        return .unchanged
+    }
+
+    private func untrackedCount(
+        worktreePath: String,
+        trackedPaths: Set<String>,
+        trackedDirectories: Set<String>
+    ) -> Int {
+        guard let enumerator = fileManager.enumerator(
+            at: URL(fileURLWithPath: worktreePath, isDirectory: true),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants]
+        ) else {
             return 0
         }
-        return Int(text[range].split(separator: " ").last ?? "") ?? 0
+
+        var count = 0
+        var visited = 0
+        let maxVisited = 5_000
+        let maxUntracked = 99
+
+        for case let url as URL in enumerator {
+            visited += 1
+            if visited > maxVisited || count >= maxUntracked {
+                break
+            }
+
+            let relativePath = relativePath(for: url.path, basePath: worktreePath)
+            let name = url.lastPathComponent
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+
+            if name == ".git" || isIgnoredDirectoryName(name) {
+                if isDirectory {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+
+            if trackedPaths.contains(relativePath) {
+                continue
+            }
+
+            if isDirectory {
+                if trackedDirectories.contains(relativePath) {
+                    continue
+                }
+                count += 1
+                enumerator.skipDescendants()
+            } else {
+                count += 1
+            }
+        }
+
+        return count
+    }
+
+    private func directoryExists(at path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private func isIgnoredDirectoryName(_ name: String) -> Bool {
+        name == ".git" || name == "node_modules" || name == ".build" || name == "target"
+    }
+
+    private func relativePath(for path: String, basePath: String) -> String {
+        guard path.hasPrefix(basePath + "/") else { return path }
+        return String(path.dropFirst(basePath.count + 1))
+    }
+
+    private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
+    }
+
+    private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        (UInt32(data[offset]) << 24)
+            | (UInt32(data[offset + 1]) << 16)
+            | (UInt32(data[offset + 2]) << 8)
+            | UInt32(data[offset + 3])
     }
 }
