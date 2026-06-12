@@ -405,6 +405,22 @@ private final class TitleTabBorderView: NSView {
     }
 }
 
+private final class TitleTabStackView: NSStackView {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+private final class TitleTabCloseButton: NSButton {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
 private func titleSegmentFillPath(
     in rect: NSRect,
     isFlipped: Bool,
@@ -790,7 +806,7 @@ private final class BlockView: NSView {
 
 private final class TitleTabButton: NSButton {
     let tabID: UUID
-    private let closeButton = NSButton()
+    private let closeButton = TitleTabCloseButton()
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
@@ -923,17 +939,14 @@ private final class TitleTabButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        if !closeButton.isHidden,
-           closeButton.frame.contains(point) {
-            closeButton.performClick(self)
-        } else {
-            performClick(self)
+        guard bounds.contains(point) else { return nil }
+        if !closeButton.isHidden {
+            let closePoint = closeButton.convert(point, from: self)
+            if let closeHit = closeButton.hitTest(closePoint) {
+                return closeHit
+            }
         }
+        return self
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1363,7 +1376,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
 
-    private let titleTabStack = NSStackView()
+    private let titleTabStack = TitleTabStackView()
     private let titleTabBorderView = TitleTabBorderView()
     private let newTabButton = TitleAddButton(frame: .zero)
     private let contentContainer = NSView()
