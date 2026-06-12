@@ -91,6 +91,11 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
 }
 
 private final class CommandInputTextView: NSTextView {
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        configurePlainTextInput()
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         configurePlainTextInput()

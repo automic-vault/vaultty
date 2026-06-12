@@ -462,10 +462,10 @@ compile_layered_icon() {
 }
 
 bundle_icon() {
-  bundle_legacy_icon
   if compile_layered_icon; then
-    rm -f "$RESOURCES_DIR/$APP_NAME.icns"
+    return
   fi
+  bundle_legacy_icon
 }
 
 bundle_completions() {
