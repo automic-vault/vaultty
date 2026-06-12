@@ -1,15 +1,20 @@
 import AppKit
+import AppUpdater
 
 private enum AppWindowMetrics {
     static let defaultContentSize = NSSize(width: 1120, height: 760)
     static let minimumContentSize = NSSize(width: 760, height: 480)
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
+    private let updater = AppUpdater(owner: "automic-vault", repo: "vaultty")
     private var window: NSWindow?
     private var controller: TerminalViewController?
     private var titleToolbar: NSToolbar?
     private var pendingDirectoryURLs: [URL] = []
+    private var stagedUpdate: Update?
+    private var updateCheckTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
@@ -19,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             .flatMap { index, _ in args.indices.contains(index + 1) ? args[index + 1] : nil }
         let controller = TerminalViewController(selfTestCommand: selfTestCommand)
         controller.loadViewIfNeeded()
+        controller.onInstallStagedUpdate = { [weak self] in
+            self?.confirmInstallStagedUpdate()
+        }
         self.controller = controller
 
         let styleMask: NSWindow.StyleMask = [
@@ -69,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         NSApp.activate(ignoringOtherApps: true)
         controller.windowDidAttach()
         openPendingDirectoryURLs()
+        if selfTestCommand == nil {
+            checkForUpdates()
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -118,7 +129,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     func windowWillClose(_ notification: Notification) {
         guard notification.object as? NSWindow === window else { return }
+        updateCheckTask?.cancel()
         controller?.stopAllSessions()
+    }
+
+    private func checkForUpdates() {
+        guard stagedUpdate == nil, updateCheckTask == nil else { return }
+        updateCheckTask = Task { @MainActor in
+            defer { updateCheckTask = nil }
+            do {
+                guard !Task.isCancelled, let update = try await updater.check() else {
+                    return
+                }
+                stagedUpdate = update
+                controller?.setUpdateStaged(true)
+            } catch {
+                NSLog("Vaultty update check failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func confirmInstallStagedUpdate() {
+        guard let stagedUpdate else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Install update?"
+        alert.informativeText = "Vaultty will quit, install \(stagedUpdate.assetName), and relaunch."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Install and Relaunch")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window {
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                self?.install(stagedUpdate)
+            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            install(stagedUpdate)
+        }
+    }
+
+    private func install(_ update: Update) {
+        controller?.setUpdateInstallInProgress(true)
+        Task { @MainActor in
+            do {
+                try await update.installAndRelaunch()
+            } catch {
+                controller?.setUpdateInstallInProgress(false)
+                presentUpdateInstallError(error)
+            }
+        }
+    }
+
+    private func presentUpdateInstallError(_ error: Error) {
+        let alert = NSAlert(error: error)
+        alert.messageText = "Update failed"
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc private func closeActiveTabOrWindow(_ sender: Any?) {
@@ -309,10 +379,16 @@ private extension NSToolbar.Identifier {
     static let vaulttyTitlebar = NSToolbar.Identifier("com.automicvault.vaultty.titlebar")
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.appearance = NSAppearance(named: .darkAqua)
-app.setActivationPolicy(.regular)
-app.activate(ignoringOtherApps: true)
-app.run()
+@main
+private enum VaulttyApplication {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.appearance = NSAppearance(named: .darkAqua)
+        app.setActivationPolicy(.regular)
+        app.activate(ignoringOtherApps: true)
+        app.run()
+    }
+}

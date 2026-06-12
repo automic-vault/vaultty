@@ -1220,6 +1220,85 @@ private final class TitleAddButton: NSButton {
     }
 }
 
+private final class TitleUpdateButton: NSButton {
+    static let visibleWidth: CGFloat = 108
+
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isHovering = false {
+        didSet { updateAppearance() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title = "Update"
+        image = NSImage(
+            systemSymbolName: "arrow.triangle.2.circlepath",
+            accessibilityDescription: "Install Update"
+        )
+        imagePosition = .imageLeading
+        imageScaling = .scaleProportionallyDown
+        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        isBordered = false
+        bezelStyle = .regularSquare
+        controlSize = .regular
+        font = .systemFont(ofSize: 13, weight: .semibold)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = TahoeGlassPalette.titleTextActive
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityLabel("Install staged update")
+        updateAppearance()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    private func updateAppearance() {
+        let fillAlpha: CGFloat
+        if !isEnabled {
+            fillAlpha = 0.08
+        } else {
+            fillAlpha = isHovering ? 0.18 : 0.12
+        }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(fillAlpha).cgColor
+        contentTintColor = isEnabled
+            ? TahoeGlassPalette.titleTextActive
+            : TahoeGlassPalette.titleText
+    }
+}
+
 private final class PtyPassthroughView: NSView {
     var onInput: ((String) -> Void)?
     var onInterrupt: (() -> Void)?
@@ -1491,10 +1570,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var tabs: [TerminalTab] = []
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
+    var onInstallStagedUpdate: (() -> Void)?
 
     private let titleTabStack = TitleTabStackView()
     private let titleTabBorderView = TitleTabBorderView()
     private let newTabButton = TitleAddButton(frame: .zero)
+    private let updateButton = TitleUpdateButton(frame: .zero)
     private let contentContainer = NSView()
     private let resizeTooltipView = ResizeMetricsTooltipView()
     private let completionEngine = VaulttyCompletionEngine()
@@ -1507,6 +1588,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var isApplyingCompletion = false
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
+    private var updateButtonWidthConstraint: NSLayoutConstraint?
 
     private enum TabClickTarget {
         case select(UUID)
@@ -1538,6 +1620,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         newTabButton.target = self
         newTabButton.action = #selector(newTab(_:))
+        updateButton.target = self
+        updateButton.action = #selector(installStagedUpdate(_:))
+        updateButton.isHidden = true
         titleTabBorderView.tabStack = titleTabStack
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -1545,10 +1630,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         view.addSubview(titleTabStack)
         view.addSubview(titleTabBorderView)
+        view.addSubview(updateButton)
         view.addSubview(contentContainer)
         view.addSubview(resizeTooltipView)
         titleTabStack.addArrangedSubview(newTabButton)
         updateTitleSegmentCornerMasks()
+
+        let updateButtonWidthConstraint = updateButton.widthAnchor.constraint(equalToConstant: 0)
+        self.updateButtonWidthConstraint = updateButtonWidthConstraint
 
         NSLayoutConstraint.activate([
             titleTabStack.leadingAnchor.constraint(
@@ -1556,8 +1645,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 constant: TahoeGlassPalette.titleTabLeadingInset
             ),
             titleTabStack.trailingAnchor.constraint(
-                lessThanOrEqualTo: view.trailingAnchor,
-                constant: -20
+                lessThanOrEqualTo: updateButton.leadingAnchor,
+                constant: -12
             ),
             titleTabStack.topAnchor.constraint(
                 equalTo: view.topAnchor,
@@ -1572,6 +1661,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             newTabButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
             newTabButton.widthAnchor.constraint(equalTo: newTabButton.heightAnchor),
+
+            updateButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            updateButton.topAnchor.constraint(
+                equalTo: view.topAnchor,
+                constant: TahoeGlassPalette.titleTabTopInset
+            ),
+            updateButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
+            updateButtonWidthConstraint,
 
             contentContainer.leadingAnchor.constraint(
                 equalTo: view.leadingAnchor
@@ -1618,6 +1715,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             stopTtyModePolling(for: tab)
             tab.session.stop()
         }
+    }
+
+    func setUpdateStaged(_ isStaged: Bool) {
+        updateButton.isHidden = !isStaged
+        updateButton.isEnabled = isStaged
+        updateButton.toolTip = isStaged ? "Install staged update" : nil
+        updateButtonWidthConstraint?.constant = isStaged ? TitleUpdateButton.visibleWidth : 0
+        view.needsLayout = true
+    }
+
+    func setUpdateInstallInProgress(_ isInstalling: Bool) {
+        updateButton.isEnabled = !isInstalling
     }
 
     func beginWindowResizeTooltip() {
@@ -1767,6 +1876,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     @objc func newTab(_ sender: Any?) {
         createTab()
+    }
+
+    @objc private func installStagedUpdate(_ sender: Any?) {
+        onInstallStagedUpdate?()
     }
 
     func newTab(at directoryURL: URL) {

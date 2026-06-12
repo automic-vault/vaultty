@@ -93,6 +93,7 @@ GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
 ICON_BUNDLE="$ROOT_DIR/assets/AppIcon.icon"
 ICON_SOURCE="$ICON_BUNDLE/Assets/Vaultty.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
+SWIFT_DEPS_BUILD_PATH="$ROOT_DIR/target/swift-deps/$CONFIGURATION"
 
 unquote_env_value() {
   local value="$1"
@@ -515,6 +516,29 @@ echo "Building vaultty-env"
 export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS_VERSION"
 cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env
 
+echo "Building Swift package dependencies"
+swift build \
+  --package-path "$ROOT_DIR" \
+  --configuration "$CONFIGURATION" \
+  --build-path "$SWIFT_DEPS_BUILD_PATH" \
+  --target VaulttySwiftDependencies
+SWIFT_DEPS_BIN_DIR="$(swift build \
+  --package-path "$ROOT_DIR" \
+  --configuration "$CONFIGURATION" \
+  --build-path "$SWIFT_DEPS_BUILD_PATH" \
+  --show-bin-path)"
+SWIFT_DEPS_LINK_ARGS=(-I "$SWIFT_DEPS_BIN_DIR/Modules")
+while IFS= read -r object_file; do
+  SWIFT_DEPS_LINK_ARGS+=("$object_file")
+done < <(
+  find "$SWIFT_DEPS_BIN_DIR" \
+    \( -path '*/AppUpdater.build/*.o' -o -path '*/Version.build/*.o' \) \
+    -print |
+    sort
+)
+[[ "${#SWIFT_DEPS_LINK_ARGS[@]}" -gt 1 ]] ||
+  die "Swift package dependencies did not produce linkable object files in $SWIFT_DEPS_BIN_DIR"
+
 echo "Building Vaultty app bundle"
 rm -rf "$APP_DIR"
 mkdir -p \
@@ -585,9 +609,11 @@ clang \
 
 swiftc \
   "${SWIFT_FLAGS[@]}" \
+  -parse-as-library \
   -target "arm64-apple-macosx$MIN_MACOS_VERSION" \
   -framework AppKit \
   -framework JavaScriptCore \
+  "${SWIFT_DEPS_LINK_ARGS[@]}" \
   "$ROOT_DIR/src/app/main.swift" \
   "$ROOT_DIR/src/app/PtySession.swift" \
   "$ROOT_DIR/src/app/Ansi.swift" \
