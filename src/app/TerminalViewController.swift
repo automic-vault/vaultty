@@ -1408,7 +1408,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
                 commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
-                acceptSelectedCompletion(in: tab, continuingDirectories: true)
+                acceptSelectedCompletionAndSubmit(in: tab)
                 return true
             }
             if commandSelector == #selector(NSResponder.moveRight(_:)) {
@@ -1812,6 +1812,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if shouldContinue {
             requestCompletion(in: tab, mode: .continuation)
         }
+    }
+
+    private func acceptSelectedCompletionAndSubmit(in tab: TerminalTab) {
+        guard let suggestion = completionPopup.selectedSuggestion else {
+            dismissCompletion()
+            return
+        }
+        applyCompletion(suggestion, in: tab)
+        submitCommand(in: tab)
     }
 
     private func applyCompletion(
