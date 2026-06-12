@@ -26,7 +26,7 @@ private enum TahoeGlassPalette {
     static let titleBarHeight: CGFloat = 50
     static let titleTabHeight: CGFloat = 34
     static let titleTabTopInset: CGFloat = titleBarHeight - titleTabHeight
-    static let titleTabCornerRadius: CGFloat = max(0, windowCornerRadius - (titleTabTopInset * 0.535))
+    static let titleTabCornerRadius: CGFloat = max(0, windowCornerRadius - (titleTabTopInset * 0.535)) * 0.8
     static let titleTabBottomInset: CGFloat = 0
     static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
