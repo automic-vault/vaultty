@@ -563,6 +563,7 @@ private final class BlockView: NSView {
     private let outputView = NSTextView(frame: .zero)
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
+    private var hasVisibleOutput = false
 
     var onCopyCommand: (() -> Void)?
     var onCopyOutput: (() -> Void)?
@@ -622,7 +623,7 @@ private final class BlockView: NSView {
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
 
-        let outputHeightConstraint = outputView.heightAnchor.constraint(greaterThanOrEqualToConstant: 24)
+        let outputHeightConstraint = outputView.heightAnchor.constraint(equalToConstant: 0)
         self.outputHeightConstraint = outputHeightConstraint
 
         NSLayoutConstraint.activate([
@@ -652,6 +653,8 @@ private final class BlockView: NSView {
 
     func update(with block: TerminalBlock) {
         commandLabel.stringValue = block.command
+        hasVisibleOutput = !block.output.isEmpty
+        outputView.isHidden = !hasVisibleOutput
         outputView.textStorage?.setAttributedString(
             block.output.isEmpty ? Ansi.emptyAttributedOutput() : block.attributedOutput
         )
@@ -662,8 +665,8 @@ private final class BlockView: NSView {
         ]
         switch block.state {
         case .running:
-            layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
-            metadata.append(MetadataSegment(text: "(running)", color: .secondaryLabelColor))
+            layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
+            metadata.append(MetadataSegment(text: "running", color: .secondaryLabelColor))
         case .completed(let code):
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
@@ -706,6 +709,10 @@ private final class BlockView: NSView {
         else {
             return
         }
+        guard hasVisibleOutput else {
+            outputHeightConstraint?.constant = 0
+            return
+        }
         let availableWidth = max(1, outputView.bounds.width)
         textContainer.containerSize = NSSize(
             width: availableWidth,
@@ -713,7 +720,7 @@ private final class BlockView: NSView {
         )
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
-        outputHeightConstraint?.constant = max(24, ceil(usedRect.height))
+        outputHeightConstraint?.constant = ceil(usedRect.height)
     }
 
     private func durationText(for block: TerminalBlock) -> String? {
@@ -1874,10 +1881,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session.onExit = { [weak self, weak tab] status in
             tab?.statusLabel.stringValue = "Shell exited with status \(status)"
             if let tab {
+                self?.finishRunningBlocks(in: tab, status: status)
                 self?.updateTabTitleForDirectory(tab)
                 self?.stopTtyModePolling(for: tab)
                 tab.ptyPassthroughView.usesPagerKeyBindings = false
                 self?.setTerminalControl(false, in: tab)
+                self?.updateCommandBarVisibility(for: tab)
             }
         }
     }
@@ -2218,6 +2227,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
         addBlockView(block, to: tab)
+        updateCommandBarVisibility(for: tab)
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
@@ -2341,6 +2351,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             tab.isShellReady = true
             updateCommandBarDirectoryStatus(for: tab)
+            updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
             runSelfTestIfNeeded(in: tab)
         case "C":
@@ -2364,6 +2375,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
             updateCommandBarDirectoryStatus(for: tab)
+            updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
             scrollToBottom(tab)
             focusInput(for: tab)
@@ -2512,28 +2524,28 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func setTerminalControl(_ isActive: Bool, in tab: TerminalTab) {
         guard tab.isTerminalControlActive != isActive else {
+            updateCommandBarVisibility(for: tab)
             focusInput(for: tab)
             return
         }
 
         tab.isTerminalControlActive = isActive
-        tab.commandBarView.isHidden = isActive
-        tab.commandSeparator.isHidden = isActive
         updatePassthroughVisibility(for: tab)
+        updateCommandBarVisibility(for: tab)
 
-        if isActive {
-            tab.scrollBottomToCommandBarConstraint?.isActive = false
-            tab.scrollBottomToRootConstraint?.isActive = true
-        } else {
-            tab.scrollBottomToRootConstraint?.isActive = false
-            tab.scrollBottomToCommandBarConstraint?.isActive = true
-        }
-
-        tab.rootView.needsLayout = true
-        tab.rootView.layoutSubtreeIfNeeded()
         resizePtyToViewport(for: tab)
         focusInput(for: tab)
         scrollToBottom(tab)
+    }
+
+    private func updateCommandBarVisibility(for tab: TerminalTab) {
+        let shouldShowCommandBar = !tab.isTerminalControlActive && !isCommandRunning(in: tab)
+        tab.commandBarView.isHidden = !shouldShowCommandBar
+        tab.commandSeparator.isHidden = !shouldShowCommandBar
+        tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
+        tab.scrollBottomToRootConstraint?.isActive = !shouldShowCommandBar
+        tab.rootView.needsLayout = true
+        tab.rootView.layoutSubtreeIfNeeded()
     }
 
     private func focusInput(for tab: TerminalTab) {
@@ -2652,6 +2664,20 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             return false
         }
+    }
+
+    private func finishRunningBlocks(in tab: TerminalTab, status: Int32) {
+        let finishedAt = Date()
+        for index in tab.blocks.indices {
+            if case .running = tab.blocks[index].state {
+                tab.blocks[index].finishedAt = finishedAt
+                tab.blocks[index].state = .completed(status)
+                tab.blockViews[tab.blocks[index].id]?.update(with: tab.blocks[index])
+            }
+        }
+        tab.activeBlockID = nil
+        tab.pendingBlockID = nil
+        tab.isShellReady = false
     }
 
     private func copy(_ value: String) {
