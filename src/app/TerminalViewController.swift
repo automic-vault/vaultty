@@ -90,6 +90,58 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
     }
 }
 
+private final class CommandInputTextView: NSTextView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configurePlainTextInput()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configurePlainTextInput()
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string) else {
+            NSSound.beep()
+            return
+        }
+
+        resetPlainTextAttributes()
+        insertText(text, replacementRange: selectedRange())
+        normalizePlainTextStorage()
+    }
+
+    func resetPlainTextAttributes() {
+        typingAttributes = commandTextAttributes
+    }
+
+    func normalizePlainTextStorage() {
+        let range = NSRange(location: 0, length: (string as NSString).length)
+        guard range.length > 0 else {
+            resetPlainTextAttributes()
+            return
+        }
+        textStorage?.setAttributes(commandTextAttributes, range: range)
+        resetPlainTextAttributes()
+    }
+
+    private var commandTextAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
+            .foregroundColor: textColor ?? NSColor.labelColor
+        ]
+    }
+
+    private func configurePlainTextInput() {
+        isRichText = false
+        importsGraphics = false
+        usesFontPanel = false
+        allowsDocumentBackgroundColorChange = false
+        resetPlainTextAttributes()
+    }
+}
+
 private final class ResizeMetricsTooltipView: NSView {
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
@@ -1263,7 +1315,7 @@ private final class TerminalTab {
     let rootView = NSView()
     let scrollView = NSScrollView()
     let stackView = NSStackView()
-    let inputView = NSTextView(frame: .zero)
+    let inputView = CommandInputTextView(frame: .zero)
     let statusLabel = NSTextField(labelWithString: "Starting shell...")
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
@@ -1329,6 +1381,7 @@ private final class TerminalTab {
         inputView.layer?.cornerRadius = 0
         inputView.layer?.borderWidth = 0
         configureCommandInputTextSystem(inputView)
+        inputView.resetPlainTextAttributes()
         inputView.setAccessibilityLabel("Vaultty command input")
 
         let inputScroll = NSScrollView()
@@ -1686,6 +1739,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             dismissCompletion()
             return
         }
+        tab.inputView.normalizePlainTextStorage()
         if completionPopup.isShown {
             requestCompletion(in: tab, mode: .filtering)
         } else if shouldStartAutomaticCompletion(in: textView) {
@@ -2158,6 +2212,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let updated = text.replacingCharacters(in: range, with: value)
         isApplyingCompletion = true
         tab.inputView.string = updated
+        tab.inputView.normalizePlainTextStorage()
         let cursor = range.location + (value as NSString).length
         tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
@@ -2253,6 +2308,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
         tab.inputView.string = ""
+        tab.inputView.resetPlainTextAttributes()
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
@@ -2336,6 +2392,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func setInput(_ value: String, in tab: TerminalTab) {
         tab.inputView.string = value
+        tab.inputView.normalizePlainTextStorage()
         let location = (value as NSString).length
         tab.inputView.setSelectedRange(NSRange(location: location, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: location, length: 0))
