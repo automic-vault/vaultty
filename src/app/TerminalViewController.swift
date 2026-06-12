@@ -37,6 +37,8 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
+    static let titleTabShieldSize: CGFloat = 14
+    static let titleTabShieldTextGap: CGFloat = 5
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
         green: 0.08,
@@ -892,12 +894,15 @@ private final class BlockView: NSView {
 private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = TitleTabCloseButton()
+    private let dotenvShieldImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
+    private var titleLeadingConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
+    private var showsDotenvShield = false
     var isSelectedTab = false {
         didSet { updateAppearance() }
     }
@@ -936,6 +941,17 @@ private final class TitleTabButton: NSButton {
         contentTintColor = .secondaryLabelColor
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        dotenvShieldImageView.image = NSImage(
+            systemSymbolName: "checkmark.shield.fill",
+            accessibilityDescription: "Dotenv secrets loaded"
+        )
+        dotenvShieldImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        dotenvShieldImageView.contentTintColor = .systemGreen
+        dotenvShieldImageView.imageScaling = .scaleProportionallyDown
+        dotenvShieldImageView.isHidden = true
+        dotenvShieldImageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(dotenvShieldImageView)
+
         titleLabel.stringValue = title
         titleLabel.font = font
         titleLabel.alignment = .center
@@ -966,11 +982,22 @@ private final class TitleTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
 
+        let titleLeadingConstraint = titleLabel.leadingAnchor.constraint(
+            equalTo: leadingAnchor,
+            constant: TahoeGlassPalette.titleTabTitleLeadingInset
+        )
+        self.titleLeadingConstraint = titleLeadingConstraint
+
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(
+            dotenvShieldImageView.leadingAnchor.constraint(
                 equalTo: leadingAnchor,
                 constant: TahoeGlassPalette.titleTabTitleLeadingInset
             ),
+            dotenvShieldImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dotenvShieldImageView.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabShieldSize),
+            dotenvShieldImageView.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabShieldSize),
+
+            titleLeadingConstraint,
             titleLabel.trailingAnchor.constraint(
                 equalTo: trailingAnchor,
                 constant: -TahoeGlassPalette.titleTabTitleTrailingInset
@@ -1070,13 +1097,22 @@ private final class TitleTabButton: NSButton {
         let horizontalInsets = TahoeGlassPalette.titleTabTitleLeadingInset
             + TahoeGlassPalette.titleTabTitleCloseTrailingInset
             + TahoeGlassPalette.titleTabMeasurementSlack
-        return max(TahoeGlassPalette.titleTabMinimumWidth, titleTextWidth + horizontalInsets)
+        return max(
+            TahoeGlassPalette.titleTabMinimumWidth,
+            titleTextWidth + horizontalInsets + dotenvShieldWidth
+        )
     }
 
     private var titleTextWidth: CGFloat {
         ceil((titleLabel.stringValue as NSString).size(withAttributes: [
             .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
         ]).width)
+    }
+
+    private var dotenvShieldWidth: CGFloat {
+        showsDotenvShield
+            ? TahoeGlassPalette.titleTabShieldSize + TahoeGlassPalette.titleTabShieldTextGap
+            : 0
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -1095,6 +1131,16 @@ private final class TitleTabButton: NSButton {
         preferredWidthConstraint?.constant = preferredWidth
         invalidateIntrinsicContentSize()
         updateToolTipForCurrentLayout()
+    }
+
+    func updateDotenvShield(isVisible: Bool) {
+        guard showsDotenvShield != isVisible else { return }
+        showsDotenvShield = isVisible
+        dotenvShieldImageView.isHidden = !isVisible
+        titleLeadingConstraint?.constant = TahoeGlassPalette.titleTabTitleLeadingInset + dotenvShieldWidth
+        preferredWidthConstraint?.constant = preferredWidth
+        invalidateIntrinsicContentSize()
+        needsLayout = true
     }
 
     private func updateToolTipForCurrentLayout() {
@@ -1414,6 +1460,7 @@ private final class TerminalTab {
     var activeBlockID: UUID?
     var pendingBlockID: UUID?
     var currentCwd = FileManager.default.homeDirectoryForCurrentUser.path
+    var hasInjectedDotenvSecrets = false
     var parserBuffer = ""
     var isShellReady = false
     var isTerminalControlActive = false
@@ -2132,12 +2179,23 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
             cd \(shellQuote(workingDirectory.path))
             __vaultty_dotenv_hook() {
-              local __vaultty_dotenv
+              local __vaultty_dotenv __vaultty_status __vaultty_loaded
               if [ ! -x "$VAULTTY_ENV" ]; then
                 return 0
               fi
-              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)" || return $?
-              eval "$__vaultty_dotenv"
+              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)"
+              __vaultty_status=$?
+              if [ "$__vaultty_status" -eq 0 ]; then
+                eval "$__vaultty_dotenv"
+                __vaultty_status=$?
+              fi
+              if [ "$__vaultty_status" -eq 0 ] && [ -n "${VAULTTY_DOTENV_FILE:-}" ] && [ -n "${VAULTTY_DOTENV_KEYS:-}" ]; then
+                __vaultty_loaded=1
+              else
+                __vaultty_loaded=0
+              fi
+              printf '\\033]133;V;%s\\a' "$__vaultty_loaded"
+              return "$__vaultty_status"
             }
             if [ -n "${ZSH_VERSION:-}" ]; then
               autoload -Uz add-zsh-hook
@@ -2145,6 +2203,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
               add-zsh-hook -d chpwd __vaultty_dotenv_hook 2>/dev/null || true
               add-zsh-hook chpwd __vaultty_dotenv_hook 2>/dev/null || true
             fi
+            __vaultty_dotenv_hook
             stty -echo
             PROMPT=''
             RPROMPT=''
@@ -2453,7 +2512,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
@@ -2602,6 +2661,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.pendingBlockID = nil
         case "P":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
+        case "V":
+            updateDotenvShield(payload.trimmingCharacters(in: .whitespacesAndNewlines) == "1", in: tab)
         case "D":
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
             if let activeBlockID = tab.activeBlockID,
@@ -2649,9 +2710,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.title = displayTitle
         if let button = tabButtons[tab.id] {
             button.updateTitle(displayTitle, detail: detail)
+            button.updateDotenvShield(isVisible: tab.hasInjectedDotenvSecrets)
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
+    }
+
+    private func updateDotenvShield(_ isVisible: Bool, in tab: TerminalTab) {
+        guard tab.hasInjectedDotenvSecrets != isVisible else { return }
+        tab.hasInjectedDotenvSecrets = isVisible
+        guard let button = tabButtons[tab.id] else { return }
+        button.updateDotenvShield(isVisible: isVisible)
+        layoutTabStripBeforeMeasuringSelection()
+        updateActiveTabCutoutFrame()
     }
 
     private func updateTabTitleForDirectory(_ tab: TerminalTab) {
