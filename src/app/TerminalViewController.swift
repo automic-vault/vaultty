@@ -37,8 +37,9 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
-    static let titleTabShieldSize: CGFloat = 14
-    static let titleTabShieldTextGap: CGFloat = 5
+    static let titleTabShieldSize: CGFloat = 13
+    static let titleTabShieldTextGap: CGFloat = 3
+    static let titleTabShieldBaselineAdjustment: CGFloat = -0.5
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
@@ -740,7 +741,7 @@ private final class BlockView: NSView {
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
-            metadata.append(MetadataSegment(text: "Running…", color: .secondaryLabelColor))
+            metadata.append(MetadataSegment(text: "Running…", color: TahoeGlassPalette.titleText))
         case .completed(let code):
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
@@ -901,11 +902,14 @@ private final class BlockView: NSView {
 private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = TitleTabCloseButton()
+    private let titleContentView = NSView()
     private let dotenvShieldImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
-    private var titleLeadingConstraint: NSLayoutConstraint?
+    private var titleContentWidthConstraint: NSLayoutConstraint?
+    private var dotenvShieldWidthConstraint: NSLayoutConstraint?
+    private var dotenvShieldGapConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
@@ -957,11 +961,14 @@ private final class TitleTabButton: NSButton {
         dotenvShieldImageView.imageScaling = .scaleProportionallyDown
         dotenvShieldImageView.isHidden = true
         dotenvShieldImageView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(dotenvShieldImageView)
+
+        titleContentView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleContentView)
+        titleContentView.addSubview(dotenvShieldImageView)
 
         titleLabel.stringValue = title
         titleLabel.font = font
-        titleLabel.alignment = .center
+        titleLabel.alignment = .left
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
         titleLabel.usesSingleLineMode = true
@@ -969,7 +976,7 @@ private final class TitleTabButton: NSButton {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleLabel.cell?.truncatesLastVisibleLine = true
-        addSubview(titleLabel)
+        titleContentView.addSubview(titleLabel)
 
         closeButton.isBordered = false
         closeButton.bezelStyle = .regularSquare
@@ -989,25 +996,50 @@ private final class TitleTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
 
-        let titleLeadingConstraint = titleLabel.leadingAnchor.constraint(
-            equalTo: leadingAnchor,
-            constant: TahoeGlassPalette.titleTabTitleLeadingInset
+        let titleContentWidthConstraint = titleContentView.widthAnchor.constraint(
+            equalToConstant: titleContentWidth
         )
-        self.titleLeadingConstraint = titleLeadingConstraint
+        titleContentWidthConstraint.priority = .defaultHigh
+        self.titleContentWidthConstraint = titleContentWidthConstraint
+
+        let dotenvShieldWidthConstraint = dotenvShieldImageView.widthAnchor.constraint(
+            equalToConstant: 0
+        )
+        self.dotenvShieldWidthConstraint = dotenvShieldWidthConstraint
+
+        let dotenvShieldGapConstraint = titleLabel.leadingAnchor.constraint(
+            equalTo: dotenvShieldImageView.trailingAnchor,
+            constant: 0
+        )
+        self.dotenvShieldGapConstraint = dotenvShieldGapConstraint
 
         NSLayoutConstraint.activate([
-            dotenvShieldImageView.leadingAnchor.constraint(
-                equalTo: leadingAnchor,
+            titleContentView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleContentView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleContentView.leadingAnchor.constraint(
+                greaterThanOrEqualTo: leadingAnchor,
                 constant: TahoeGlassPalette.titleTabTitleLeadingInset
             ),
-            dotenvShieldImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dotenvShieldImageView.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabShieldSize),
+            titleContentView.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingAnchor,
+                constant: -TahoeGlassPalette.titleTabTitleCloseTrailingInset
+            ),
+            titleContentWidthConstraint,
+            titleContentView.heightAnchor.constraint(equalTo: heightAnchor),
+
+            dotenvShieldImageView.leadingAnchor.constraint(
+                equalTo: titleContentView.leadingAnchor
+            ),
+            dotenvShieldImageView.centerYAnchor.constraint(
+                equalTo: titleLabel.centerYAnchor,
+                constant: TahoeGlassPalette.titleTabShieldBaselineAdjustment
+            ),
+            dotenvShieldWidthConstraint,
             dotenvShieldImageView.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabShieldSize),
 
-            titleLeadingConstraint,
+            dotenvShieldGapConstraint,
             titleLabel.trailingAnchor.constraint(
-                equalTo: trailingAnchor,
-                constant: -TahoeGlassPalette.titleTabTitleTrailingInset
+                equalTo: titleContentView.trailingAnchor
             ),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
@@ -1116,6 +1148,10 @@ private final class TitleTabButton: NSButton {
         ]).width)
     }
 
+    private var titleContentWidth: CGFloat {
+        titleTextWidth + dotenvShieldWidth
+    }
+
     private var dotenvShieldWidth: CGFloat {
         showsDotenvShield
             ? TahoeGlassPalette.titleTabShieldSize + TahoeGlassPalette.titleTabShieldTextGap
@@ -1135,6 +1171,7 @@ private final class TitleTabButton: NSButton {
         titleLabel.stringValue = title
         toolTipText = detail ?? title
         setAccessibilityLabel(title)
+        titleContentWidthConstraint?.constant = titleContentWidth
         preferredWidthConstraint?.constant = preferredWidth
         invalidateIntrinsicContentSize()
         updateToolTipForCurrentLayout()
@@ -1144,7 +1181,9 @@ private final class TitleTabButton: NSButton {
         guard showsDotenvShield != isVisible else { return }
         showsDotenvShield = isVisible
         dotenvShieldImageView.isHidden = !isVisible
-        titleLeadingConstraint?.constant = TahoeGlassPalette.titleTabTitleLeadingInset + dotenvShieldWidth
+        dotenvShieldWidthConstraint?.constant = isVisible ? TahoeGlassPalette.titleTabShieldSize : 0
+        dotenvShieldGapConstraint?.constant = isVisible ? TahoeGlassPalette.titleTabShieldTextGap : 0
+        titleContentWidthConstraint?.constant = titleContentWidth
         preferredWidthConstraint?.constant = preferredWidth
         invalidateIntrinsicContentSize()
         needsLayout = true
@@ -1530,7 +1569,7 @@ private final class TerminalTab {
         inputScroll.translatesAutoresizingMaskIntoConstraints = false
 
         statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.textColor = TahoeGlassPalette.titleText
         statusLabel.alignment = .left
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
