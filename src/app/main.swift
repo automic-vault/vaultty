@@ -23,7 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
             .titled,
             .closable,
             .miniaturizable,
-            .resizable
+            .resizable,
+            .fullSizeContentView
         ]
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: AppWindowMetrics.defaultContentSize),
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         window.isRestorable = false
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         let toolbar = NSToolbar(identifier: .vaulttyTitlebar)
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
