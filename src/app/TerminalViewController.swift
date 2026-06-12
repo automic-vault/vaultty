@@ -999,6 +999,10 @@ private final class TitleTabButton: NSButton {
         closeButton.action = action
     }
 
+    func containsCloseButton(at point: NSPoint) -> Bool {
+        !closeButton.isHidden && closeButton.frame.contains(point)
+    }
+
     func updateTitle(_ title: String, detail: String? = nil) {
         titleLabel.stringValue = title
         toolTipText = detail ?? title
@@ -1390,6 +1394,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var activeCompletionRange: NSRange?
     private var isApplyingCompletion = false
     private var isShowingResizeTooltip = false
+    private var tabMouseDownMonitor: Any?
+
+    private enum TabClickTarget {
+        case select(UUID)
+        case close(UUID)
+    }
 
     init(selfTestCommand: String? = nil) {
         self.selfTestCommand = selfTestCommand
@@ -1470,6 +1480,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         createTab()
+        installTabMouseDownMonitor()
+    }
+
+    deinit {
+        if let tabMouseDownMonitor {
+            NSEvent.removeMonitor(tabMouseDownMonitor)
+        }
     }
 
     override func viewDidAppear() {
@@ -1715,6 +1732,36 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         NSLayoutConstraint.activate(button.widthConstraints + [
             button.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight)
         ])
+    }
+
+    private func installTabMouseDownMonitor() {
+        tabMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self,
+                  event.window === self.view.window,
+                  let clickedTarget = self.tabClickTarget(atWindowPoint: event.locationInWindow)
+            else {
+                return event
+            }
+
+            switch clickedTarget {
+            case .select(let id):
+                self.activateTab(id)
+            case .close(let id):
+                _ = self.closeTab(withID: id)
+            }
+            return nil
+        }
+    }
+
+    private func tabClickTarget(atWindowPoint windowPoint: NSPoint) -> TabClickTarget? {
+        for (id, button) in tabButtons {
+            guard !button.isHidden, button.window != nil else { continue }
+            let point = button.convert(windowPoint, from: nil)
+            if button.bounds.contains(point) {
+                return button.containsCloseButton(at: point) ? .close(id) : .select(id)
+            }
+        }
+        return nil
     }
 
     private func activateTab(_ id: UUID, tabStripLayoutChanged: Bool = false) {
