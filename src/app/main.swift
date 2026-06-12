@@ -49,11 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         window.titlebarSeparatorStyle = .none
         titleToolbar = toolbar
         window.contentViewController = controller
-        window.contentMinSize = AppWindowMetrics.minimumContentSize
         window.minSize = NSWindow.frameRect(
             forContentRect: NSRect(origin: .zero, size: AppWindowMetrics.minimumContentSize),
             styleMask: styleMask
         ).size
+        window.contentMinSize = AppWindowMetrics.minimumContentSize
         controller.preferredContentSize = AppWindowMetrics.defaultContentSize
         window.setContentSize(AppWindowMetrics.defaultContentSize)
         window.center()

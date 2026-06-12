@@ -66,6 +66,17 @@ private enum TahoeGlassPalette {
 }
 
 private final class TahoeGlassRootView: NSView {
+    private struct ResizeEdges: OptionSet {
+        let rawValue: Int
+
+        static let left = ResizeEdges(rawValue: 1 << 0)
+        static let right = ResizeEdges(rawValue: 1 << 1)
+        static let bottom = ResizeEdges(rawValue: 1 << 2)
+        static let top = ResizeEdges(rawValue: 1 << 3)
+    }
+
+    private static let resizeHitThickness: CGFloat = 10
+
     private let materialView = NSVisualEffectView()
     private let tintView = NSView()
     private let tintLayer = CAGradientLayer()
@@ -139,6 +150,47 @@ private final class TahoeGlassRootView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let thickness = Self.resizeHitThickness
+        addCursorRect(
+            NSRect(x: 0, y: 0, width: thickness, height: bounds.height),
+            cursor: .resizeLeftRight
+        )
+        addCursorRect(
+            NSRect(x: bounds.width - thickness, y: 0, width: thickness, height: bounds.height),
+            cursor: .resizeLeftRight
+        )
+        addCursorRect(
+            NSRect(x: 0, y: 0, width: bounds.width, height: thickness),
+            cursor: .resizeUpDown
+        )
+        addCursorRect(
+            NSRect(x: 0, y: bounds.height - thickness, width: bounds.width, height: thickness),
+            cursor: .resizeUpDown
+        )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hitView = super.hitTest(point)
+        let edges = resizeEdges(for: point)
+        if edges.isEmpty || hitView is NSScroller {
+            return hitView
+        }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let edges = resizeEdges(for: point)
+        guard !edges.isEmpty, let window else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        resizeWindow(window, from: event, edges: edges)
+    }
+
     override func layout() {
         super.layout()
         tintLayer.frame = bounds
@@ -154,6 +206,113 @@ private final class TahoeGlassRootView: NSView {
             y: max(0, bounds.height - contentTop),
             activeTabFrame: activeTabFrame
         )
+    }
+
+    private func resizeEdges(for point: NSPoint) -> ResizeEdges {
+        guard bounds.contains(point) else { return [] }
+
+        let thickness = Self.resizeHitThickness
+        var edges: ResizeEdges = []
+        if point.x <= bounds.minX + thickness {
+            edges.insert(.left)
+        }
+        if point.x >= bounds.maxX - thickness {
+            edges.insert(.right)
+        }
+        if point.y <= bounds.minY + thickness {
+            edges.insert(.bottom)
+        }
+        if point.y >= bounds.maxY - thickness {
+            edges.insert(.top)
+        }
+        return edges
+    }
+
+    private func resizeWindow(_ window: NSWindow, from initialEvent: NSEvent, edges: ResizeEdges) {
+        let initialFrame = window.frame
+        let initialPoint = window.convertPoint(toScreen: initialEvent.locationInWindow)
+        let minSize = window.minSize
+        let maxSize = window.maxSize
+
+        var keepTracking = true
+        while keepTracking,
+              let event = window.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: .distantFuture,
+                inMode: .eventTracking,
+                dequeue: true
+              ) {
+            switch event.type {
+            case .leftMouseDragged:
+                let currentPoint = window.convertPoint(toScreen: event.locationInWindow)
+                let deltaX = currentPoint.x - initialPoint.x
+                let deltaY = currentPoint.y - initialPoint.y
+                let frame = resizedFrame(
+                    from: initialFrame,
+                    deltaX: deltaX,
+                    deltaY: deltaY,
+                    edges: edges,
+                    minSize: minSize,
+                    maxSize: maxSize
+                )
+                window.setFrame(frame, display: true)
+            default:
+                keepTracking = false
+            }
+        }
+    }
+
+    private func resizedFrame(
+        from frame: NSRect,
+        deltaX: CGFloat,
+        deltaY: CGFloat,
+        edges: ResizeEdges,
+        minSize: NSSize,
+        maxSize: NSSize
+    ) -> NSRect {
+        var resized = frame
+
+        if edges.contains(.left) {
+            resized.origin.x = frame.origin.x + deltaX
+            resized.size.width = frame.width - deltaX
+        } else if edges.contains(.right) {
+            resized.size.width = frame.width + deltaX
+        }
+
+        if edges.contains(.bottom) {
+            resized.origin.y = frame.origin.y + deltaY
+            resized.size.height = frame.height - deltaY
+        } else if edges.contains(.top) {
+            resized.size.height = frame.height + deltaY
+        }
+
+        if resized.width < minSize.width {
+            if edges.contains(.left) {
+                resized.origin.x = frame.maxX - minSize.width
+            }
+            resized.size.width = minSize.width
+        }
+        if resized.height < minSize.height {
+            if edges.contains(.bottom) {
+                resized.origin.y = frame.maxY - minSize.height
+            }
+            resized.size.height = minSize.height
+        }
+
+        if resized.width > maxSize.width {
+            if edges.contains(.left) {
+                resized.origin.x = frame.maxX - maxSize.width
+            }
+            resized.size.width = maxSize.width
+        }
+        if resized.height > maxSize.height {
+            if edges.contains(.bottom) {
+                resized.origin.y = frame.maxY - maxSize.height
+            }
+            resized.size.height = maxSize.height
+        }
+
+        return resized
     }
 
     private func topBarPath(
