@@ -774,6 +774,7 @@ private final class BlockView: NSView {
         let output = block.output.isEmpty ? Ansi.emptyAttributedOutput() : block.attributedOutput
         if block.outputRevision != renderedOutputRevision {
             outputView.textStorage?.setAttributedString(output)
+            resetOutputViewport()
             renderedOutputRevision = block.outputRevision
             needsOutputHeightMeasurement = true
         }
@@ -853,8 +854,13 @@ private final class BlockView: NSView {
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         outputHeightConstraint?.constant = ceil(usedRect.height)
+        resetOutputViewport()
         lastMeasuredOutputWidth = availableWidth
         needsOutputHeightMeasurement = false
+    }
+
+    private func resetOutputViewport() {
+        outputView.setBoundsOrigin(.zero)
     }
 
     private func durationText(for block: TerminalBlock) -> String? {
