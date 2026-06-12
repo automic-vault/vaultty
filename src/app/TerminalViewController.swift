@@ -17,6 +17,7 @@ private struct TerminalBlock {
     var finishedAt: Date?
     var output: String
     var attributedOutput: NSMutableAttributedString
+    var outputRevision: Int
     var state: State
 }
 
@@ -564,6 +565,9 @@ private final class BlockView: NSView {
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
     private var hasVisibleOutput = false
+    private var lastMeasuredOutputWidth: CGFloat = 0
+    private var needsOutputHeightMeasurement = true
+    private var renderedOutputRevision = -1
 
     var onCopyCommand: (() -> Void)?
     var onCopyOutput: (() -> Void)?
@@ -655,9 +659,12 @@ private final class BlockView: NSView {
         commandLabel.stringValue = block.command
         hasVisibleOutput = !block.output.isEmpty
         outputView.isHidden = !hasVisibleOutput
-        outputView.textStorage?.setAttributedString(
-            block.output.isEmpty ? Ansi.emptyAttributedOutput() : block.attributedOutput
-        )
+        let output = block.output.isEmpty ? Ansi.emptyAttributedOutput() : block.attributedOutput
+        if block.outputRevision != renderedOutputRevision {
+            outputView.textStorage?.setAttributedString(output)
+            renderedOutputRevision = block.outputRevision
+            needsOutputHeightMeasurement = true
+        }
         updateOutputHeight()
 
         var metadata = [
@@ -684,7 +691,10 @@ private final class BlockView: NSView {
 
     override func layout() {
         super.layout()
-        updateOutputHeight()
+        if abs(outputView.bounds.width - lastMeasuredOutputWidth) > 0.5 {
+            needsOutputHeightMeasurement = true
+            updateOutputHeight()
+        }
     }
 
     @objc private func showMenu() {
@@ -711,9 +721,14 @@ private final class BlockView: NSView {
         }
         guard hasVisibleOutput else {
             outputHeightConstraint?.constant = 0
+            lastMeasuredOutputWidth = outputView.bounds.width
+            needsOutputHeightMeasurement = false
             return
         }
         let availableWidth = max(1, outputView.bounds.width)
+        guard needsOutputHeightMeasurement || abs(availableWidth - lastMeasuredOutputWidth) > 0.5 else {
+            return
+        }
         textContainer.containerSize = NSSize(
             width: availableWidth,
             height: CGFloat.greatestFiniteMagnitude
@@ -721,6 +736,8 @@ private final class BlockView: NSView {
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         outputHeightConstraint?.constant = ceil(usedRect.height)
+        lastMeasuredOutputWidth = availableWidth
+        needsOutputHeightMeasurement = false
     }
 
     private func durationText(for block: TerminalBlock) -> String? {
@@ -2222,6 +2239,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             finishedAt: nil,
             output: "",
             attributedOutput: NSMutableAttributedString(),
+            outputRevision: 0,
             state: .running
         )
         tab.blocks.append(block)
@@ -2330,6 +2348,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 attributedString: rendered.attributedText
             )
         }
+        tab.blocks[index].outputRevision += 1
 
         tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
         refreshTerminalControl(in: tab)
