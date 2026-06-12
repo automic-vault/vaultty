@@ -5,7 +5,7 @@ private enum AppWindowMetrics {
     static let minimumContentSize = NSSize(width: 760, height: 480)
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
     private var window: NSWindow?
     private var controller: TerminalViewController?
     private var titleToolbar: NSToolbar?
@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.delegate = self
         let toolbar = NSToolbar(identifier: .vaulttyTitlebar)
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
@@ -70,6 +71,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        controller?.beginWindowResizeTooltip()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        controller?.updateWindowResizeTooltip()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        controller?.endWindowResizeTooltip()
     }
 
     @objc private func closeActiveTabOrWindow(_ sender: Any?) {

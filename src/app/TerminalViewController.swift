@@ -89,6 +89,59 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
     }
 }
 
+private final class ResizeMetricsTooltipView: NSView {
+    private enum Metrics {
+        static let horizontalPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = 7
+        static let minimumHeight: CGFloat = 30
+    }
+
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        label.textColor = NSColor.white.withAlphaComponent(0.92)
+        label.alignment = .center
+        label.lineBreakMode = .byClipping
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.horizontalPadding),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Metrics.horizontalPadding),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: Metrics.verticalPadding),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Metrics.verticalPadding)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func update(text: String) -> NSSize {
+        label.stringValue = text
+        let textSize = (text as NSString).size(withAttributes: [
+            .font: label.font ?? NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        ])
+        return NSSize(
+            width: ceil(textSize.width) + Metrics.horizontalPadding * 2,
+            height: max(Metrics.minimumHeight, ceil(textSize.height) + Metrics.verticalPadding * 2)
+        )
+    }
+}
+
 private final class TahoeGlassRootView: NSView {
     private let materialView = NonHitTestingVisualEffectView()
     private let tintView = NonHitTestingView()
@@ -1299,6 +1352,11 @@ private final class TerminalTab {
 }
 
 final class TerminalViewController: NSViewController, NSTextViewDelegate {
+    private struct TerminalGridSize {
+        let rows: UInt16
+        let cols: UInt16
+    }
+
     private let selfTestCommand: String?
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
@@ -1309,6 +1367,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let titleTabBorderView = TitleTabBorderView()
     private let newTabButton = TitleAddButton(frame: .zero)
     private let contentContainer = NSView()
+    private let resizeTooltipView = ResizeMetricsTooltipView()
     private let completionEngine = VaulttyCompletionEngine()
     private let completionQueue = DispatchQueue(label: "com.automicvault.vaultty.completion", qos: .userInitiated)
     private let gitStateProvider = GitDirectoryStateProvider()
@@ -1317,6 +1376,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
     private var isApplyingCompletion = false
+    private var isShowingResizeTooltip = false
 
     init(selfTestCommand: String? = nil) {
         self.selfTestCommand = selfTestCommand
@@ -1346,10 +1406,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         titleTabBorderView.tabStack = titleTabStack
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        resizeTooltipView.isHidden = true
 
         view.addSubview(titleTabStack)
         view.addSubview(titleTabBorderView)
         view.addSubview(contentContainer)
+        view.addSubview(resizeTooltipView)
         titleTabStack.addArrangedSubview(newTabButton)
         updateTitleSegmentCornerMasks()
 
@@ -1408,6 +1470,38 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    func beginWindowResizeTooltip() {
+        isShowingResizeTooltip = true
+        updateWindowResizeTooltip()
+    }
+
+    func updateWindowResizeTooltip() {
+        guard isShowingResizeTooltip else { return }
+        guard let tab = activeTab,
+              let gridSize = terminalGridSize(for: tab),
+              let window = view.window
+        else {
+            resizeTooltipView.isHidden = true
+            return
+        }
+
+        let text = "\(gridSize.cols) cols x \(gridSize.rows) rows"
+        let tooltipSize = resizeTooltipView.update(text: text)
+        let windowPoint = window.convertFromScreen(NSRect(origin: NSEvent.mouseLocation, size: .zero)).origin
+        let point = view.convert(windowPoint, from: nil)
+
+        resizeTooltipView.frame = NSRect(
+            origin: tooltipOrigin(near: point, size: tooltipSize),
+            size: tooltipSize
+        )
+        resizeTooltipView.isHidden = false
+    }
+
+    func endWindowResizeTooltip() {
+        isShowingResizeTooltip = false
+        resizeTooltipView.isHidden = true
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         handleRootLayout()
@@ -1420,6 +1514,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         for tab in tabs {
             resizePtyToViewport(for: tab)
         }
+        updateWindowResizeTooltip()
     }
 
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -2347,16 +2442,41 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func resizePtyToViewport(for tab: TerminalTab) {
+        guard let gridSize = terminalGridSize(for: tab) else { return }
+        tab.session.resize(rows: gridSize.rows, cols: gridSize.cols)
+        tab.terminalScreen.resize(rows: Int(gridSize.rows), cols: Int(gridSize.cols))
+    }
+
+    private func terminalGridSize(for tab: TerminalTab) -> TerminalGridSize? {
         let viewport = tab.scrollView.contentView.bounds
-        guard viewport.width > 0, viewport.height > 0 else { return }
+        guard viewport.width > 0, viewport.height > 0 else { return nil }
 
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let characterWidth = max(1, ceil(("W" as NSString).size(withAttributes: [.font: font]).width))
         let lineHeight = max(1, ceil(font.ascender - font.descender + font.leading))
         let cols = UInt16(max(20, Int(viewport.width / characterWidth)))
         let rows = UInt16(max(5, Int(viewport.height / lineHeight)))
-        tab.session.resize(rows: rows, cols: cols)
-        tab.terminalScreen.resize(rows: Int(rows), cols: Int(cols))
+        return TerminalGridSize(rows: rows, cols: cols)
+    }
+
+    private func tooltipOrigin(near point: NSPoint, size: NSSize) -> NSPoint {
+        let bounds = view.bounds
+        let offset: CGFloat = 14
+        let margin: CGFloat = 10
+
+        var x = point.x + offset
+        if x + size.width + margin > bounds.maxX {
+            x = point.x - size.width - offset
+        }
+
+        var y = point.y - size.height - offset
+        if y < bounds.minY + margin {
+            y = point.y + offset
+        }
+
+        x = min(max(bounds.minX + margin, x), bounds.maxX - size.width - margin)
+        y = min(max(bounds.minY + margin, y), bounds.maxY - size.height - margin)
+        return NSPoint(x: x, y: y)
     }
 
     private func addBlockView(_ block: TerminalBlock, to tab: TerminalTab) {
