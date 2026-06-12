@@ -442,7 +442,7 @@ private final class TitleTabBorderView: NSView {
                 x: floor(rect.maxX) - 1,
                 y: separatorEndpointInset,
                 width: 1,
-                height: max(0, bounds.height - (separatorEndpointInset * 2))
+                height: max(0, bounds.height - separatorEndpointInset)
             ).fill()
         }
     }
