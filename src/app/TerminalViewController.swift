@@ -563,6 +563,42 @@ private final class FlippedDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+private final class SelectableBlockTextField: NSTextField {
+    init() {
+        super.init(frame: .zero)
+        isEditable = false
+        isSelectable = true
+        isBordered = false
+        drawsBackground = false
+        backgroundColor = .clear
+        focusRingType = .none
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isEditable = false
+        isSelectable = true
+        isBordered = false
+        drawsBackground = false
+        backgroundColor = .clear
+        focusRingType = .none
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+private final class BlockOutputTextView: NSTextView {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
 private final class HoverMenuButton: NSButton {
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
@@ -629,9 +665,9 @@ private final class BlockView: NSView {
         let color: NSColor
     }
 
-    private let commandLabel = NSTextField(labelWithString: "")
-    private let metaLabel = NSTextField(labelWithString: "")
-    private let outputView = NSTextView(frame: .zero)
+    private let commandLabel = SelectableBlockTextField()
+    private let metaLabel = SelectableBlockTextField()
+    private let outputView = BlockOutputTextView(frame: .zero)
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
     private var minimumHeightConstraint: NSLayoutConstraint?
