@@ -749,7 +749,7 @@ private final class BlockView: NSView {
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
-            metadata.append(MetadataSegment(text: "Running…", color: TahoeGlassPalette.titleText))
+            metadata.append(MetadataSegment(text: "Running…", color: .tertiaryLabelColor))
             minimumHeightConstraint?.constant = Metrics.runningMinimumHeight
         case .completed(let code):
             minimumHeightConstraint?.constant = 0
@@ -1579,7 +1579,7 @@ private final class TerminalTab {
         inputScroll.translatesAutoresizingMaskIntoConstraints = false
 
         statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        statusLabel.textColor = TahoeGlassPalette.titleText
+        statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .left
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -2837,9 +2837,36 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     tab.statusLabel.stringValue = directoryText
                     return
                 }
-                tab.statusLabel.stringValue = "\(directoryText)  \(gitSummary)"
+                tab.statusLabel.attributedStringValue = self.commandBarStatusText(
+                    directoryText: directoryText,
+                    gitSummary: gitSummary,
+                    font: tab.statusLabel.font
+                )
             }
         }
+    }
+
+    private func commandBarStatusText(
+        directoryText: String,
+        gitSummary: String,
+        font: NSFont?
+    ) -> NSAttributedString {
+        let statusFont = font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let output = NSMutableAttributedString(
+            string: directoryText,
+            attributes: [
+                .font: statusFont,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+        )
+        output.append(NSAttributedString(
+            string: "  \(gitSummary)",
+            attributes: [
+                .font: statusFont,
+                .foregroundColor: NSColor.tertiaryLabelColor
+            ]
+        ))
+        return output
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
