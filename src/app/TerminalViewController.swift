@@ -39,7 +39,7 @@ private enum TahoeGlassPalette {
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let titleTabShieldSize: CGFloat = 13
     static let titleTabShieldTextGap: CGFloat = 3
-    static let titleTabShieldBaselineAdjustment: CGFloat = -0.5
+    static let titleTabShieldBaselineAdjustment: CGFloat = -2
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
@@ -620,6 +620,10 @@ private final class HoverMenuButton: NSButton {
 }
 
 private final class BlockView: NSView {
+    private enum Metrics {
+        static let runningMinimumHeight: CGFloat = 90
+    }
+
     private struct MetadataSegment {
         let text: String
         let color: NSColor
@@ -630,6 +634,7 @@ private final class BlockView: NSView {
     private let outputView = NSTextView(frame: .zero)
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
+    private var minimumHeightConstraint: NSLayoutConstraint?
     private var hasVisibleOutput = false
     private var lastMeasuredOutputWidth: CGFloat = 0
     private var needsOutputHeightMeasurement = true
@@ -697,6 +702,8 @@ private final class BlockView: NSView {
 
         let outputHeightConstraint = outputView.heightAnchor.constraint(equalToConstant: 0)
         self.outputHeightConstraint = outputHeightConstraint
+        let minimumHeightConstraint = heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.runningMinimumHeight)
+        self.minimumHeightConstraint = minimumHeightConstraint
 
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
@@ -715,7 +722,8 @@ private final class BlockView: NSView {
             outputView.widthAnchor.constraint(equalTo: content.widthAnchor),
             menuButton.widthAnchor.constraint(equalToConstant: 36),
             menuButton.heightAnchor.constraint(equalToConstant: 28),
-            outputHeightConstraint
+            outputHeightConstraint,
+            minimumHeightConstraint
         ])
     }
 
@@ -742,7 +750,9 @@ private final class BlockView: NSView {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
             metadata.append(MetadataSegment(text: "Running…", color: TahoeGlassPalette.titleText))
+            minimumHeightConstraint?.constant = Metrics.runningMinimumHeight
         case .completed(let code):
+            minimumHeightConstraint?.constant = 0
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
                 : TahoeGlassPalette.failureSurfaceTint
