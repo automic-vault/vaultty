@@ -1679,6 +1679,28 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         closeTab(withID: activeTabID)
     }
 
+    @objc func clearActiveTab(_ sender: Any?) {
+        guard let tab = activeTab, !tab.blocks.isEmpty else { return }
+
+        let blocksToKeep = tab.blocks.filter { block in
+            if block.id == tab.activeBlockID || block.id == tab.pendingBlockID {
+                return true
+            }
+            if case .running = block.state {
+                return true
+            }
+            return false
+        }
+
+        tab.blocks = blocksToKeep
+        tab.blockViews.removeAll()
+        tab.commandHistoryIndex = nil
+        tab.commandHistoryDraft = ""
+        rebuildBlockViews(for: tab)
+        scrollToBottom(tab)
+        focusInput(for: tab)
+    }
+
     @objc private func closeTab(_ sender: NSButton) {
         guard let button = sender.superview as? TitleTabButton else { return }
         closeTab(withID: button.tabID)
@@ -2566,7 +2588,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func addBlockView(_ block: TerminalBlock, to tab: TerminalTab) {
-        if !tab.blocks.dropLast().isEmpty {
+        if !tab.stackView.arrangedSubviews.isEmpty {
             let separator = SeparatorView()
             tab.stackView.addArrangedSubview(separator)
             separator.widthAnchor.constraint(equalTo: tab.stackView.widthAnchor).isActive = true
@@ -2586,6 +2608,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         blockView.widthAnchor.constraint(equalTo: tab.stackView.widthAnchor).isActive = true
         tab.blockViews[block.id] = blockView
         scrollToBottom(tab)
+    }
+
+    private func rebuildBlockViews(for tab: TerminalTab) {
+        for view in tab.stackView.arrangedSubviews {
+            tab.stackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        for block in tab.blocks {
+            addBlockView(block, to: tab)
+        }
     }
 
     private func runSelfTestIfNeeded(in tab: TerminalTab) {

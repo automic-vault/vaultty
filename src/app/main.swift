@@ -128,6 +128,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.newTab(sender)
     }
 
+    @objc private func clearActiveTab(_ sender: Any?) {
+        controller?.clearActiveTab(sender)
+    }
+
     private func openPendingDirectoryURLs() {
         guard !pendingDirectoryURLs.isEmpty else { return }
         let directoryURLs = pendingDirectoryURLs
@@ -249,6 +253,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             action: #selector(NSText.selectAll(_:)),
             keyEquivalent: "a"
         )
+        editMenu.addItem(.separator())
+        let clearItem = editMenu.addItem(
+            withTitle: "Clear Tab",
+            action: #selector(clearActiveTab(_:)),
+            keyEquivalent: "k"
+        )
+        clearItem.target = self
 
         editItem.submenu = editMenu
         return editItem
