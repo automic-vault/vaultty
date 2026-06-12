@@ -23,8 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
             .titled,
             .closable,
             .miniaturizable,
-            .resizable,
-            .fullSizeContentView
+            .resizable
         ]
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: AppWindowMetrics.defaultContentSize),
