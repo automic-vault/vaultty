@@ -5,10 +5,9 @@ private enum AppWindowMetrics {
     static let minimumContentSize = NSSize(width: 760, height: 480)
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var controller: TerminalViewController?
-    private var titleToolbar: NSToolbar?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
@@ -23,8 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
             .titled,
             .closable,
             .miniaturizable,
-            .resizable,
-            .fullSizeContentView
+            .resizable
         ]
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: AppWindowMetrics.defaultContentSize),
@@ -34,20 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         )
         window.title = "Vaultty"
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
         window.isRestorable = false
         window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        let toolbar = NSToolbar(identifier: .vaulttyTitlebar)
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-        window.titlebarSeparatorStyle = .none
-        titleToolbar = toolbar
+        window.titlebarAppearsTransparent = false
         window.contentViewController = controller
         window.minSize = NSWindow.frameRect(
             forContentRect: NSRect(origin: .zero, size: AppWindowMetrics.minimumContentSize),
@@ -75,14 +64,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
 
     @objc private func newTab(_ sender: Any?) {
         controller?.newTab(sender)
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        []
-    }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        []
     }
 
     private func makeMainMenu() -> NSMenu {
@@ -205,10 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
         NSApp.windowsMenu = windowMenu
         return windowItem
     }
-}
-
-private extension NSToolbar.Identifier {
-    static let vaulttyTitlebar = NSToolbar.Identifier("com.automicvault.vaultty.titlebar")
 }
 
 let app = NSApplication.shared

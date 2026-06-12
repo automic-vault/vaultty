@@ -66,8 +66,6 @@ private enum TahoeGlassPalette {
 }
 
 private final class TahoeGlassRootView: NSView {
-    private static let nativeResizeHitThickness: CGFloat = 8
-
     private let materialView = NSVisualEffectView()
     private let tintView = NSView()
     private let tintLayer = CAGradientLayer()
@@ -141,10 +139,6 @@ private final class TahoeGlassRootView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        isInNativeResizeRegion(point) ? nil : super.hitTest(point)
-    }
-
     override func layout() {
         super.layout()
         tintLayer.frame = bounds
@@ -160,16 +154,6 @@ private final class TahoeGlassRootView: NSView {
             y: max(0, bounds.height - contentTop),
             activeTabFrame: activeTabFrame
         )
-    }
-
-    private func isInNativeResizeRegion(_ point: NSPoint) -> Bool {
-        guard bounds.contains(point) else { return false }
-
-        let thickness = Self.nativeResizeHitThickness
-        return point.x <= bounds.minX + thickness ||
-            point.x >= bounds.maxX - thickness ||
-            point.y <= bounds.minY + thickness ||
-            point.y >= bounds.maxY - thickness
     }
 
     private func topBarPath(
