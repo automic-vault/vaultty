@@ -571,6 +571,7 @@ private final class BlockView: NSView {
 
     var onCopyCommand: (() -> Void)?
     var onCopyOutput: (() -> Void)?
+    var onCopyMarkdown: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -701,6 +702,7 @@ private final class BlockView: NSView {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Copy Command", action: #selector(copyCommand), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Copy Output", action: #selector(copyOutput), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Copy Markdown", action: #selector(copyMarkdown), keyEquivalent: ""))
         menu.items.forEach { $0.target = self }
         menu.popUp(
             positioning: nil,
@@ -712,6 +714,8 @@ private final class BlockView: NSView {
     @objc private func copyCommand() { onCopyCommand?() }
 
     @objc private func copyOutput() { onCopyOutput?() }
+
+    @objc private func copyMarkdown() { onCopyMarkdown?() }
 
     private func updateOutputHeight() {
         guard let textContainer = outputView.textContainer,
@@ -2678,6 +2682,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             let latest = tab?.blocks.first(where: { $0.id == block.id })
             self?.copy(latest?.output ?? "")
         }
+        blockView.onCopyMarkdown = { [weak self, weak tab] in
+            guard let self else { return }
+            let latest = tab?.blocks.first(where: { $0.id == block.id }) ?? block
+            self.copy(markdownTranscript(command: latest.command, output: latest.output))
+        }
         tab.stackView.addArrangedSubview(blockView)
         blockView.translatesAutoresizingMaskIntoConstraints = false
         blockView.widthAnchor.constraint(equalTo: tab.stackView.widthAnchor).isActive = true
@@ -2746,6 +2755,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func markdownTranscript(command: String, output: String) -> String {
+        var transcript = "```sh\n$ \(command)\n"
+        if !output.isEmpty {
+            transcript += output
+            if !output.hasSuffix("\n") {
+                transcript += "\n"
+            }
+        }
+        transcript += "```"
+        return transcript
     }
 
     private func scrollToBottom(_ tab: TerminalTab) {
