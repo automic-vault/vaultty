@@ -1589,6 +1589,9 @@ private final class TerminalTab {
     var currentCwd = FileManager.default.homeDirectoryForCurrentUser.path
     var hasInjectedDotenvSecrets = false
     var parserBuffer = ""
+    var pendingShellOutput = ""
+    var isShellOutputFlushScheduled = false
+    var isScrollToBottomScheduled = false
     var isShellReady = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
@@ -1771,6 +1774,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
     private var updateButtonWidthConstraint: NSLayoutConstraint?
+    private let shellOutputFlushDelay: TimeInterval = 1.0 / 60.0
 
     private enum TabClickTarget {
         case select(UUID)
@@ -2312,11 +2316,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func configureSession(for tab: TerminalTab) {
         tab.session.onOutput = { [weak self, weak tab] text in
             guard let tab else { return }
-            self?.consumeShellOutput(text, in: tab)
+            self?.enqueueShellOutput(text, in: tab)
         }
         tab.session.onExit = { [weak self, weak tab] status in
             tab?.statusLabel.stringValue = "Shell exited with status \(status)"
             if let tab {
+                self?.flushPendingShellOutput(in: tab)
                 self?.finishRunningBlocks(in: tab, status: status)
                 self?.updateTabTitleForDirectory(tab)
                 self?.stopTtyModePolling(for: tab)
@@ -2840,6 +2845,29 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.scrollRangeToVisible(NSRange(location: location, length: 0))
     }
 
+    private func enqueueShellOutput(_ text: String, in tab: TerminalTab) {
+        tab.pendingShellOutput += text
+        guard !tab.isShellOutputFlushScheduled else { return }
+
+        tab.isShellOutputFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + shellOutputFlushDelay) { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.flushPendingShellOutput(in: tab)
+        }
+    }
+
+    private func flushPendingShellOutput(in tab: TerminalTab) {
+        guard !tab.pendingShellOutput.isEmpty else {
+            tab.isShellOutputFlushScheduled = false
+            return
+        }
+
+        let text = tab.pendingShellOutput
+        tab.pendingShellOutput.removeAll(keepingCapacity: true)
+        tab.isShellOutputFlushScheduled = false
+        consumeShellOutput(text, in: tab)
+    }
+
     private func consumeShellOutput(_ text: String, in tab: TerminalTab) {
         tab.parserBuffer += text
         var visible = ""
@@ -3327,7 +3355,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func scrollToBottom(_ tab: TerminalTab) {
+        guard !tab.isScrollToBottomScheduled else { return }
+        tab.isScrollToBottomScheduled = true
         DispatchQueue.main.async {
+            tab.isScrollToBottomScheduled = false
             guard let documentView = tab.scrollView.documentView else {
                 return
             }
