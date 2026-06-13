@@ -979,6 +979,7 @@ private final class TitleTabButton: NSButton {
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
+    private var minimumWidthConstraint: NSLayoutConstraint?
     private var titleContentWidthConstraint: NSLayoutConstraint?
     private var dotenvShieldWidthConstraint: NSLayoutConstraint?
     private var dotenvShieldGapConstraint: NSLayoutConstraint?
@@ -1197,11 +1198,17 @@ private final class TitleTabButton: NSButton {
         let preferredWidthConstraint = widthAnchor.constraint(equalToConstant: preferredWidth)
         preferredWidthConstraint.priority = .defaultHigh
         self.preferredWidthConstraint = preferredWidthConstraint
+        let minimumWidthConstraint = widthAnchor.constraint(greaterThanOrEqualToConstant: minimumWidth)
+        self.minimumWidthConstraint = minimumWidthConstraint
 
         return [
             preferredWidthConstraint,
-            widthAnchor.constraint(greaterThanOrEqualToConstant: TahoeGlassPalette.titleTabMinimumWidth)
+            minimumWidthConstraint
         ]
+    }
+
+    private var minimumWidth: CGFloat {
+        TahoeGlassPalette.titleTabMinimumWidth + dotenvShieldWidth
     }
 
     private var preferredWidth: CGFloat {
@@ -1245,6 +1252,7 @@ private final class TitleTabButton: NSButton {
         setAccessibilityLabel(title)
         titleContentWidthConstraint?.constant = titleContentWidth
         preferredWidthConstraint?.constant = preferredWidth
+        minimumWidthConstraint?.constant = minimumWidth
         invalidateIntrinsicContentSize()
         updateToolTipForCurrentLayout()
     }
@@ -1257,6 +1265,7 @@ private final class TitleTabButton: NSButton {
         dotenvShieldGapConstraint?.constant = isVisible ? TahoeGlassPalette.titleTabShieldTextGap : 0
         titleContentWidthConstraint?.constant = titleContentWidth
         preferredWidthConstraint?.constant = preferredWidth
+        minimumWidthConstraint?.constant = minimumWidth
         invalidateIntrinsicContentSize()
         needsLayout = true
     }
