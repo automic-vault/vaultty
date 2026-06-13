@@ -207,6 +207,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.clearActiveTab(sender)
     }
 
+    @objc private func selectPreviousTab(_ sender: Any?) {
+        controller?.selectPreviousTab(sender)
+    }
+
+    @objc private func selectNextTab(_ sender: Any?) {
+        controller?.selectNextTab(sender)
+    }
+
     private func openPendingDirectoryURLs() {
         guard !pendingDirectoryURLs.isEmpty else { return }
         let directoryURLs = pendingDirectoryURLs
@@ -350,6 +358,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             keyEquivalent: "t"
         )
         newTabItem.target = self
+        windowMenu.addItem(.separator())
+
+        let previousTabItem = windowMenu.addItem(
+            withTitle: "Select Previous Tab",
+            action: #selector(selectPreviousTab(_:)),
+            keyEquivalent: "["
+        )
+        previousTabItem.keyEquivalentModifierMask = [.command, .shift]
+        previousTabItem.target = self
+
+        let nextTabItem = windowMenu.addItem(
+            withTitle: "Select Next Tab",
+            action: #selector(selectNextTab(_:)),
+            keyEquivalent: "]"
+        )
+        nextTabItem.keyEquivalentModifierMask = [.command, .shift]
+        nextTabItem.target = self
         windowMenu.addItem(.separator())
 
         let closeItem = windowMenu.addItem(

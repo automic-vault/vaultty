@@ -2089,6 +2089,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         createTab(workingDirectory: directoryURL)
     }
 
+    @objc func selectPreviousTab(_ sender: Any?) {
+        activateAdjacentTab(offset: -1)
+    }
+
+    @objc func selectNextTab(_ sender: Any?) {
+        activateAdjacentTab(offset: 1)
+    }
+
     @objc private func selectTab(_ sender: TitleTabButton) {
         activateTab(sender.tabID)
     }
@@ -2249,6 +2257,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tab = activeTab {
             focusInput(for: tab)
         }
+    }
+
+    private func activateAdjacentTab(offset: Int) {
+        guard tabs.count > 1,
+              let activeTabID,
+              let currentIndex = tabs.firstIndex(where: { $0.id == activeTabID })
+        else {
+            return
+        }
+
+        let nextIndex = (currentIndex + offset + tabs.count) % tabs.count
+        activateTab(tabs[nextIndex].id)
     }
 
     private func layoutTabStripBeforeMeasuringSelection() {
