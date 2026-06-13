@@ -675,6 +675,67 @@ private final class HoverMenuButton: NSButton {
     }
 }
 
+private final class HoverCopyMarkdownButton: NSButton {
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isHovering = false {
+        didSet { updateHoverAppearance() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        bezelStyle = .regularSquare
+        image = NSImage(
+            systemSymbolName: "clipboard",
+            accessibilityDescription: "Copy Markdown"
+        )
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        toolTip = "Copy Markdown"
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = TahoeGlassPalette.titleText
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    private func updateHoverAppearance() {
+        layer?.backgroundColor = (isHovering
+            ? NSColor.white.withAlphaComponent(0.10)
+            : NSColor.clear
+        ).cgColor
+        contentTintColor = isHovering ? .labelColor : .secondaryLabelColor
+    }
+}
+
 private final class BlockView: NSView {
     private enum Metrics {
         static let runningMinimumHeight: CGFloat = 90
@@ -688,6 +749,7 @@ private final class BlockView: NSView {
     private let commandLabel = SelectableBlockTextField()
     private let metaLabel = SelectableBlockTextField()
     private let outputView = BlockOutputTextView(frame: .zero)
+    private let copyMarkdownButton = HoverCopyMarkdownButton(frame: .zero)
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
     private var minimumHeightConstraint: NSLayoutConstraint?
@@ -739,10 +801,15 @@ private final class BlockView: NSView {
         menuButton.action = #selector(showMenu)
         menuButton.setButtonType(.momentaryPushIn)
         menuButton.translatesAutoresizingMaskIntoConstraints = false
+        copyMarkdownButton.target = self
+        copyMarkdownButton.action = #selector(copyMarkdown)
+        copyMarkdownButton.setButtonType(.momentaryPushIn)
+        copyMarkdownButton.translatesAutoresizingMaskIntoConstraints = false
 
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(metaLabel)
+        header.addSubview(copyMarkdownButton)
         header.addSubview(menuButton)
         metaLabel.translatesAutoresizingMaskIntoConstraints = false
         metaLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -773,7 +840,11 @@ private final class BlockView: NSView {
             header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
             metaLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             metaLabel.centerYAnchor.constraint(equalTo: menuButton.centerYAnchor),
-            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -8),
+            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: copyMarkdownButton.leadingAnchor, constant: -8),
+            copyMarkdownButton.centerYAnchor.constraint(equalTo: menuButton.centerYAnchor),
+            copyMarkdownButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -4),
+            copyMarkdownButton.widthAnchor.constraint(equalToConstant: 28),
+            copyMarkdownButton.heightAnchor.constraint(equalToConstant: 28),
             menuButton.topAnchor.constraint(equalTo: header.topAnchor),
             menuButton.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             menuButton.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor),
