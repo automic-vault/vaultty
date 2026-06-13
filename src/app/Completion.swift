@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import JavaScriptCore
 
@@ -378,6 +379,9 @@ private extension CompletionSuggestion {
 }
 
 final class VaulttyCompletionEngine {
+    private static let maxPathSuggestionCandidates = 512
+    private static let maxGeneratorSuggestionCandidates = 512
+
     private let specLoader = FigSpecLoader()
     private let fileManager = FileManager.default
     private var commandCache: [String: [CompletionSuggestion]] = [:]
@@ -584,6 +588,10 @@ final class VaulttyCompletionEngine {
         request: CompletionRequest,
         spec: LoadedFigSpec
     ) -> [CompletionSuggestion] {
+        guard !isRemotePathPrefix(currentPrefix) else {
+            return []
+        }
+
         var suggestions: [CompletionSuggestion] = []
         for template in generator.templates {
             if template == "folders" {
@@ -737,7 +745,7 @@ final class VaulttyCompletionEngine {
                 CompletionSuggestion(displayText: name, insertText: name + " ", description: nil, kind: kind, priority: 50, source: source)
             ]
         }
-        return FigReader.arrayValues(value).compactMap { item in
+        return FigReader.arrayValues(value, limit: Self.maxGeneratorSuggestionCandidates).compactMap { item in
             if item.isString, let name = item.toString(), !name.isEmpty {
                 return CompletionSuggestion(displayText: name, insertText: name + " ", description: nil, kind: kind, priority: 50, source: source)
             }
@@ -815,6 +823,10 @@ final class VaulttyCompletionEngine {
     }
 
     private func pathSuggestions(prefix: String, cwd: String, foldersOnly: Bool) -> [CompletionSuggestion] {
+        guard !isRemotePathPrefix(prefix) else {
+            return []
+        }
+
         let expanded = expandTilde(prefix)
         let nsPrefix = expanded as NSString
         let directoryPart = nsPrefix.deletingLastPathComponent
@@ -832,34 +844,38 @@ final class VaulttyCompletionEngine {
             directory = (cwd as NSString).appendingPathComponent(directoryPart)
         }
 
-        guard let entries = try? fileManager.contentsOfDirectory(
+        guard let enumerator = fileManager.enumerator(
             at: URL(fileURLWithPath: directory),
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: []
+            options: [.skipsSubdirectoryDescendants]
         ) else {
             return []
         }
 
-        let suggestions: [CompletionSuggestion] = entries.compactMap { url in
+        var suggestions: [CompletionSuggestion] = []
+        for case let url as URL in enumerator {
             let name = url.lastPathComponent
-            guard name != "." && name != ".." else { return nil }
+            guard name != "." && name != ".." else { continue }
             if !filePrefix.hasPrefix("."), name.hasPrefix(".") {
-                return nil
+                continue
             }
-            guard filePrefix.isEmpty || hasCaseInsensitivePrefix(name, filePrefix) else { return nil }
+            guard filePrefix.isEmpty || hasCaseInsensitivePrefix(name, filePrefix) else { continue }
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            guard isDirectory || !foldersOnly else { return nil }
+            guard isDirectory || !foldersOnly else { continue }
 
             let visibleName = name + (isDirectory ? "/" : "")
             let inserted = pathInsertValue(prefix: prefix, suggestionName: visibleName, isDirectory: isDirectory)
-            return CompletionSuggestion(
+            suggestions.append(CompletionSuggestion(
                 displayText: visibleName,
                 insertText: inserted,
                 description: nil,
                 kind: isDirectory ? .folder : .file,
                 priority: isDirectory ? 60 : 55,
                 source: directory
-            )
+            ))
+            if suggestions.count >= Self.maxPathSuggestionCandidates {
+                break
+            }
         }
         return suggestions
     }
@@ -888,6 +904,9 @@ final class VaulttyCompletionEngine {
     }
 
     private func shouldUseNativePathCompletion(commandName: String, currentPrefix: String) -> Bool {
+        guard !isRemotePathPrefix(currentPrefix) else {
+            return false
+        }
         if commandName == "cd" {
             return true
         }
@@ -895,6 +914,14 @@ final class VaulttyCompletionEngine {
             return true
         }
         return currentPrefix.contains("/")
+    }
+
+    private func isRemotePathPrefix(_ value: String) -> Bool {
+        guard let colon = value.firstIndex(of: ":") else {
+            return false
+        }
+        let hostPart = value[..<colon]
+        return !hostPart.isEmpty && !hostPart.contains("/")
     }
 
     private func isHiddenPathSuggestion(_ suggestion: CompletionSuggestion) -> Bool {
@@ -1417,11 +1444,12 @@ private struct FigStaticSuggestion {
 }
 
 private enum FigReader {
-    static func arrayValues(_ value: JSValue?) -> [JSValue] {
+    static func arrayValues(_ value: JSValue?, limit: Int? = nil) -> [JSValue] {
         guard let value, !value.isUndefined, !value.isNull else { return [] }
         if value.isArray {
             let length = Int(value.forProperty("length")?.toInt32() ?? 0)
-            return (0..<length).compactMap { value.atIndex($0) }
+            let cappedLength = min(length, limit ?? length)
+            return (0..<cappedLength).compactMap { value.atIndex($0) }
         }
         return value.isObject || value.isString ? [value] : []
     }
@@ -1504,10 +1532,12 @@ private enum ShellCommandRunner {
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
 
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+        let stdoutCapture = LimitedPipeCapture(limit: outputLimit)
+        let stderrCapture = LimitedPipeCapture(limit: outputLimit)
+        process.standardOutput = stdoutCapture.pipe
+        process.standardError = stderrCapture.pipe
 
         do {
             try process.run()
@@ -1515,18 +1545,65 @@ private enum ShellCommandRunner {
             return nil
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in semaphore.signal() }
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
+            if semaphore.wait(timeout: .now() + 0.15) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+            _ = stdoutCapture.finish()
+            _ = stderrCapture.finish()
             return nil
         }
 
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile().prefix(outputLimit)
-        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile().prefix(outputLimit)
         return Output(
-            stdout: String(decoding: stdoutData, as: UTF8.self),
-            stderr: String(decoding: stderrData, as: UTF8.self)
+            stdout: stdoutCapture.finish(),
+            stderr: stderrCapture.finish()
         )
+    }
+}
+
+private final class LimitedPipeCapture: @unchecked Sendable {
+    let pipe = Pipe()
+
+    private let limit: Int
+    private let lock = NSLock()
+    private var data = Data()
+
+    init(limit: Int) {
+        self.limit = max(0, limit)
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            self?.append(chunk)
+        }
+    }
+
+    func finish() -> String {
+        pipe.fileHandleForReading.readabilityHandler = nil
+        while true {
+            let chunk = pipe.fileHandleForReading.availableData
+            guard !chunk.isEmpty else { break }
+            append(chunk)
+        }
+        let output: Data
+        lock.lock()
+        output = data
+        lock.unlock()
+        pipe.fileHandleForReading.closeFile()
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private func append(_ chunk: Data) {
+        guard limit > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = limit - data.count
+        guard remaining > 0 else { return }
+        if chunk.count <= remaining {
+            data.append(chunk)
+        } else {
+            data.append(chunk.prefix(remaining))
+        }
     }
 }
