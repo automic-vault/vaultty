@@ -691,6 +691,7 @@ private final class BlockView: NSView {
     private let menuButton = HoverMenuButton(frame: .zero)
     private var outputHeightConstraint: NSLayoutConstraint?
     private var minimumHeightConstraint: NSLayoutConstraint?
+    private var contentBottomConstraint: NSLayoutConstraint?
     private var hasVisibleOutput = false
     private var lastMeasuredOutputWidth: CGFloat = 0
     private var needsOutputHeightMeasurement = true
@@ -761,13 +762,13 @@ private final class BlockView: NSView {
         let minimumHeightConstraint = heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.runningMinimumHeight)
         self.minimumHeightConstraint = minimumHeightConstraint
         let contentBottomConstraint = content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10)
-        contentBottomConstraint.priority = .defaultLow
+        contentBottomConstraint.isActive = false
+        self.contentBottomConstraint = contentBottomConstraint
 
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             content.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            contentBottomConstraint,
             header.widthAnchor.constraint(equalTo: content.widthAnchor),
             header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
             metaLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor),
@@ -810,8 +811,10 @@ private final class BlockView: NSView {
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
             metadata.append(MetadataSegment(text: "running…", color: .tertiaryLabelColor))
             minimumHeightConstraint?.constant = Metrics.runningMinimumHeight
+            contentBottomConstraint?.isActive = hasVisibleOutput
         case .completed(let code):
             minimumHeightConstraint?.constant = 0
+            contentBottomConstraint?.isActive = true
             layer?.backgroundColor = (code == 0
                 ? TahoeGlassPalette.surfaceTint
                 : TahoeGlassPalette.failureSurfaceTint
