@@ -112,6 +112,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        controller?.windowDidBecomeActive()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        controller?.windowDidBecomeActive()
+    }
+
     func windowWillStartLiveResize(_ notification: Notification) {
         guard notification.object as? NSWindow === window else { return }
         controller?.beginWindowResizeTooltip()

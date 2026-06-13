@@ -1775,6 +1775,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var isApplyingCompletion = false
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
+    private var commandFocusMonitor: Any?
     private var updateButtonWidthConstraint: NSLayoutConstraint?
     private let shellOutputFlushDelay: TimeInterval = 1.0 / 60.0
 
@@ -1881,11 +1882,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         createTab()
         installTabMouseDownMonitor()
+        installCommandFocusMonitor()
     }
 
     deinit {
         if let tabMouseDownMonitor {
             NSEvent.removeMonitor(tabMouseDownMonitor)
+        }
+        if let commandFocusMonitor {
+            NSEvent.removeMonitor(commandFocusMonitor)
         }
         stopAllSessions()
     }
@@ -1899,6 +1904,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tab = activeTab {
             focusInput(for: tab)
         }
+    }
+
+    func windowDidBecomeActive() {
+        restoreCommandFocusIfNeeded()
     }
 
     func stopAllSessions() {
@@ -2237,6 +2246,105 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             return nil
         }
+    }
+
+    private func installCommandFocusMonitor() {
+        commandFocusMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .leftMouseUp, .rightMouseUp]
+        ) { [weak self] event in
+            guard let self,
+                  event.window === self.view.window
+            else {
+                return event
+            }
+
+            switch event.type {
+            case .keyDown:
+                if self.shouldRedirectKeyEventToCommandInput(event) {
+                    self.restoreCommandFocusIfNeeded()
+                }
+            case .leftMouseUp, .rightMouseUp:
+                if self.shouldRestoreCommandFocus(afterMouseEvent: event) {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.restoreCommandFocusIfNeeded()
+                    }
+                }
+            default:
+                break
+            }
+
+            return event
+        }
+    }
+
+    private func shouldRedirectKeyEventToCommandInput(_ event: NSEvent) -> Bool {
+        guard let tab = activeTab,
+              shouldRestoreCommandFocus,
+              !isCommandFocusCurrent(for: tab)
+        else {
+            return false
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return !flags.contains(.command)
+    }
+
+    private func shouldRestoreCommandFocus(afterMouseEvent event: NSEvent) -> Bool {
+        guard let tab = activeTab,
+              shouldRestoreCommandFocus,
+              let hitView = hitView(for: event),
+              !isCommandInputView(hitView, in: tab),
+              !isSelectableTranscriptView(hitView)
+        else {
+            return false
+        }
+
+        return true
+    }
+
+    private var shouldRestoreCommandFocus: Bool {
+        guard let window = view.window else { return false }
+        return NSApp.isActive && window.isKeyWindow && NSApp.modalWindow == nil
+    }
+
+    private func restoreCommandFocusIfNeeded() {
+        guard shouldRestoreCommandFocus,
+              let tab = activeTab,
+              !isCommandFocusCurrent(for: tab)
+        else {
+            return
+        }
+        focusInput(for: tab)
+    }
+
+    private func isCommandFocusCurrent(for tab: TerminalTab) -> Bool {
+        guard let firstResponder = view.window?.firstResponder else { return false }
+        return firstResponder === commandFocusTarget(for: tab)
+    }
+
+    private func commandFocusTarget(for tab: TerminalTab) -> NSResponder {
+        shouldSendInputToPty(in: tab) ? tab.ptyPassthroughView : tab.inputView
+    }
+
+    private func hitView(for event: NSEvent) -> NSView? {
+        guard let contentView = event.window?.contentView else { return nil }
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        return contentView.hitTest(point)
+    }
+
+    private func isCommandInputView(_ view: NSView, in tab: TerminalTab) -> Bool {
+        view === tab.inputView || view.isDescendant(of: tab.inputView)
+    }
+
+    private func isSelectableTranscriptView(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        while let view = current {
+            if view is BlockOutputTextView || view is SelectableBlockTextField {
+                return true
+            }
+            current = view.superview
+        }
+        return false
     }
 
     private func tabClickTarget(atWindowPoint windowPoint: NSPoint) -> TabClickTarget? {
@@ -3194,7 +3302,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func focusInput(for tab: TerminalTab) {
         guard activeTabID == tab.id else { return }
-        view.window?.makeFirstResponder(shouldSendInputToPty(in: tab) ? tab.ptyPassthroughView : tab.inputView)
+        view.window?.makeFirstResponder(commandFocusTarget(for: tab))
     }
 
     private func updatePassthroughVisibility(for tab: TerminalTab) {
