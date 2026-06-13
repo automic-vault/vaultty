@@ -2905,7 +2905,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         let shouldRenderScreen = tab.isAlternateScreenActive
-            || tab.isTerminalControlActive
+            || tab.ptyPassthroughView.usesPagerKeyBindings
             || !Ansi.alternateScreenSwitches(in: text).isEmpty
 
         if shouldRenderScreen {
