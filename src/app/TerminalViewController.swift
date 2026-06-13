@@ -1589,6 +1589,8 @@ private final class TerminalTab {
 
     var blocks: [TerminalBlock] = []
     var blockViews: [UUID: BlockView] = [:]
+    var pendingBlockViewUpdates = Set<UUID>()
+    var isBlockViewUpdateScheduled = false
     var activeBlockID: UUID?
     var pendingBlockID: UUID?
     var currentCwd = FileManager.default.homeDirectoryForCurrentUser.path
@@ -1780,7 +1782,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var tabMouseDownMonitor: Any?
     private var commandFocusMonitor: Any?
     private var updateButtonWidthConstraint: NSLayoutConstraint?
-    private let shellOutputFlushDelay: TimeInterval = 1.0 / 60.0
+    private let shellOutputFlushDelay: TimeInterval = 1.0 / 30.0
+    private let blockViewRenderDelay: TimeInterval = 1.0 / 12.0
+    private let interactiveBlockViewRenderDelay: TimeInterval = 1.0 / 30.0
 
     private enum TabClickTarget {
         case select(UUID)
@@ -3039,9 +3043,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks[index].outputRevision += 1
 
         ensureBlockView(for: activeBlockID, in: tab)
-        tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
+        scheduleBlockViewUpdate(for: activeBlockID, in: tab)
         refreshTerminalControl(in: tab)
-        scrollToBottom(tab)
     }
 
     private func handleMarker(_ marker: String, in tab: TerminalTab) {
@@ -3076,7 +3079,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 tab.blocks[index].finishedAt = Date()
                 tab.blocks[index].state = .completed(status)
                 ensureBlockView(for: activeBlockID, in: tab)
-                tab.blockViews[activeBlockID]?.update(with: tab.blocks[index])
+                updateBlockViewNow(for: activeBlockID, in: tab)
             }
             tab.activeBlockID = nil
             tab.isAlternateScreenActive = false
@@ -3435,6 +3438,38 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private func scheduleBlockViewUpdate(for blockID: UUID, in tab: TerminalTab) {
+        tab.pendingBlockViewUpdates.insert(blockID)
+        guard !tab.isBlockViewUpdateScheduled else { return }
+
+        tab.isBlockViewUpdateScheduled = true
+        let delay = tab.isTerminalControlActive || tab.isAlternateScreenActive || tab.ptyPassthroughView.usesPagerKeyBindings
+            ? interactiveBlockViewRenderDelay
+            : blockViewRenderDelay
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.flushScheduledBlockViewUpdates(in: tab)
+        }
+    }
+
+    private func flushScheduledBlockViewUpdates(in tab: TerminalTab) {
+        let blockIDs = tab.pendingBlockViewUpdates
+        tab.pendingBlockViewUpdates.removeAll(keepingCapacity: true)
+        tab.isBlockViewUpdateScheduled = false
+
+        for blockID in blockIDs {
+            updateBlockViewNow(for: blockID, in: tab)
+        }
+    }
+
+    private func updateBlockViewNow(for blockID: UUID, in tab: TerminalTab) {
+        tab.pendingBlockViewUpdates.remove(blockID)
+        guard let block = tab.blocks.first(where: { $0.id == blockID }) else { return }
+        ensureBlockView(for: blockID, in: tab)
+        tab.blockViews[blockID]?.update(with: block)
+        scrollToBottom(tab)
+    }
+
     private func finishRunningBlocks(in tab: TerminalTab, status: Int32) {
         let finishedAt = Date()
         for index in tab.blocks.indices {
@@ -3442,7 +3477,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 tab.blocks[index].finishedAt = finishedAt
                 tab.blocks[index].state = .completed(status)
                 ensureBlockView(for: tab.blocks[index].id, in: tab)
-                tab.blockViews[tab.blocks[index].id]?.update(with: tab.blocks[index])
+                updateBlockViewNow(for: tab.blocks[index].id, in: tab)
             }
         }
         tab.activeBlockID = nil

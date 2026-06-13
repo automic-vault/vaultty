@@ -19,6 +19,10 @@ enum Ansi {
     }
 
     final class StyledTextRenderer {
+        private static let maxRenderedLines = 5_000
+        private static let maxRenderedCells = 300_000
+        private static let maxLineCells = 2_000
+
         private var pending = ""
         private var style = TextStyle()
         private var lines: [[Cell]] = [[]]
@@ -26,6 +30,7 @@ enum Ansi {
         private var cursorCol = 0
         private var savedCursorRow = 0
         private var savedCursorCol = 0
+        private var droppedLineCount = 0
 
         func reset() {
             pending.removeAll()
@@ -35,6 +40,7 @@ enum Ansi {
             cursorCol = 0
             savedCursorRow = 0
             savedCursorCol = 0
+            droppedLineCount = 0
         }
 
         func process(_ text: String) -> StyledOutput {
@@ -188,7 +194,11 @@ enum Ansi {
         }
 
         private func put(_ value: String) {
+            if cursorCol >= Self.maxLineCells {
+                lineFeed()
+            }
             ensureCursorRow()
+            cursorCol = min(cursorCol, Self.maxLineCells - 1)
             while lines[cursorRow].count < cursorCol {
                 lines[cursorRow].append(Cell(text: " ", style: style))
             }
@@ -207,8 +217,13 @@ enum Ansi {
         }
 
         private func ensureCursorRow() {
+            var didAppendRow = false
             while cursorRow >= lines.count {
                 lines.append([])
+                didAppendRow = true
+            }
+            if didAppendRow {
+                trimScrollbackIfNeeded()
             }
         }
 
@@ -237,6 +252,7 @@ enum Ansi {
 
         private func eraseLine(_ mode: Int) {
             ensureCursorRow()
+            cursorCol = min(cursorCol, Self.maxLineCells - 1)
             switch mode {
             case 0:
                 if cursorCol < lines[cursorRow].count {
@@ -259,6 +275,7 @@ enum Ansi {
         private func eraseCharacters(_ count: Int) {
             guard count > 0 else { return }
             ensureCursorRow()
+            cursorCol = min(cursorCol, Self.maxLineCells - 1)
             let end = min(lines[cursorRow].count, cursorCol + count)
             guard cursorCol < end else { return }
             for col in cursorCol..<end {
@@ -281,6 +298,12 @@ enum Ansi {
             let attributed = NSMutableAttributedString()
             var plain = ""
 
+            if droppedLineCount > 0 {
+                let notice = "[Vaultty trimmed \(droppedLineCount) earlier output lines]\n"
+                plain.append(notice)
+                attributed.append(NSAttributedString(string: notice, attributes: TextStyle().attributes()))
+            }
+
             for (rowIndex, line) in lines.enumerated() {
                 for cell in line {
                     plain.append(cell.text)
@@ -293,6 +316,18 @@ enum Ansi {
             }
 
             return StyledOutput(plainText: plain, attributedText: attributed)
+        }
+
+        private func trimScrollbackIfNeeded() {
+            var visibleCells = lines.reduce(0) { $0 + $1.count }
+            while lines.count > 1,
+                  (lines.count > Self.maxRenderedLines || visibleCells > Self.maxRenderedCells) {
+                let removed = lines.removeFirst()
+                visibleCells -= removed.count
+                droppedLineCount += 1
+                cursorRow = max(0, cursorRow - 1)
+                savedCursorRow = max(0, savedCursorRow - 1)
+            }
         }
 
         private func parameter(_ parameters: [Int?], at index: Int, defaultValue: Int) -> Int {

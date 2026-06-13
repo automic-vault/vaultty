@@ -12,6 +12,9 @@ final class PtySession {
     private var readSource: DispatchSourceRead?
     private var exitSource: DispatchSourceProcess?
     private let queue = DispatchQueue(label: "com.automicvault.vaultty.pty")
+    private var pendingOutput = ""
+    private var isOutputDeliveryScheduled = false
+    private let outputDeliveryDelay: DispatchTimeInterval = .milliseconds(16)
 
     deinit {
         stop()
@@ -115,6 +118,10 @@ final class PtySession {
         readSource = nil
         exitSource?.cancel()
         exitSource = nil
+        queue.async { [weak self] in
+            self?.pendingOutput.removeAll(keepingCapacity: false)
+            self?.isOutputDeliveryScheduled = false
+        }
         if fd >= 0 {
             close(fd)
             master = -1
@@ -183,14 +190,36 @@ final class PtySession {
                 return
             }
             let text = String(decoding: buffer[0..<count], as: UTF8.self)
-            DispatchQueue.main.async {
-                self?.onOutput?(text)
-            }
+            self?.enqueueOutput(text)
         }
         source.setCancelHandler {
         }
         source.resume()
         self.readSource = source
+    }
+
+    private func enqueueOutput(_ text: String) {
+        pendingOutput += text
+        guard !isOutputDeliveryScheduled else { return }
+
+        isOutputDeliveryScheduled = true
+        queue.asyncAfter(deadline: .now() + outputDeliveryDelay) { [weak self] in
+            self?.deliverPendingOutput()
+        }
+    }
+
+    private func deliverPendingOutput() {
+        guard !pendingOutput.isEmpty else {
+            isOutputDeliveryScheduled = false
+            return
+        }
+
+        let output = pendingOutput
+        pendingOutput.removeAll(keepingCapacity: true)
+        isOutputDeliveryScheduled = false
+        DispatchQueue.main.async { [weak self] in
+            self?.onOutput?(output)
+        }
     }
 
     private func startWaiting(pid: pid_t) {
