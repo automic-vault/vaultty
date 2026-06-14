@@ -1849,6 +1849,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var activeCompletionRange: NSRange?
     private var completionPreviewState: CompletionPreviewState?
     private var isApplyingCompletion = false
+    private var isCompletionInteractionArmed = false
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
     private var commandFocusMonitor: Any?
@@ -2059,7 +2060,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
 
-        if completionPopup.isShown {
+        if completionPopup.isShown &&
+            (isCompletionInteractionArmed || commandSelector == #selector(NSResponder.insertTab(_:))) {
             if commandSelector == #selector(NSResponder.moveUp(_:)) {
                 if let suggestion = completionPopup.selectPrevious() {
                     renderCompletionPreview(suggestion, in: tab)
@@ -2073,12 +2075,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return true
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                isCompletionInteractionArmed = true
                 if completionPopup.hasSingleSuggestion {
                     acceptSelectedCompletion(in: tab, continuingDirectories: true)
                     return true
                 }
                 let suggestion = completionPreviewState == nil
-                    ? completionPopup.selectedSuggestion
+                    ? completionPopup.activateSelection()
                     : completionPopup.selectNext()
                 if let suggestion {
                     renderCompletionPreview(suggestion, in: tab)
@@ -2113,6 +2116,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            isCompletionInteractionArmed = true
             requestCompletion(in: tab, mode: .explicit)
             return true
         }
@@ -2146,6 +2150,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if completionPreviewState != nil {
             completionPreviewState = nil
             activeCompletionRange = nil
+            isCompletionInteractionArmed = false
             completionPopup.dismiss()
             completionRequestSerial += 1
             return
@@ -2153,6 +2158,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if completionPopup.isShown {
             requestCompletion(in: tab, mode: .filtering)
         } else if shouldStartAutomaticCompletion(in: textView) {
+            isCompletionInteractionArmed = false
             requestCompletion(in: tab, mode: .automatic)
         } else {
             dismissCompletion()
@@ -2691,7 +2697,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             suggestions: result.suggestions,
             relativeTo: anchor,
             of: tab.commandBarView,
-            resetSelection: mode != .explicit
+            resetSelection: mode != .explicit,
+            showsSelection: isCompletionInteractionArmed
         )
         let shouldRenderPreview = mode == .explicit || mode == .continuation
         if shouldRenderPreview, let suggestion = completionPopup.selectedSuggestion {
@@ -2832,6 +2839,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             completionPreviewState = nil
         }
         activeCompletionRange = nil
+        isCompletionInteractionArmed = false
         completionPopup.dismiss()
         completionRequestSerial += 1
     }

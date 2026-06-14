@@ -46,6 +46,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
     private let listView = CompletionListView(frame: .zero)
     private var suggestions: [CompletionSuggestion] = []
     private var selectedIndex = 0
+    private var showsSelection = false
     private weak var presentationView: NSView?
     private var presentationEdge: NSRectEdge?
     private var placementSerial = 0
@@ -78,9 +79,16 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         popover.delegate = self
     }
 
-    func show(suggestions: [CompletionSuggestion], relativeTo rect: NSRect, of view: NSView, resetSelection: Bool = true) {
+    func show(
+        suggestions: [CompletionSuggestion],
+        relativeTo rect: NSRect,
+        of view: NSView,
+        resetSelection: Bool = true,
+        showsSelection: Bool = true
+    ) {
         self.suggestions = suggestions
         selectedIndex = suggestions.isEmpty ? 0 : (resetSelection ? 0 : min(selectedIndex, suggestions.count - 1))
+        self.showsSelection = showsSelection && !suggestions.isEmpty
 
         let contentHeight = CompletionListView.contentHeight(forRowCount: suggestions.count)
         let visibleHeight = min(Self.maxPopupHeight, contentHeight)
@@ -89,7 +97,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         scrollView.frame = NSRect(origin: .zero, size: size)
         scrollView.hasVerticalScroller = shouldFlashScrollers
         listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: contentHeight)
-        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        listView.update(suggestions: suggestions, selectedIndex: self.showsSelection ? selectedIndex : nil)
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
         popover.contentViewController?.preferredContentSize = size
@@ -180,10 +188,11 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
     func dismiss() {
         suggestions.removeAll()
         selectedIndex = 0
+        showsSelection = false
         presentationView = nil
         presentationEdge = nil
         placementSerial += 1
-        listView.update(suggestions: [], selectedIndex: 0)
+        listView.update(suggestions: [], selectedIndex: nil)
         suppressCloseNotification = true
         popover.performClose(nil)
         DispatchQueue.main.async { [weak self] in
@@ -195,16 +204,26 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         guard !suppressCloseNotification else { return }
         suggestions.removeAll()
         selectedIndex = 0
+        showsSelection = false
         presentationView = nil
         presentationEdge = nil
         placementSerial += 1
-        listView.update(suggestions: [], selectedIndex: 0)
+        listView.update(suggestions: [], selectedIndex: nil)
         onExternalDismiss?()
+    }
+
+    func activateSelection() -> CompletionSuggestion? {
+        guard !suggestions.isEmpty else { return nil }
+        showsSelection = true
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        scrollRowToVisible(selectedIndex)
+        return selectedSuggestion
     }
 
     @discardableResult
     func selectNext() -> CompletionSuggestion? {
         guard !suggestions.isEmpty else { return nil }
+        showsSelection = true
         selectedIndex = (selectedIndex + 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
@@ -214,6 +233,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
     @discardableResult
     func selectPrevious() -> CompletionSuggestion? {
         guard !suggestions.isEmpty else { return nil }
+        showsSelection = true
         selectedIndex = (selectedIndex + suggestions.count - 1) % suggestions.count
         listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
         scrollRowToVisible(selectedIndex)
@@ -247,7 +267,7 @@ private final class CompletionListView: NSView {
     private static let rowContentPadding: CGFloat = 10
 
     private var suggestions: [CompletionSuggestion] = []
-    private var selectedIndex = 0
+    private var selectedIndex: Int?
 
     override var isFlipped: Bool { true }
 
@@ -255,7 +275,7 @@ private final class CompletionListView: NSView {
         max(rowHeight, CGFloat(rowCount) * rowHeight) + verticalPadding * 2
     }
 
-    func update(suggestions: [CompletionSuggestion], selectedIndex: Int) {
+    func update(suggestions: [CompletionSuggestion], selectedIndex: Int?) {
         self.suggestions = suggestions
         self.selectedIndex = selectedIndex
         needsDisplay = true
@@ -277,7 +297,7 @@ private final class CompletionListView: NSView {
             let rowRect = rowRect(for: index)
             guard dirtyRect.intersects(rowRect) else { continue }
 
-            let isSelected = index == selectedIndex
+            let isSelected = selectedIndex.map { $0 == index } ?? false
             if isSelected {
                 NSColor.controlAccentColor.setFill()
                 NSBezierPath(
