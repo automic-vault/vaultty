@@ -2928,8 +2928,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func submitCommand(in tab: TerminalTab) {
         guard tab.isShellReady else { return }
-        let command = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !command.isEmpty else { return }
+        let rawCommand = tab.inputView.string
+        let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else {
+            submitEmptyCommand(rawCommand, in: tab)
+            return
+        }
         tab.commandHistory.append(command)
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
@@ -2963,6 +2967,30 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
         updatePassthroughVisibility(for: tab)
+        focusInput(for: tab)
+    }
+
+    private func submitEmptyCommand(_ rawCommand: String, in tab: TerminalTab) {
+        let timestamp = Date()
+        clearCommandInput(in: tab)
+        tab.commandHistoryIndex = nil
+        tab.commandHistoryDraft = ""
+
+        let block = TerminalBlock(
+            id: UUID(),
+            command: "",
+            cwd: tab.currentCwd,
+            startedAt: timestamp,
+            finishedAt: timestamp,
+            output: "",
+            attributedOutput: NSMutableAttributedString(),
+            outputRevision: 0,
+            state: .completed(0)
+        )
+        tab.blocks.append(block)
+        addBlockView(block, to: tab)
+        updateCommandBarVisibility(for: tab)
+        tab.session.write(rawCommand + "\n")
         focusInput(for: tab)
     }
 
