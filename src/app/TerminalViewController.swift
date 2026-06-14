@@ -3009,7 +3009,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
-        commitCommandStartDisplay(for: tab)
+        settleCommandStartLayout(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
@@ -3471,7 +3471,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.rootView.layoutSubtreeIfNeeded()
     }
 
-    private func commitCommandStartDisplay(for tab: TerminalTab) {
+    private func settleCommandStartLayout(for tab: TerminalTab) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
@@ -3479,9 +3479,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             contentContainer.layoutSubtreeIfNeeded()
             view.layoutSubtreeIfNeeded()
         }
-        tab.rootView.displayIfNeeded()
-        contentContainer.displayIfNeeded()
-        view.displayIfNeeded()
+        scrollToBottomNow(tab)
     }
 
     private func focusInput(for tab: TerminalTab) {
@@ -3683,17 +3681,31 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func scrollToBottom(_ tab: TerminalTab) {
         guard !tab.isScrollToBottomScheduled else { return }
         tab.isScrollToBottomScheduled = true
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             tab.isScrollToBottomScheduled = false
-            guard let documentView = tab.scrollView.documentView else {
-                return
-            }
-            documentView.layoutSubtreeIfNeeded()
-            tab.scrollView.contentView.layoutSubtreeIfNeeded()
-            let maxY = max(0, documentView.bounds.height - tab.scrollView.contentView.bounds.height)
-            tab.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
-            tab.scrollView.reflectScrolledClipView(tab.scrollView.contentView)
+            self?.scrollToBottomNow(tab)
         }
+    }
+
+    private func scrollToBottomNow(_ tab: TerminalTab) {
+        guard let documentView = tab.scrollView.documentView else {
+            return
+        }
+
+        documentView.layoutSubtreeIfNeeded()
+        tab.scrollView.contentView.layoutSubtreeIfNeeded()
+
+        let clipView = tab.scrollView.contentView
+        let visibleHeight = clipView.bounds.height
+        let targetY: CGFloat
+        if documentView.isFlipped {
+            targetY = max(documentView.bounds.minY, documentView.bounds.maxY - visibleHeight)
+        } else {
+            targetY = documentView.bounds.minY
+        }
+
+        clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: targetY))
+        tab.scrollView.reflectScrolledClipView(clipView)
     }
 
     private func decodeBase64(_ value: String) -> String? {
