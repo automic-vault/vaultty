@@ -95,8 +95,6 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
 }
 
 private final class CommandInputTextView: NSTextView {
-    var onUnmodifiedReturnKey: ((CommandInputTextView) -> Bool)?
-
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
         configurePlainTextInput()
@@ -121,19 +119,6 @@ private final class CommandInputTextView: NSTextView {
         resetPlainTextAttributes()
         insertText(text, replacementRange: selectedRange())
         normalizePlainTextStorage()
-    }
-
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let isPlainReturn = (event.keyCode == 36 || event.keyCode == 76)
-            && !flags.contains(.shift)
-            && !flags.contains(.command)
-            && !flags.contains(.option)
-            && !flags.contains(.control)
-        if isPlainReturn, onUnmodifiedReturnKey?(self) == true {
-            return
-        }
-        super.keyDown(with: event)
     }
 
     func resetPlainTextAttributes() {
@@ -2147,7 +2132,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 textView.insertNewlineIgnoringFieldEditor(nil)
             } else {
-                _ = handleUnmodifiedReturnKey(in: tab)
+                dismissCompletion()
+                submitCommand(in: tab)
             }
             return true
         }
@@ -2158,17 +2144,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return showNextCommand(in: tab)
         }
         return false
-    }
-
-    private func handleUnmodifiedReturnKey(in tab: TerminalTab) -> Bool {
-        guard activeTabID == tab.id else { return false }
-        if completionPopup.isShown && isCompletionInteractionArmed {
-            acceptSelectedCompletionAndSubmit(in: tab)
-        } else {
-            dismissCompletion()
-            submitCommand(in: tab)
-        }
-        return true
     }
 
     func textDidChange(_ notification: Notification) {
@@ -2313,10 +2288,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let directoryPath = directoryURL.path
         let tab = TerminalTab(title: titleForDirectory(directoryPath), delegate: self)
         tab.currentCwd = directoryPath
-        tab.inputView.onUnmodifiedReturnKey = { [weak self, weak tab] _ in
-            guard let self, let tab else { return false }
-            return self.handleUnmodifiedReturnKey(in: tab)
-        }
         tabs.append(tab)
         configureSession(for: tab)
         configureInterruptHandling(for: tab)
@@ -2989,6 +2960,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.terminalScreen.resetForCommand()
         tab.styledRenderer.reset()
         tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
+        updateTabTitle(titleForCommand(command), detail: command, in: tab)
 
         let block = TerminalBlock(
             id: UUID(),
@@ -3005,15 +2977,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.pendingBlockID = block.id
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
-        updateTabTitle(titleForCommand(command), detail: command, in: tab)
         startTtyModePolling(for: tab)
-        updatePassthroughVisibility(for: tab)
-        focusInput(for: tab)
-        commitCommandStartDisplay(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script)
+        updatePassthroughVisibility(for: tab)
+        focusInput(for: tab)
     }
 
     private func submitEmptyCommand(_ rawCommand: String, in tab: TerminalTab) {
@@ -3469,19 +3439,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.scrollBottomToRootConstraint?.isActive = !shouldShowCommandBar
         tab.rootView.needsLayout = true
         tab.rootView.layoutSubtreeIfNeeded()
-    }
-
-    private func commitCommandStartDisplay(for tab: TerminalTab) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            tab.rootView.layoutSubtreeIfNeeded()
-            contentContainer.layoutSubtreeIfNeeded()
-            view.layoutSubtreeIfNeeded()
-        }
-        tab.rootView.displayIfNeeded()
-        contentContainer.displayIfNeeded()
-        view.displayIfNeeded()
     }
 
     private func focusInput(for tab: TerminalTab) {
