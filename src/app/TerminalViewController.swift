@@ -1057,6 +1057,7 @@ private final class TitleTabButton: NSButton {
     private var preferredWidthConstraint: NSLayoutConstraint?
     private var minimumWidthConstraint: NSLayoutConstraint?
     private var titleContentWidthConstraint: NSLayoutConstraint?
+    private var titleContentTrailingConstraint: NSLayoutConstraint?
     private var dotenvShieldWidthConstraint: NSLayoutConstraint?
     private var dotenvShieldGapConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
@@ -1161,6 +1162,11 @@ private final class TitleTabButton: NSButton {
             constant: 0
         )
         self.dotenvShieldGapConstraint = dotenvShieldGapConstraint
+        let titleContentTrailingConstraint = titleContentView.trailingAnchor.constraint(
+            lessThanOrEqualTo: trailingAnchor,
+            constant: -TahoeGlassPalette.titleTabTitleTrailingInset
+        )
+        self.titleContentTrailingConstraint = titleContentTrailingConstraint
 
         NSLayoutConstraint.activate([
             titleContentView.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -1169,10 +1175,7 @@ private final class TitleTabButton: NSButton {
                 greaterThanOrEqualTo: leadingAnchor,
                 constant: TahoeGlassPalette.titleTabTitleLeadingInset
             ),
-            titleContentView.trailingAnchor.constraint(
-                lessThanOrEqualTo: trailingAnchor,
-                constant: -TahoeGlassPalette.titleTabTitleCloseTrailingInset
-            ),
+            titleContentTrailingConstraint,
             titleContentWidthConstraint,
             titleContentView.heightAnchor.constraint(equalTo: heightAnchor),
 
@@ -1360,6 +1363,11 @@ private final class TitleTabButton: NSButton {
     }
 
     private func updateAppearance() {
+        titleContentTrailingConstraint?.constant = -(
+            isHovering
+                ? TahoeGlassPalette.titleTabTitleCloseTrailingInset
+                : TahoeGlassPalette.titleTabTitleTrailingInset
+        )
         if isSelectedTab {
             fillColor = .clear
             contentTintColor = TahoeGlassPalette.titleTextActive
