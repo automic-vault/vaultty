@@ -2,23 +2,21 @@ import Darwin
 import Foundation
 
 final class GitDirectoryStateProvider {
+    struct Summary {
+        let branch: String
+        let isDirty: Bool
+        let insertions: Int
+        let deletions: Int
+    }
+
     private struct CacheEntry {
         let expiresAt: Date
-        let summary: String?
+        let summary: Summary?
     }
 
     private struct RepositoryLocation {
         let worktreePath: String
         let gitDirectoryPath: String
-    }
-
-    private struct ChangeCounts {
-        var additions = 0
-        var deletions = 0
-
-        var isClean: Bool {
-            additions == 0 && deletions == 0
-        }
     }
 
     private let fileManager = FileManager.default
@@ -30,7 +28,7 @@ final class GitDirectoryStateProvider {
         self.cacheTTL = cacheTTL
     }
 
-    func summary(forDirectory url: URL) -> String? {
+    func summary(forDirectory url: URL) -> Summary? {
         let path = url.standardizedFileURL.path
         guard let location = repositoryLocation(containing: path) else { return nil }
 
@@ -86,44 +84,61 @@ final class GitDirectoryStateProvider {
         return ((worktreePath as NSString).appendingPathComponent(rawPath) as NSString).standardizingPath
     }
 
-    private func loadSummary(for location: RepositoryLocation) -> String? {
+    private func loadSummary(for location: RepositoryLocation) -> Summary? {
         guard let output = gitStatusOutput(in: location.worktreePath) else {
             guard let branch = branchName(in: location.gitDirectoryPath) else {
                 return nil
             }
-            return "git \(branch)"
+            return Summary(branch: branch, isDirty: false, insertions: 0, deletions: 0)
         }
 
         let status = parseGitStatus(output)
         guard let branch = status.branch else { return nil }
+        let lineChanges = status.isDirty
+            ? gitDiffLineChanges(in: location.worktreePath)
+            : LineChanges()
 
-        if status.counts.isClean {
-            return "git \(branch) clean"
-        }
-
-        var parts = ["git", branch, "dirty"]
-        if status.counts.additions > 0 {
-            parts.append("+\(status.counts.additions)")
-        }
-        if status.counts.deletions > 0 {
-            parts.append("-\(status.counts.deletions)")
-        }
-        return parts.joined(separator: " ")
+        return Summary(
+            branch: branch,
+            isDirty: status.isDirty,
+            insertions: lineChanges.insertions,
+            deletions: lineChanges.deletions
+        )
     }
 
     private func gitStatusOutput(in worktreePath: String) -> String? {
+        gitOutput(
+            in: worktreePath,
+            arguments: [
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "--branch",
+                "--untracked-files=normal"
+            ]
+        )
+    }
+
+    private func gitDiffLineChanges(in worktreePath: String) -> LineChanges {
+        guard let output = gitOutput(
+            in: worktreePath,
+            arguments: [
+                "--no-optional-locks",
+                "diff",
+                "--numstat",
+                "HEAD",
+                "--"
+            ]
+        ) else {
+            return LineChanges()
+        }
+        return parseNumstat(output)
+    }
+
+    private func gitOutput(in worktreePath: String, arguments: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "git",
-            "-C",
-            worktreePath,
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v1",
-            "--branch",
-            "--untracked-files=normal"
-        ]
+        process.arguments = ["git", "-C", worktreePath] + arguments
 
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -146,9 +161,9 @@ final class GitDirectoryStateProvider {
         return String(data: data, encoding: .utf8)
     }
 
-    private func parseGitStatus(_ output: String) -> (branch: String?, counts: ChangeCounts) {
+    private func parseGitStatus(_ output: String) -> (branch: String?, isDirty: Bool) {
         var branch: String?
-        var counts = ChangeCounts()
+        var isDirty = false
 
         for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("## ") {
@@ -159,15 +174,32 @@ final class GitDirectoryStateProvider {
             guard line.count >= 2 else { continue }
             let indexStatus = line[line.startIndex]
             let worktreeStatus = line[line.index(after: line.startIndex)]
+            isDirty = isDirty || indexStatus != " " || worktreeStatus != " "
+        }
 
-            if indexStatus == "D" || worktreeStatus == "D" {
-                counts.deletions += 1
-            } else if indexStatus != " " || worktreeStatus != " " {
-                counts.additions += 1
+        return (branch, isDirty)
+    }
+
+    private struct LineChanges {
+        var insertions = 0
+        var deletions = 0
+    }
+
+    private func parseNumstat(_ output: String) -> LineChanges {
+        var lineChanges = LineChanges()
+
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count >= 2 else { continue }
+            if let insertions = Int(fields[0]) {
+                lineChanges.insertions += insertions
+            }
+            if let deletions = Int(fields[1]) {
+                lineChanges.deletions += deletions
             }
         }
 
-        return (branch, counts)
+        return lineChanges
     }
 
     private func branchName(fromStatusBranchLine line: String) -> String? {

@@ -3272,24 +3272,44 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func commandBarStatusText(
         directoryText: String,
-        gitSummary: String,
+        gitSummary: GitDirectoryStateProvider.Summary,
         font: NSFont?
     ) -> NSAttributedString {
         let statusFont = font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let directoryAttributes: [NSAttributedString.Key: Any] = [
+            .font: statusFont,
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        let gitAttributes: [NSAttributedString.Key: Any] = [
+            .font: statusFont,
+            .foregroundColor: NSColor.tertiaryLabelColor
+        ]
         let output = NSMutableAttributedString(
             string: directoryText,
-            attributes: [
-                .font: statusFont,
-                .foregroundColor: NSColor.secondaryLabelColor
-            ]
+            attributes: directoryAttributes
         )
         output.append(NSAttributedString(
-            string: "  \(gitSummary)",
-            attributes: [
-                .font: statusFont,
-                .foregroundColor: NSColor.tertiaryLabelColor
-            ]
+            string: "  git \(gitSummary.branch) \(gitSummary.isDirty ? "dirty" : "clean")",
+            attributes: gitAttributes
         ))
+        if gitSummary.insertions > 0 {
+            output.append(NSAttributedString(
+                string: " +\(gitSummary.insertions)",
+                attributes: [
+                    .font: statusFont,
+                    .foregroundColor: NSColor.systemGreen
+                ]
+            ))
+        }
+        if gitSummary.deletions > 0 {
+            output.append(NSAttributedString(
+                string: " -\(gitSummary.deletions)",
+                attributes: [
+                    .font: statusFont,
+                    .foregroundColor: NSColor.systemRed
+                ]
+            ))
+        }
         return output
     }
 
