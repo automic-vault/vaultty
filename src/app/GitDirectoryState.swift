@@ -12,12 +12,6 @@ final class GitDirectoryStateProvider {
         let gitDirectoryPath: String
     }
 
-    private struct IndexEntry {
-        let path: String
-        let mtimeSeconds: Int
-        let size: UInt32
-    }
-
     private struct ChangeCounts {
         var additions = 0
         var deletions = 0
@@ -93,31 +87,107 @@ final class GitDirectoryStateProvider {
     }
 
     private func loadSummary(for location: RepositoryLocation) -> String? {
-        guard let branch = branchName(in: location.gitDirectoryPath) else {
-            return nil
-        }
-
-        guard let indexEntries = readIndexEntries(in: location.gitDirectoryPath) else {
+        guard let output = gitStatusOutput(in: location.worktreePath) else {
+            guard let branch = branchName(in: location.gitDirectoryPath) else {
+                return nil
+            }
             return "git \(branch)"
         }
 
-        let counts = changeCounts(
-            worktreePath: location.worktreePath,
-            entries: indexEntries
-        )
+        let status = parseGitStatus(output)
+        guard let branch = status.branch else { return nil }
 
-        if counts.isClean {
+        if status.counts.isClean {
             return "git \(branch) clean"
         }
 
         var parts = ["git", branch, "dirty"]
-        if counts.additions > 0 {
-            parts.append("+\(counts.additions)")
+        if status.counts.additions > 0 {
+            parts.append("+\(status.counts.additions)")
         }
-        if counts.deletions > 0 {
-            parts.append("-\(counts.deletions)")
+        if status.counts.deletions > 0 {
+            parts.append("-\(status.counts.deletions)")
         }
         return parts.joined(separator: " ")
+    }
+
+    private func gitStatusOutput(in worktreePath: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "git",
+            "-C",
+            worktreePath,
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--untracked-files=normal"
+        ]
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        process.environment = environment
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func parseGitStatus(_ output: String) -> (branch: String?, counts: ChangeCounts) {
+        var branch: String?
+        var counts = ChangeCounts()
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("## ") {
+                branch = branchName(fromStatusBranchLine: String(line))
+                continue
+            }
+
+            guard line.count >= 2 else { continue }
+            let indexStatus = line[line.startIndex]
+            let worktreeStatus = line[line.index(after: line.startIndex)]
+
+            if indexStatus == "D" || worktreeStatus == "D" {
+                counts.deletions += 1
+            } else if indexStatus != " " || worktreeStatus != " " {
+                counts.additions += 1
+            }
+        }
+
+        return (branch, counts)
+    }
+
+    private func branchName(fromStatusBranchLine line: String) -> String? {
+        guard line.hasPrefix("## ") else { return nil }
+        var value = String(line.dropFirst(3))
+        if let bracketRange = value.range(of: " [") {
+            value.removeSubrange(bracketRange.lowerBound..<value.endIndex)
+        }
+        if let upstreamRange = value.range(of: "...") {
+            value.removeSubrange(upstreamRange.lowerBound..<value.endIndex)
+        }
+        if value.hasPrefix("Initial commit on ") {
+            value = String(value.dropFirst("Initial commit on ".count))
+        }
+        if value == "HEAD (no branch)" {
+            return "HEAD"
+        }
+
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func branchName(in gitDirectoryPath: String) -> String? {
@@ -137,202 +207,8 @@ final class GitDirectoryStateProvider {
         return String(trimmed.prefix(7))
     }
 
-    private func readIndexEntries(in gitDirectoryPath: String) -> [IndexEntry]? {
-        let indexPath = (gitDirectoryPath as NSString).appendingPathComponent("index")
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: indexPath)),
-              data.count >= 12,
-              data[0] == 0x44,
-              data[1] == 0x49,
-              data[2] == 0x52,
-              data[3] == 0x43
-        else {
-            return nil
-        }
-
-        let version = readUInt32(data, at: 4)
-        guard version == 2 || version == 3 else {
-            return nil
-        }
-
-        let entryCount = Int(readUInt32(data, at: 8))
-        var offset = 12
-        var entries: [IndexEntry] = []
-        entries.reserveCapacity(min(entryCount, 4096))
-
-        for _ in 0..<entryCount {
-            guard offset + 62 <= data.count else { return nil }
-            let entryStart = offset
-            let mtimeSeconds = Int(readUInt32(data, at: offset + 8))
-            let size = readUInt32(data, at: offset + 36)
-            let flags = readUInt16(data, at: offset + 60)
-            offset += 62
-            if version == 3 && (flags & 0x4000) != 0 {
-                guard offset + 2 <= data.count else { return nil }
-                offset += 2
-            }
-
-            let declaredPathLength = Int(flags & 0x0FFF)
-            let pathEnd: Int
-            if declaredPathLength < 0x0FFF {
-                pathEnd = min(offset + declaredPathLength, data.count)
-            } else if let nul = data[offset...].firstIndex(of: 0) {
-                pathEnd = nul
-            } else {
-                return nil
-            }
-
-            guard pathEnd <= data.count,
-                  let path = String(data: data[offset..<pathEnd], encoding: .utf8)
-            else {
-                return nil
-            }
-            entries.append(IndexEntry(path: path, mtimeSeconds: mtimeSeconds, size: size))
-
-            offset = pathEnd
-            while offset < data.count && data[offset] != 0 {
-                offset += 1
-            }
-            guard offset < data.count else { return nil }
-            offset += 1
-
-            let entryLength = offset - entryStart
-            let padding = (8 - (entryLength % 8)) % 8
-            offset += padding
-        }
-
-        return entries
-    }
-
-    private func changeCounts(worktreePath: String, entries: [IndexEntry]) -> ChangeCounts {
-        var counts = ChangeCounts()
-        var trackedPaths = Set<String>()
-        var trackedDirectories = Set<String>()
-
-        for entry in entries {
-            trackedPaths.insert(entry.path)
-            var directory = (entry.path as NSString).deletingLastPathComponent
-            while !directory.isEmpty && directory != "." {
-                trackedDirectories.insert(directory)
-                directory = (directory as NSString).deletingLastPathComponent
-            }
-
-            switch trackedFileState(worktreePath: worktreePath, entry: entry) {
-            case .unchanged:
-                break
-            case .changed:
-                counts.additions += 1
-            case .deleted:
-                counts.deletions += 1
-            }
-        }
-
-        counts.additions += untrackedCount(
-            worktreePath: worktreePath,
-            trackedPaths: trackedPaths,
-            trackedDirectories: trackedDirectories
-        )
-        return counts
-    }
-
-    private enum TrackedFileState {
-        case unchanged
-        case changed
-        case deleted
-    }
-
-    private func trackedFileState(worktreePath: String, entry: IndexEntry) -> TrackedFileState {
-        let path = (worktreePath as NSString).appendingPathComponent(entry.path)
-        var fileStat = stat()
-        let result = URL(fileURLWithPath: path).withUnsafeFileSystemRepresentation { representation in
-            lstat(representation, &fileStat)
-        }
-        guard result == 0 else {
-            return errno == ENOENT ? .deleted : .changed
-        }
-
-        let size = UInt32(clamping: fileStat.st_size)
-        let mtimeSeconds = Int(fileStat.st_mtimespec.tv_sec)
-        if size != entry.size || mtimeSeconds != entry.mtimeSeconds {
-            return .changed
-        }
-        return .unchanged
-    }
-
-    private func untrackedCount(
-        worktreePath: String,
-        trackedPaths: Set<String>,
-        trackedDirectories: Set<String>
-    ) -> Int {
-        guard let enumerator = fileManager.enumerator(
-            at: URL(fileURLWithPath: worktreePath, isDirectory: true),
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsPackageDescendants]
-        ) else {
-            return 0
-        }
-
-        var count = 0
-        var visited = 0
-        let maxVisited = 5_000
-        let maxUntracked = 99
-
-        for case let url as URL in enumerator {
-            visited += 1
-            if visited > maxVisited || count >= maxUntracked {
-                break
-            }
-
-            let relativePath = relativePath(for: url.path, basePath: worktreePath)
-            let name = url.lastPathComponent
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-
-            if name == ".git" || isIgnoredDirectoryName(name) {
-                if isDirectory {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-
-            if trackedPaths.contains(relativePath) {
-                continue
-            }
-
-            if isDirectory {
-                if trackedDirectories.contains(relativePath) {
-                    continue
-                }
-                count += 1
-                enumerator.skipDescendants()
-            } else {
-                count += 1
-            }
-        }
-
-        return count
-    }
-
     private func directoryExists(at path: String) -> Bool {
         var isDirectory: ObjCBool = false
         return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
-    }
-
-    private func isIgnoredDirectoryName(_ name: String) -> Bool {
-        name == ".git" || name == "node_modules" || name == ".build" || name == "target"
-    }
-
-    private func relativePath(for path: String, basePath: String) -> String {
-        guard path.hasPrefix(basePath + "/") else { return path }
-        return String(path.dropFirst(basePath.count + 1))
-    }
-
-    private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
-        (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
-    }
-
-    private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
-        (UInt32(data[offset]) << 24)
-            | (UInt32(data[offset + 1]) << 16)
-            | (UInt32(data[offset + 2]) << 8)
-            | UInt32(data[offset + 3])
     }
 }
