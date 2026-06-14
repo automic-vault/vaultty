@@ -686,7 +686,7 @@ private final class HoverCopyMarkdownButton: NSButton {
         isBordered = false
         bezelStyle = .regularSquare
         image = NSImage(
-            systemSymbolName: "clipboard",
+            systemSymbolName: "square.on.square",
             accessibilityDescription: "Copy Markdown"
         )
         imagePosition = .imageOnly
