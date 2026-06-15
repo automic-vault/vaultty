@@ -2777,7 +2777,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
               if [ ! -x "$VAULTTY_ENV" ]; then
                 return 0
               fi
-              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh 2>/dev/null)"
+              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)"
               __vaultty_status=$?
               if [ "$__vaultty_status" -eq 0 ]; then
                 eval "$__vaultty_dotenv"
