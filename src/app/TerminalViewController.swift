@@ -3354,7 +3354,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         if gitSummary.deletions > 0 {
             output.append(NSAttributedString(
-                string: " -\(gitSummary.deletions)",
+                string: "-\(gitSummary.deletions)",
                 attributes: [
                     .font: statusFont,
                     .foregroundColor: mutedGitStatusColor(.systemRed)
@@ -3365,8 +3365,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
-        color.blended(withFraction: 0.55, of: .tertiaryLabelColor)
-            ?? color.withAlphaComponent(0.55)
+        color.blended(withFraction: 0.25, of: .tertiaryLabelColor)
+            ?? color.withAlphaComponent(0.75)
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
