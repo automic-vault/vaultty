@@ -741,6 +741,11 @@ private final class BlockView: NSView {
         static let runningMinimumHeight: CGFloat = 90
     }
 
+    private enum DurationRounding: Equatable {
+        case down
+        case nearest
+    }
+
     private struct MetadataSegment {
         let text: String
         let color: NSColor
@@ -967,31 +972,16 @@ private final class BlockView: NSView {
             return nil
         }
         let seconds = max(0, finishedAt.timeIntervalSince(block.startedAt))
-        if seconds < 1 {
-            return "\(twoSignificantFigures(seconds * 1000)) ms"
-        }
-        if seconds < 60 {
-            return "\(secondsText(seconds))s"
-        }
-        let totalMinutes = Int(seconds / 60)
-        let remainingSeconds = seconds.truncatingRemainder(dividingBy: 60)
-        if totalMinutes < 60 {
-            return "\(totalMinutes)m \(secondsText(remainingSeconds))s"
-        }
-        let hours = totalMinutes / 60
-        let minutes = totalMinutes % 60
-        return "\(hours)h \(minutes)m \(secondsText(remainingSeconds))s"
+        return Self.durationText(seconds: seconds, rounding: .nearest)
     }
 
     static func liveDurationRefreshInterval(startedAt: Date, now: Date, refreshInterval: TimeInterval) -> TimeInterval {
         let seconds = max(0, now.timeIntervalSince(startedAt))
-        guard seconds >= 1 else {
-            return refreshInterval
-        }
-
-        let step = liveSecondsDisplayStep(for: seconds)
-        let nextDisplayValue = (floor(seconds / step) + 1) * step
-        return max(refreshInterval, nextDisplayValue - seconds)
+        let displayScale = seconds < 1 ? 1000.0 : 1.0
+        let displayValue = seconds * displayScale
+        let step = significantFigureStep(for: displayValue)
+        let nextDisplayValue = (floor(displayValue / step) + 1) * step
+        return max(refreshInterval, (nextDisplayValue - displayValue) / displayScale)
     }
 
     private func attributedMetadata(_ metadata: [MetadataSegment]) -> NSAttributedString {
@@ -1033,56 +1023,53 @@ private final class BlockView: NSView {
 
     private func liveDurationText(startedAt: Date, now: Date) -> String {
         let seconds = max(0, now.timeIntervalSince(startedAt))
+        return Self.durationText(seconds: seconds, rounding: .down)
+    }
+
+    private static func durationText(seconds: TimeInterval, rounding: DurationRounding) -> String {
         if seconds < 1 {
-            return "\(Int(floor(seconds * 1000))) ms"
+            let milliseconds = seconds * 1000
+            let roundedMilliseconds = significantFigureValue(milliseconds, rounding: rounding)
+            if rounding == .nearest, roundedMilliseconds >= 1000 {
+                return "\(significantFiguresText(seconds, rounding: rounding))s"
+            }
+            return "\(significantFiguresText(milliseconds, rounding: rounding)) ms"
         }
-        return "\(twoSignificantSecondsText(seconds))s"
+
+        return "\(significantFiguresText(seconds, rounding: rounding))s"
     }
 
-    private func secondsText(_ seconds: Double) -> String {
-        var text = String(format: "%.2f", seconds)
-        while text.contains(".") && text.last == "0" {
-            text.removeLast()
+    private static func significantFiguresText(_ value: Double, rounding: DurationRounding) -> String {
+        let rounded = significantFigureValue(value, rounding: rounding)
+        guard rounded > 0 else {
+            return "0.00"
         }
-        if text.last == "." {
-            text.removeLast()
-        }
-        return text
+
+        let exponent = floor(log10(rounded))
+        let decimals = max(0, 2 - Int(exponent))
+        return String(format: "%.\(decimals)f", rounded)
     }
 
-    private func twoSignificantSecondsText(_ seconds: Double) -> String {
-        let step = Self.liveSecondsDisplayStep(for: seconds)
-        let roundedDown = floor(seconds / step) * step
-        if roundedDown < 10 {
-            return String(format: "%.1f", roundedDown)
-        }
-        return String(format: "%.0f", roundedDown)
-    }
-
-    private static func liveSecondsDisplayStep(for seconds: Double) -> TimeInterval {
-        guard seconds >= 10 else {
-            return 0.1
-        }
-        let exponent = floor(log10(seconds)) - 1
-        return pow(10, exponent)
-    }
-
-    private func twoSignificantFigures(_ value: Double) -> String {
+    private static func significantFigureValue(_ value: Double, rounding: DurationRounding) -> Double {
         guard value > 0 else {
-            return "0"
+            return 0
+        }
+
+        let step = significantFigureStep(for: value)
+        switch rounding {
+        case .down:
+            return floor(value / step) * step
+        case .nearest:
+            return (value / step).rounded() * step
+        }
+    }
+
+    private static func significantFigureStep(for value: Double) -> Double {
+        guard value > 0 else {
+            return 0.01
         }
         let exponent = floor(log10(value))
-        let scale = pow(10, 1 - exponent)
-        let rounded = (value * scale).rounded() / scale
-        let decimals = max(0, Int(ceil(log10(scale))))
-        var text = String(format: "%.\(decimals)f", rounded)
-        while text.contains(".") && text.last == "0" {
-            text.removeLast()
-        }
-        if text.last == "." {
-            text.removeLast()
-        }
-        return text
+        return pow(10, exponent - 2)
     }
 }
 
