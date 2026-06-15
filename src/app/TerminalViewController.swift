@@ -3410,7 +3410,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
-        color.blended(withFraction: 0.25, of: .tertiaryLabelColor)
+        color.blended(withFraction: 0.1, of: .tertiaryLabelColor)
             ?? color.withAlphaComponent(0.75)
     }
 
