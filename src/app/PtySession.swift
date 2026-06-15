@@ -217,9 +217,7 @@ final class PtySession {
         let output = pendingOutput
         pendingOutput.removeAll(keepingCapacity: true)
         isOutputDeliveryScheduled = false
-        DispatchQueue.main.async { [weak self] in
-            self?.onOutput?(output)
-        }
+        onOutput?(output)
     }
 
     private func startWaiting(pid: pid_t) {
@@ -227,6 +225,7 @@ final class PtySession {
         source.setEventHandler { [weak self] in
             var status: Int32 = 0
             _ = waitpid(pid, &status, 0)
+            self?.deliverPendingOutput()
             let exitStatus = Self.exitStatus(fromWaitStatus: status)
             if self?.childPid == pid {
                 self?.childPid = -1

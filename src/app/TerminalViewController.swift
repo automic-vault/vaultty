@@ -16,7 +16,7 @@ private struct TerminalBlock {
     let startedAt: Date
     var finishedAt: Date?
     var output: String
-    var attributedOutput: NSMutableAttributedString
+    var attributedOutput: NSAttributedString
     var outputRevision: Int
     var state: State
 }
@@ -1620,9 +1620,184 @@ private final class PtyPassthroughView: NSView {
     }
 }
 
+private final class TerminalOutputProcessor {
+    struct Snapshot {
+        let blockID: UUID
+        let plainText: String
+        let attributedText: NSAttributedString
+        let isAlternateScreenActive: Bool
+        let isApplicationCursorModeActive: Bool
+    }
+
+    enum Event {
+        case snapshot(Snapshot)
+        case marker(String)
+    }
+
+    var onEvent: ((Event) -> Void)?
+
+    private let queue = DispatchQueue(label: "com.automicvault.vaultty.output-render", qos: .userInitiated)
+    private let flushDelay: DispatchTimeInterval
+    private let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
+    private let styledRenderer = Ansi.StyledTextRenderer()
+    private var pendingShellOutput = ""
+    private var isShellOutputFlushScheduled = false
+    private var parserBuffer = ""
+    private var activeBlockID: UUID?
+    private var usesPagerKeyBindings = false
+    private var isAlternateScreenActive = false
+    private var isApplicationCursorModeActive = false
+
+    init(flushDelay: DispatchTimeInterval = .milliseconds(33)) {
+        self.flushDelay = flushDelay
+    }
+
+    func resetForCommand(blockID: UUID, usesPagerKeyBindings: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingShellOutput.removeAll(keepingCapacity: true)
+            self.isShellOutputFlushScheduled = false
+            self.parserBuffer.removeAll(keepingCapacity: true)
+            self.activeBlockID = blockID
+            self.usesPagerKeyBindings = usesPagerKeyBindings
+            self.isAlternateScreenActive = false
+            self.isApplicationCursorModeActive = false
+            self.terminalScreen.resetForCommand()
+            self.styledRenderer.reset()
+        }
+    }
+
+    func enqueueShellOutput(_ text: String) {
+        queue.async { [weak self] in
+            self?.enqueueShellOutputOnQueue(text)
+        }
+    }
+
+    func appendVisibleImmediately(_ text: String) {
+        queue.async { [weak self] in
+            self?.flushVisible(text)
+        }
+    }
+
+    func flushAndFinish(_ completion: (() -> Void)? = nil) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.flushPendingShellOutputOnQueue()
+            self.activeBlockID = nil
+            DispatchQueue.main.async {
+                completion?()
+            }
+        }
+    }
+
+    func finishCommand() {
+        queue.async { [weak self] in
+            self?.activeBlockID = nil
+        }
+    }
+
+    func resize(rows: Int, cols: Int) {
+        queue.async { [weak self] in
+            self?.terminalScreen.resize(rows: rows, cols: cols)
+        }
+    }
+
+    private func enqueueShellOutputOnQueue(_ text: String) {
+        pendingShellOutput += text
+        guard !isShellOutputFlushScheduled else { return }
+
+        isShellOutputFlushScheduled = true
+        queue.asyncAfter(deadline: .now() + flushDelay) { [weak self] in
+            self?.flushPendingShellOutputOnQueue()
+        }
+    }
+
+    private func flushPendingShellOutputOnQueue() {
+        guard !pendingShellOutput.isEmpty else {
+            isShellOutputFlushScheduled = false
+            return
+        }
+
+        let text = pendingShellOutput
+        pendingShellOutput.removeAll(keepingCapacity: true)
+        isShellOutputFlushScheduled = false
+        consumeShellOutput(text)
+    }
+
+    private func consumeShellOutput(_ text: String) {
+        parserBuffer += text
+        var visible = ""
+
+        while true {
+            guard let start = parserBuffer.range(of: "\u{1B}]133;") else {
+                visible += parserBuffer
+                parserBuffer.removeAll(keepingCapacity: true)
+                break
+            }
+
+            visible += String(parserBuffer[..<start.lowerBound])
+            parserBuffer.removeSubrange(..<start.lowerBound)
+
+            guard let end = parserBuffer.firstIndex(of: "\u{7}") else {
+                break
+            }
+
+            let markerStart = parserBuffer.index(parserBuffer.startIndex, offsetBy: 6)
+            let marker = String(parserBuffer[markerStart..<end])
+            parserBuffer.removeSubrange(...end)
+            flushVisible(visible)
+            visible.removeAll(keepingCapacity: true)
+            emit(.marker(marker))
+            if marker.hasPrefix("D;") {
+                activeBlockID = nil
+            }
+        }
+
+        flushVisible(visible)
+    }
+
+    private func flushVisible(_ text: String) {
+        guard !text.isEmpty, let activeBlockID else { return }
+
+        let shouldRenderScreen = isAlternateScreenActive
+            || usesPagerKeyBindings
+            || Ansi.containsAlternateScreenSwitch(in: text)
+
+        let plainText: String
+        let attributedText: NSAttributedString
+
+        if shouldRenderScreen {
+            let state = terminalScreen.process(text)
+            isAlternateScreenActive = state.isAlternateScreenActive
+            isApplicationCursorModeActive = state.isApplicationCursorModeActive
+            plainText = state.text
+            attributedText = state.attributedText
+        } else {
+            let rendered = styledRenderer.process(text)
+            plainText = rendered.plainText
+            attributedText = rendered.attributedText
+        }
+
+        emit(.snapshot(Snapshot(
+            blockID: activeBlockID,
+            plainText: plainText,
+            attributedText: attributedText,
+            isAlternateScreenActive: isAlternateScreenActive,
+            isApplicationCursorModeActive: isApplicationCursorModeActive
+        )))
+    }
+
+    private func emit(_ event: Event) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onEvent?(event)
+        }
+    }
+}
+
 private final class TerminalTab {
     let id = UUID()
     let session = PtySession()
+    let outputProcessor = TerminalOutputProcessor()
     let rootView = NSView()
     let scrollView = NSScrollView()
     let stackView = NSStackView()
@@ -1646,16 +1821,11 @@ private final class TerminalTab {
     var pendingBlockID: UUID?
     var currentCwd = FileManager.default.homeDirectoryForCurrentUser.path
     var hasInjectedDotenvSecrets = false
-    var parserBuffer = ""
-    var pendingShellOutput = ""
-    var isShellOutputFlushScheduled = false
     var isScrollToBottomScheduled = false
     var isShellReady = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
     var isApplicationCursorModeActive = false
-    let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
-    let styledRenderer = Ansi.StyledTextRenderer()
     var runningElapsedTimer: Timer?
     var ttyModeTimer: Timer?
     var commandHistory: [String] = []
@@ -1869,7 +2039,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var tabMouseDownMonitor: Any?
     private var commandFocusMonitor: Any?
     private var updateButtonWidthConstraint: NSLayoutConstraint?
-    private let shellOutputFlushDelay: TimeInterval = 1.0 / 30.0
     private let blockViewRenderDelay: TimeInterval = 1.0 / 12.0
     private let interactiveBlockViewRenderDelay: TimeInterval = 1.0 / 30.0
     private let fallbackDisplayRefreshRate = 60
@@ -2526,21 +2695,25 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func configureSession(for tab: TerminalTab) {
-        tab.session.onOutput = { [weak self, weak tab] text in
-            guard let tab else { return }
-            self?.enqueueShellOutput(text, in: tab)
+        tab.outputProcessor.onEvent = { [weak self, weak tab] event in
+            guard let self, let tab else { return }
+            self.handleOutputProcessorEvent(event, in: tab)
+        }
+        tab.session.onOutput = { [weak outputProcessor = tab.outputProcessor] text in
+            outputProcessor?.enqueueShellOutput(text)
         }
         tab.session.onExit = { [weak self, weak tab] status in
-            tab?.statusLabel.stringValue = "Shell exited with status \(status)"
-            if let tab {
-                self?.flushPendingShellOutput(in: tab)
-                self?.finishRunningBlocks(in: tab, status: status)
-                self?.updateTabTitleForDirectory(tab)
-                self?.stopTtyModePolling(for: tab)
+            guard let self, let tab else { return }
+            tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
+                guard let self, let tab else { return }
+                tab.statusLabel.stringValue = "Shell exited with status \(status)"
+                self.finishRunningBlocks(in: tab, status: status)
+                self.updateTabTitleForDirectory(tab)
+                self.stopTtyModePolling(for: tab)
                 tab.ptyPassthroughView.usesPagerKeyBindings = false
-                self?.setTerminalControl(false, in: tab)
-                self?.clearCommandInput(in: tab)
-                self?.updateCommandBarVisibility(for: tab)
+                self.setTerminalControl(false, in: tab)
+                self.clearCommandInput(in: tab)
+                self.updateCommandBarVisibility(for: tab)
             }
         }
     }
@@ -2967,9 +3140,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isShellReady = false
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
-        tab.terminalScreen.resetForCommand()
-        tab.styledRenderer.reset()
-        tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings(for: command)
+        let usesPagerKeyBindings = usesPagerKeyBindings(for: command)
+        tab.ptyPassthroughView.usesPagerKeyBindings = usesPagerKeyBindings
         updateTabTitle(titleForCommand(command), detail: command, in: tab)
 
         let block = TerminalBlock(
@@ -2985,6 +3157,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         )
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
+        tab.outputProcessor.resetForCommand(
+            blockID: block.id,
+            usesPagerKeyBindings: usesPagerKeyBindings
+        )
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
         scrollToBottomNow(tab)
@@ -3026,7 +3202,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard isCommandRunning(in: tab) else { return }
         renderInterruptEcho(in: tab)
         tab.session.sendInterrupt()
-        tab.parserBuffer.removeAll()
+        tab.outputProcessor.finishCommand()
         finishRunningBlocks(in: tab, status: 130)
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
@@ -3047,7 +3223,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         else {
             return
         }
-        flushVisible("^C\n", in: tab)
+        tab.outputProcessor.appendVisibleImmediately("^C\n")
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
@@ -3089,89 +3265,33 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.scrollRangeToVisible(NSRange(location: location, length: 0))
     }
 
-    private func enqueueShellOutput(_ text: String, in tab: TerminalTab) {
-        tab.pendingShellOutput += text
-        guard !tab.isShellOutputFlushScheduled else { return }
-
-        tab.isShellOutputFlushScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + shellOutputFlushDelay) { [weak self, weak tab] in
-            guard let self, let tab else { return }
-            self.flushPendingShellOutput(in: tab)
-        }
-    }
-
-    private func flushPendingShellOutput(in tab: TerminalTab) {
-        guard !tab.pendingShellOutput.isEmpty else {
-            tab.isShellOutputFlushScheduled = false
-            return
-        }
-
-        let text = tab.pendingShellOutput
-        tab.pendingShellOutput.removeAll(keepingCapacity: true)
-        tab.isShellOutputFlushScheduled = false
-        consumeShellOutput(text, in: tab)
-    }
-
-    private func consumeShellOutput(_ text: String, in tab: TerminalTab) {
-        tab.parserBuffer += text
-        var visible = ""
-
-        while true {
-            guard let start = tab.parserBuffer.range(of: "\u{1B}]133;") else {
-                visible += tab.parserBuffer
-                tab.parserBuffer.removeAll()
-                break
-            }
-
-            visible += String(tab.parserBuffer[..<start.lowerBound])
-            tab.parserBuffer.removeSubrange(..<start.lowerBound)
-
-            guard let end = tab.parserBuffer.firstIndex(of: "\u{7}") else {
-                break
-            }
-
-            let marker = String(tab.parserBuffer[tab.parserBuffer.index(tab.parserBuffer.startIndex, offsetBy: 6)..<end])
-            tab.parserBuffer.removeSubrange(...end)
-            flushVisible(visible, in: tab)
-            visible.removeAll()
+    private func handleOutputProcessorEvent(_ event: TerminalOutputProcessor.Event, in tab: TerminalTab) {
+        switch event {
+        case .snapshot(let snapshot):
+            applyOutputSnapshot(snapshot, in: tab)
+        case .marker(let marker):
             handleMarker(marker, in: tab)
         }
-
-        flushVisible(visible, in: tab)
     }
 
-    private func flushVisible(_ text: String, in tab: TerminalTab) {
-        guard !text.isEmpty,
-              let activeBlockID = tab.activeBlockID,
-              let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID })
-        else {
+    private func applyOutputSnapshot(_ snapshot: TerminalOutputProcessor.Snapshot, in tab: TerminalTab) {
+        guard let index = tab.blocks.firstIndex(where: { $0.id == snapshot.blockID }) else {
             return
         }
 
-        let shouldRenderScreen = tab.isAlternateScreenActive
-            || tab.ptyPassthroughView.usesPagerKeyBindings
-            || !Ansi.alternateScreenSwitches(in: text).isEmpty
-
-        if shouldRenderScreen {
-            let state = tab.terminalScreen.process(text)
-            tab.isAlternateScreenActive = state.isAlternateScreenActive
-            tab.isApplicationCursorModeActive = state.isApplicationCursorModeActive
-            tab.blocks[index].output = state.text
-            tab.blocks[index].attributedOutput = NSMutableAttributedString(
-                attributedString: state.attributedText
-            )
-        } else {
-            let rendered = tab.styledRenderer.process(text)
-            tab.blocks[index].output = rendered.plainText
-            tab.blocks[index].attributedOutput = NSMutableAttributedString(
-                attributedString: rendered.attributedText
-            )
-        }
+        let didChangeTerminalMode = tab.isAlternateScreenActive != snapshot.isAlternateScreenActive
+            || tab.isApplicationCursorModeActive != snapshot.isApplicationCursorModeActive
+        tab.isAlternateScreenActive = snapshot.isAlternateScreenActive
+        tab.isApplicationCursorModeActive = snapshot.isApplicationCursorModeActive
+        tab.blocks[index].output = snapshot.plainText
+        tab.blocks[index].attributedOutput = snapshot.attributedText
         tab.blocks[index].outputRevision += 1
 
-        ensureBlockView(for: activeBlockID, in: tab)
-        scheduleBlockViewUpdate(for: activeBlockID, in: tab)
-        refreshTerminalControl(in: tab)
+        ensureBlockView(for: snapshot.blockID, in: tab)
+        scheduleBlockViewUpdate(for: snapshot.blockID, in: tab)
+        if didChangeTerminalMode {
+            refreshTerminalControl(in: tab)
+        }
     }
 
     private func handleMarker(_ marker: String, in tab: TerminalTab) {
@@ -3226,13 +3346,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         default:
             break
         }
-    }
-
-    private func updateTerminalControl(from text: String, in tab: TerminalTab) {
-        for isActive in Ansi.alternateScreenSwitches(in: text) {
-            tab.isAlternateScreenActive = isActive
-        }
-        refreshTerminalControl(in: tab)
     }
 
     private func usesPagerKeyBindings(for command: String) -> Bool {
@@ -3529,8 +3642,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func resizePtyToViewport(for tab: TerminalTab) {
         guard let gridSize = terminalGridSize(for: tab) else { return }
+        tab.outputProcessor.resize(rows: Int(gridSize.rows), cols: Int(gridSize.cols))
         tab.session.resize(rows: gridSize.rows, cols: gridSize.cols)
-        tab.terminalScreen.resize(rows: Int(gridSize.rows), cols: Int(gridSize.cols))
     }
 
     private func terminalGridSize(for tab: TerminalTab) -> TerminalGridSize? {

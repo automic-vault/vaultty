@@ -157,37 +157,38 @@ enum Ansi {
             let privateMode = body.first == "?"
             guard !privateMode else { return }
 
-            let parameters = parseParameters(body)
             switch final {
             case "A":
-                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = max(0, cursorRow - firstParameter(body, defaultValue: 1))
             case "B":
-                cursorRow += parameter(parameters, at: 0, defaultValue: 1)
+                cursorRow += firstParameter(body, defaultValue: 1)
                 ensureCursorRow()
             case "C":
-                cursorCol += parameter(parameters, at: 0, defaultValue: 1)
+                cursorCol += firstParameter(body, defaultValue: 1)
             case "D":
-                cursorCol = max(0, cursorCol - parameter(parameters, at: 0, defaultValue: 1))
+                cursorCol = max(0, cursorCol - firstParameter(body, defaultValue: 1))
             case "E":
-                cursorRow += parameter(parameters, at: 0, defaultValue: 1)
+                cursorRow += firstParameter(body, defaultValue: 1)
                 cursorCol = 0
                 ensureCursorRow()
             case "F":
-                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = max(0, cursorRow - firstParameter(body, defaultValue: 1))
                 cursorCol = 0
             case "G":
-                cursorCol = max(0, parameter(parameters, at: 0, defaultValue: 1) - 1)
+                cursorCol = max(0, firstParameter(body, defaultValue: 1) - 1)
             case "H", "f":
+                let parameters = parseParameters(body)
                 cursorRow = max(0, parameter(parameters, at: 0, defaultValue: 1) - 1)
                 cursorCol = max(0, parameter(parameters, at: 1, defaultValue: 1) - 1)
                 ensureCursorRow()
             case "J":
-                eraseDisplay(parameter(parameters, at: 0, defaultValue: 0))
+                eraseDisplay(firstParameter(body, defaultValue: 0))
             case "K":
-                eraseLine(parameter(parameters, at: 0, defaultValue: 0))
+                eraseLine(firstParameter(body, defaultValue: 0))
             case "X":
-                eraseCharacters(parameter(parameters, at: 0, defaultValue: 1))
+                eraseCharacters(firstParameter(body, defaultValue: 1))
             case "m":
+                let parameters = parseParameters(body)
                 style.applySGR(parameters)
             case "s":
                 saveCursor()
@@ -539,54 +540,56 @@ enum Ansi {
             final: Unicode.Scalar
         ) where C.Element == Unicode.Scalar {
             let privateMode = body.first == "?"
-            let parameters = parseParameters(privateMode ? body.dropFirst() : body[body.startIndex..<body.endIndex])
 
             if privateMode {
+                let parameters = parseParameters(body.dropFirst())
                 handlePrivateMode(parameters: parameters, final: final)
                 return
             }
 
             switch final {
             case "A":
-                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = max(0, cursorRow - firstParameter(body, defaultValue: 1))
             case "B":
-                cursorRow = min(rows - 1, cursorRow + parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = min(rows - 1, cursorRow + firstParameter(body, defaultValue: 1))
             case "C":
-                cursorCol = min(cols - 1, cursorCol + parameter(parameters, at: 0, defaultValue: 1))
+                cursorCol = min(cols - 1, cursorCol + firstParameter(body, defaultValue: 1))
             case "D":
-                cursorCol = max(0, cursorCol - parameter(parameters, at: 0, defaultValue: 1))
+                cursorCol = max(0, cursorCol - firstParameter(body, defaultValue: 1))
             case "E":
-                cursorRow = min(rows - 1, cursorRow + parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = min(rows - 1, cursorRow + firstParameter(body, defaultValue: 1))
                 cursorCol = 0
             case "F":
-                cursorRow = max(0, cursorRow - parameter(parameters, at: 0, defaultValue: 1))
+                cursorRow = max(0, cursorRow - firstParameter(body, defaultValue: 1))
                 cursorCol = 0
             case "G":
-                cursorCol = clamp(parameter(parameters, at: 0, defaultValue: 1) - 1, max: cols - 1)
+                cursorCol = clamp(firstParameter(body, defaultValue: 1) - 1, max: cols - 1)
             case "H", "f":
+                let parameters = parseParameters(body)
                 cursorRow = clamp(parameter(parameters, at: 0, defaultValue: 1) - 1, max: rows - 1)
                 cursorCol = clamp(parameter(parameters, at: 1, defaultValue: 1) - 1, max: cols - 1)
             case "J":
-                eraseDisplay(parameter(parameters, at: 0, defaultValue: 0))
+                eraseDisplay(firstParameter(body, defaultValue: 0))
             case "K":
-                eraseLine(parameter(parameters, at: 0, defaultValue: 0))
+                eraseLine(firstParameter(body, defaultValue: 0))
             case "L":
-                insertLines(parameter(parameters, at: 0, defaultValue: 1))
+                insertLines(firstParameter(body, defaultValue: 1))
             case "M":
-                deleteLines(parameter(parameters, at: 0, defaultValue: 1))
+                deleteLines(firstParameter(body, defaultValue: 1))
             case "P":
-                deleteCharacters(parameter(parameters, at: 0, defaultValue: 1))
+                deleteCharacters(firstParameter(body, defaultValue: 1))
             case "S":
-                scrollUp(parameter(parameters, at: 0, defaultValue: 1))
+                scrollUp(firstParameter(body, defaultValue: 1))
             case "T":
-                scrollDown(parameter(parameters, at: 0, defaultValue: 1))
+                scrollDown(firstParameter(body, defaultValue: 1))
             case "X":
-                eraseCharacters(parameter(parameters, at: 0, defaultValue: 1))
+                eraseCharacters(firstParameter(body, defaultValue: 1))
             case "@":
-                insertCharacters(parameter(parameters, at: 0, defaultValue: 1))
+                insertCharacters(firstParameter(body, defaultValue: 1))
             case "d":
-                cursorRow = clamp(parameter(parameters, at: 0, defaultValue: 1) - 1, max: rows - 1)
+                cursorRow = clamp(firstParameter(body, defaultValue: 1) - 1, max: rows - 1)
             case "m":
+                let parameters = parseParameters(body)
                 style.applySGR(parameters)
             case "s":
                 saveCursor()
@@ -858,41 +861,66 @@ enum Ansi {
     }
 
     static func alternateScreenSwitches(in text: String) -> [Bool] {
-        let bytes = Array(text.utf8)
         var switches: [Bool] = []
-        var index = 0
+        scanAlternateScreenSwitches(in: text) { isActive in
+            switches.append(isActive)
+            return true
+        }
+        return switches
+    }
 
-        while index < bytes.count {
+    static func containsAlternateScreenSwitch(in text: String) -> Bool {
+        var didFindSwitch = false
+        scanAlternateScreenSwitches(in: text) { _ in
+            didFindSwitch = true
+            return false
+        }
+        return didFindSwitch
+    }
+
+    private static func scanAlternateScreenSwitches(
+        in text: String,
+        onSwitch: (Bool) -> Bool
+    ) {
+        let bytes = text.utf8
+        var index = bytes.startIndex
+
+        while index < bytes.endIndex {
             guard bytes[index] == 0x1B,
-                  index + 2 < bytes.count,
-                  bytes[index + 1] == 0x5B
+                  let bracketIndex = bytes.index(index, offsetBy: 1, limitedBy: bytes.endIndex),
+                  bracketIndex < bytes.endIndex,
+                  bytes[bracketIndex] == 0x5B,
+                  let bodyStart = bytes.index(index, offsetBy: 2, limitedBy: bytes.endIndex)
             else {
-                index += 1
+                bytes.formIndex(after: &index)
                 continue
             }
 
-            var cursor = index + 2
+            var cursor = bodyStart
             var parameters: [UInt8] = []
-            while cursor < bytes.count {
+            var didFindFinal = false
+            while cursor < bytes.endIndex {
                 let byte = bytes[cursor]
                 if byte >= 0x40 && byte <= 0x7E {
                     if byte == 0x68 || byte == 0x6C,
                        isAlternateScreenMode(parameters) {
-                        switches.append(byte == 0x68)
+                        if !onSwitch(byte == 0x68) {
+                            return
+                        }
                     }
-                    index = cursor + 1
+                    bytes.formIndex(after: &cursor)
+                    index = cursor
+                    didFindFinal = true
                     break
                 }
                 parameters.append(byte)
-                cursor += 1
+                bytes.formIndex(after: &cursor)
             }
 
-            if cursor >= bytes.count {
+            if !didFindFinal {
                 break
             }
         }
-
-        return switches
     }
 
     static func visibleText(from text: String) -> String {
@@ -1251,5 +1279,35 @@ enum Ansi {
 
         appendParameter()
         return parameters
+    }
+
+    private static func firstParameter<C: Collection>(
+        _ body: C,
+        defaultValue: Int
+    ) -> Int where C.Element == Unicode.Scalar {
+        var iterator = body.makeIterator()
+        guard var scalar = iterator.next() else { return defaultValue }
+
+        var value = 0
+        var hasDigits = false
+
+        while true {
+            switch scalar.value {
+            case 0x30...0x39:
+                value = value * 10 + Int(scalar.value - 0x30)
+                hasDigits = true
+            case 0x3A, 0x3B:
+                return hasDigits && value != 0 ? value : defaultValue
+            default:
+                return defaultValue
+            }
+
+            guard let next = iterator.next() else {
+                break
+            }
+            scalar = next
+        }
+
+        return hasDigits && value != 0 ? value : defaultValue
     }
 }
