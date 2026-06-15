@@ -1645,6 +1645,7 @@ private final class TerminalOutputProcessor {
     private var pendingShellOutput = ""
     private var isShellOutputFlushScheduled = false
     private var parserBuffer = ""
+    private var pendingBlockID: UUID?
     private var activeBlockID: UUID?
     private var usesPagerKeyBindings = false
     private var isAlternateScreenActive = false
@@ -1660,7 +1661,8 @@ private final class TerminalOutputProcessor {
             self.pendingShellOutput.removeAll(keepingCapacity: true)
             self.isShellOutputFlushScheduled = false
             self.parserBuffer.removeAll(keepingCapacity: true)
-            self.activeBlockID = blockID
+            self.pendingBlockID = blockID
+            self.activeBlockID = nil
             self.usesPagerKeyBindings = usesPagerKeyBindings
             self.isAlternateScreenActive = false
             self.isApplicationCursorModeActive = false
@@ -1755,8 +1757,13 @@ private final class TerminalOutputProcessor {
             flushVisible(visible)
             visible.removeAll(keepingCapacity: true)
             emit(.marker(marker))
+            if marker.hasPrefix("C;") {
+                activeBlockID = pendingBlockID
+                pendingBlockID = nil
+            }
             if marker.hasPrefix("D;") {
                 activeBlockID = nil
+                pendingBlockID = nil
             }
         }
 
@@ -3189,24 +3196,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startRunningElapsedUpdates(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = """
-        __vaultty_cmd=\(shellQuote(command))
-        __vaultty_command_b64=\(shellQuote(encodedCommand))
-        printf '\\033]133;C;%s\\a' "$__vaultty_command_b64"
-        if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then
-          __vaultty_dotenv_hook 2>/dev/null
-        elif [ -x "$VAULTTY_ENV" ]; then
-          __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh 2>/dev/null)"
-          if [ $? -eq 0 ]; then
-            eval "$__vaultty_dotenv"
-          fi
-        fi
-        eval "$__vaultty_cmd"
-        __vaultty_status=$?
-        printf '\\033]133;P;%s\\a' "$(pwd | base64)"
-        printf '\\033]133;D;%s\\a' "$__vaultty_status"
-
-        """
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>/dev/null; elif [ -x \"$VAULTTY_ENV\" ]; then __vaultty_dotenv=\"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh 2>/dev/null)\"; if [ $? -eq 0 ]; then eval \"$__vaultty_dotenv\"; fi; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script, suppressEcho: true)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
