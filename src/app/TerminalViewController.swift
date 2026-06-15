@@ -3354,7 +3354,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         if gitSummary.deletions > 0 {
             output.append(NSAttributedString(
-                string: "-\(gitSummary.deletions)",
+                string: "\u{2009}-\(gitSummary.deletions)",
                 attributes: [
                     .font: statusFont,
                     .foregroundColor: mutedGitStatusColor(.systemRed)
