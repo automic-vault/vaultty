@@ -18,6 +18,15 @@ It does not call `av dotenv export`.
 - Automically loads Automic Vault encrytped `.env` secrets without approval
 - [libghostty](https://github.com/mitchellh/ghostty) as the tty layer
 
+> [!WARNING]
+>
+> Vaultty currently executes bundled Fig completion generator commands through
+> `/bin/zsh -lc` for compatibility with specs that rely on shell quoting, pipes,
+> redirects, and command syntax. Completion specs and custom generators can
+> therefore execute shell code. This is a known security hole; the intended fix
+> is to sandbox or otherwise constrain completion execution without breaking Fig
+> compatibility.
+
 > [!IMPORTANT]
 >
 > Yes this means an agent with Computer Use could use Vaultty to exfilitrate

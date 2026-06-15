@@ -401,6 +401,8 @@ private extension CompletionSuggestion {
 final class VaulttyCompletionEngine {
     private static let maxPathSuggestionCandidates = 512
     private static let maxGeneratorSuggestionCandidates = 512
+    private static let defaultGeneratorTimeout: TimeInterval = 10
+    private static let maxGeneratorTimeout: TimeInterval = 15
 
     private let specLoader = FigSpecLoader()
     private let fileManager = FileManager.default
@@ -429,10 +431,12 @@ final class VaulttyCompletionEngine {
         let argumentTokens = Array(parsed.tokens.dropFirst(commandIndex + 1))
         let currentPrefix = parsed.currentTokenText
         var suggestions: [CompletionSuggestion] = []
+        let hasFigSpec = specLoader.hasSpec(command: commandName)
 
         let useNativePathCompletion = shouldUseNativePathCompletion(
             commandName: commandName,
-            currentPrefix: currentPrefix
+            currentPrefix: currentPrefix,
+            hasFigSpec: hasFigSpec
         )
 
         if useNativePathCompletion {
@@ -645,6 +649,7 @@ final class VaulttyCompletionEngine {
         if let custom = generator.custom, custom.isObject {
             suggestions.append(contentsOf: runCustomGenerator(
                 custom,
+                generator: generator,
                 commandName: commandName,
                 request: request,
                 spec: spec
@@ -661,12 +666,11 @@ final class VaulttyCompletionEngine {
         request: CompletionRequest,
         spec: LoadedFigSpec
     ) -> [CompletionSuggestion] {
-        guard let output = ShellCommandRunner.run(
-            command: script.command,
-            args: script.args,
+        guard let output = ShellCommandRunner.runShell(
+            commandLine: script.commandLine,
             cwd: script.cwd ?? request.cwd,
             environment: request.environment,
-            timeout: 0.75,
+            timeout: timeout(for: generator),
             outputLimit: 64 * 1024
         ) else {
             return []
@@ -696,28 +700,32 @@ final class VaulttyCompletionEngine {
 
     private func runCustomGenerator(
         _ custom: JSValue,
+        generator: FigGenerator,
         commandName: String,
         request: CompletionRequest,
         spec: LoadedFigSpec
     ) -> [CompletionSuggestion] {
+        let commandTimeout = timeout(for: generator)
         let executeCommand: @convention(block) (JSValue) -> JSValue = { [request] commandValue in
             let command = FigReader.string(commandValue.forProperty("command"))
             let argsValue = commandValue.forProperty("args")
             let cwd = FigReader.string(commandValue.forProperty("cwd")) ?? request.cwd
             let args = FigReader.stringArray(argsValue)
             guard let command,
-                  let output = ShellCommandRunner.run(
-                    command: command,
-                    args: args,
+                  let output = ShellCommandRunner.runShell(
+                    commandLine: "noglob " + ([command] + args).joined(separator: " "),
                     cwd: cwd,
                     environment: request.environment,
-                    timeout: 0.75,
+                    timeout: commandTimeout,
                     outputLimit: 64 * 1024
                   )
             else {
-                return JSValue(object: ["stdout": "", "stderr": ""], in: commandValue.context)!
+                return JSValue(object: ["stdout": "", "stderr": "", "status": 1], in: commandValue.context)!
             }
-            return JSValue(object: ["stdout": output.stdout, "stderr": output.stderr], in: commandValue.context)!
+            return JSValue(
+                object: ["stdout": output.stdout, "stderr": output.stderr, "status": output.status],
+                in: commandValue.context
+            )!
         }
 
         spec.context.setObject(executeCommand, forKeyedSubscript: "__vaulttyExecuteCommand" as NSString)
@@ -747,7 +755,7 @@ final class VaulttyCompletionEngine {
             return []
         }
 
-        let deadline = Date().addingTimeInterval(0.75)
+        let deadline = Date().addingTimeInterval(commandTimeout)
         while Date() < deadline {
             if box.forProperty("done")?.toBool() == true {
                 return suggestions(from: box.forProperty("result"), kind: .argument, source: commandName)
@@ -755,6 +763,13 @@ final class VaulttyCompletionEngine {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
         return []
+    }
+
+    private func timeout(for generator: FigGenerator) -> TimeInterval {
+        guard let scriptTimeout = generator.scriptTimeout else {
+            return Self.defaultGeneratorTimeout
+        }
+        return min(max(scriptTimeout / 1000, 0), Self.maxGeneratorTimeout)
     }
 
     private func suggestions(from value: JSValue?, kind: CompletionSuggestion.Kind, source: String) -> [CompletionSuggestion] {
@@ -923,7 +938,7 @@ final class VaulttyCompletionEngine {
         commandName == "cd" || commandName == "ls" || currentPrefix.contains("/")
     }
 
-    private func shouldUseNativePathCompletion(commandName: String, currentPrefix: String) -> Bool {
+    private func shouldUseNativePathCompletion(commandName: String, currentPrefix: String, hasFigSpec: Bool) -> Bool {
         guard !isRemotePathPrefix(currentPrefix) else {
             return false
         }
@@ -933,7 +948,7 @@ final class VaulttyCompletionEngine {
         if commandName == "ls", !currentPrefix.hasPrefix("-") {
             return true
         }
-        return currentPrefix.contains("/")
+        return currentPrefix.contains("/") && !hasFigSpec
     }
 
     private func isRemotePathPrefix(_ value: String) -> Bool {
@@ -1427,23 +1442,30 @@ private struct FigGenerator {
     var splitOn: String? { FigReader.string(value.forProperty("splitOn")) }
     var postProcess: JSValue? { value.forProperty("postProcess") }
     var custom: JSValue? { value.forProperty("custom") }
+    var scriptTimeout: TimeInterval? {
+        guard let timeout = value.forProperty("scriptTimeout"), !timeout.isUndefined, !timeout.isNull else {
+            return nil
+        }
+        let milliseconds = timeout.toDouble()
+        return milliseconds.isFinite ? milliseconds : nil
+    }
 
     var script: FigScript? {
         guard let scriptValue = value.forProperty("script"), !scriptValue.isUndefined else { return nil }
         if scriptValue.isString, let command = scriptValue.toString() {
-            return FigScript(command: "/bin/zsh", args: ["-lc", command], cwd: nil)
+            return FigScript(commandLine: command, cwd: nil)
         }
         if scriptValue.isArray {
             let parts = FigReader.stringArray(scriptValue)
             guard let command = parts.first else { return nil }
-            return FigScript(command: command, args: Array(parts.dropFirst()), cwd: nil)
+            return FigScript(commandLine: "noglob " + ([command] + Array(parts.dropFirst())).joined(separator: " "), cwd: nil)
         }
         if scriptValue.isObject {
             let command = FigReader.string(scriptValue.forProperty("command"))
             let args = FigReader.stringArray(scriptValue.forProperty("args"))
             let cwd = FigReader.string(scriptValue.forProperty("cwd"))
             if let command {
-                return FigScript(command: command, args: args, cwd: cwd)
+                return FigScript(commandLine: "noglob " + ([command] + args).joined(separator: " "), cwd: cwd)
             }
         }
         return nil
@@ -1451,8 +1473,7 @@ private struct FigGenerator {
 }
 
 private struct FigScript {
-    let command: String
-    let args: [String]
+    let commandLine: String
     let cwd: String?
 }
 
@@ -1530,24 +1551,19 @@ private enum ShellCommandRunner {
     struct Output {
         let stdout: String
         let stderr: String
+        let status: Int32
     }
 
-    static func run(
-        command: String,
-        args: [String],
+    static func runShell(
+        commandLine: String,
         cwd: String,
         environment: [String: String],
         timeout: TimeInterval,
         outputLimit: Int
     ) -> Output? {
         let process = Process()
-        if command.hasPrefix("/") || command.contains("/") {
-            process.executableURL = URL(fileURLWithPath: command)
-            process.arguments = args
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [command] + args
-        }
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", shellPrelude(environment: environment) + commandLine]
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
@@ -1578,8 +1594,20 @@ private enum ShellCommandRunner {
 
         return Output(
             stdout: stdoutCapture.finish(),
-            stderr: stderrCapture.finish()
+            stderr: stderrCapture.finish(),
+            status: process.terminationStatus
         )
+    }
+
+    private static func shellPrelude(environment: [String: String]) -> String {
+        guard let path = environment["PATH"], !path.isEmpty else {
+            return ""
+        }
+        return "PATH=\(shellSingleQuote(path)); export PATH; "
+    }
+
+    private static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
