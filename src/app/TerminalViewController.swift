@@ -3342,7 +3342,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 string: " +\(gitSummary.insertions)",
                 attributes: [
                     .font: statusFont,
-                    .foregroundColor: NSColor.systemGreen
+                    .foregroundColor: mutedGitStatusColor(.systemGreen)
                 ]
             ))
         }
@@ -3351,11 +3351,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 string: " -\(gitSummary.deletions)",
                 attributes: [
                     .font: statusFont,
-                    .foregroundColor: NSColor.systemRed
+                    .foregroundColor: mutedGitStatusColor(.systemRed)
                 ]
             ))
         }
         return output
+    }
+
+    private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
+        color.blended(withFraction: 0.55, of: .tertiaryLabelColor)
+            ?? color.withAlphaComponent(0.55)
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
