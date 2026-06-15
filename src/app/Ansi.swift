@@ -66,7 +66,7 @@ enum Ansi {
                     cursorCol = max(0, cursorCol - 1)
                     index += 1
                 case 0x09:
-                    put("\t")
+                    put(scalar)
                     index += 1
                 case 0x0A, 0x0B, 0x0C:
                     lineFeed()
@@ -77,7 +77,7 @@ enum Ansi {
                 case 0x00..<0x20, 0x7F:
                     index += 1
                 default:
-                    put(String(scalar))
+                    put(scalar)
                     index += 1
                 }
             }
@@ -94,8 +94,8 @@ enum Ansi {
                 while cursor < scalars.count {
                     let value = scalars[cursor].value
                     if value >= 0x40 && value <= 0x7E {
-                        let body = String(String.UnicodeScalarView(scalars[(index + 2)..<cursor]))
-                        handleCSI(body: body, final: Character(String(scalars[cursor])))
+                        let body = scalars[(index + 2)..<cursor]
+                        handleCSI(body: body, final: scalars[cursor])
                         index = cursor + 1
                         return true
                     }
@@ -123,7 +123,7 @@ enum Ansi {
                 return false
             }
 
-            if "()*+-./".contains(Character(String(introducer))) {
+            if Ansi.isCharacterSetSelectionIntroducer(introducer) {
                 guard index + 2 < scalars.count else { return false }
                 index += 3
                 return true
@@ -150,7 +150,10 @@ enum Ansi {
             return true
         }
 
-        private func handleCSI(body: String, final: Character) {
+        private func handleCSI<C: Collection>(
+            body: C,
+            final: Unicode.Scalar
+        ) where C.Element == Unicode.Scalar {
             let privateMode = body.first == "?"
             guard !privateMode else { return }
 
@@ -195,19 +198,19 @@ enum Ansi {
             }
         }
 
-        private func put(_ value: String) {
+        private func put(_ scalar: Unicode.Scalar) {
             if cursorCol >= Self.maxLineCells {
                 lineFeed()
             }
             ensureCursorRow()
             cursorCol = min(cursorCol, Self.maxLineCells - 1)
             while lines[cursorRow].count < cursorCol {
-                lines[cursorRow].append(Cell(text: " ", style: style))
+                lines[cursorRow].append(Cell(scalar: " ", style: style))
             }
             if cursorCol < lines[cursorRow].count {
-                lines[cursorRow][cursorCol] = Cell(text: value, style: style)
+                lines[cursorRow][cursorCol] = Cell(scalar: scalar, style: style)
             } else {
-                lines[cursorRow].append(Cell(text: value, style: style))
+                lines[cursorRow].append(Cell(scalar: scalar, style: style))
             }
             cursorCol += 1
         }
@@ -262,10 +265,10 @@ enum Ansi {
                 }
             case 1:
                 while lines[cursorRow].count <= cursorCol {
-                    lines[cursorRow].append(Cell(text: " ", style: style))
+                    lines[cursorRow].append(Cell(scalar: " ", style: style))
                 }
                 for col in 0...cursorCol {
-                    lines[cursorRow][col] = Cell(text: " ", style: style)
+                    lines[cursorRow][col] = Cell(scalar: " ", style: style)
                 }
             case 2:
                 lines[cursorRow] = []
@@ -281,7 +284,7 @@ enum Ansi {
             let end = min(lines[cursorRow].count, cursorCol + count)
             guard cursorCol < end else { return }
             for col in cursorCol..<end {
-                lines[cursorRow][col] = Cell(text: " ", style: style)
+                lines[cursorRow][col] = Cell(scalar: " ", style: style)
             }
         }
 
@@ -454,7 +457,7 @@ enum Ansi {
                 case 0x00..<0x20, 0x7F:
                     index += 1
                 default:
-                    put(String(scalar))
+                    put(scalar)
                     index += 1
                 }
             }
@@ -475,8 +478,8 @@ enum Ansi {
                 while cursor < scalars.count {
                     let value = scalars[cursor].value
                     if value >= 0x40 && value <= 0x7E {
-                        let body = String(String.UnicodeScalarView(scalars[(index + 2)..<cursor]))
-                        handleCSI(body: body, final: Character(String(scalars[cursor])))
+                        let body = scalars[(index + 2)..<cursor]
+                        handleCSI(body: body, final: scalars[cursor])
                         index = cursor + 1
                         return true
                     }
@@ -504,7 +507,7 @@ enum Ansi {
                 return false
             }
 
-            if "()*+-./".contains(Character(String(introducer))) {
+            if Ansi.isCharacterSetSelectionIntroducer(introducer) {
                 guard index + 2 < scalars.count else { return false }
                 index += 3
                 return true
@@ -531,9 +534,12 @@ enum Ansi {
             return true
         }
 
-        private func handleCSI(body: String, final: Character) {
+        private func handleCSI<C: Collection>(
+            body: C,
+            final: Unicode.Scalar
+        ) where C.Element == Unicode.Scalar {
             let privateMode = body.first == "?"
-            let parameters = parseParameters(privateMode ? String(body.dropFirst()) : body)
+            let parameters = parseParameters(privateMode ? body.dropFirst() : body[body.startIndex..<body.endIndex])
 
             if privateMode {
                 handlePrivateMode(parameters: parameters, final: final)
@@ -591,7 +597,7 @@ enum Ansi {
             }
         }
 
-        private func handlePrivateMode(parameters: [Int?], final: Character) {
+        private func handlePrivateMode(parameters: [Int?], final: Unicode.Scalar) {
             for parameter in parameters {
                 guard let parameter else { continue }
                 switch parameter {
@@ -612,9 +618,9 @@ enum Ansi {
             }
         }
 
-        private func put(_ value: String) {
-            cells[cursorRow][cursorCol] = Cell(text: value, style: style)
-            if cursorCol == cols - 1 {
+        private func put(_ scalar: Unicode.Scalar) {
+            cells[cursorRow][cursorCol] = Cell(scalar: scalar, style: style)
+                if cursorCol == cols - 1 {
                 if wrapsAtRightMargin {
                     cursorCol = 0
                     lineFeed()
@@ -677,11 +683,11 @@ enum Ansi {
             switch mode {
             case 0:
                 for col in cursorCol..<cols {
-                    cells[cursorRow][col] = Cell(text: " ", style: style)
+                    cells[cursorRow][col] = Cell(scalar: " ", style: style)
                 }
             case 1:
                 for col in 0...cursorCol {
-                    cells[cursorRow][col] = Cell(text: " ", style: style)
+                    cells[cursorRow][col] = Cell(scalar: " ", style: style)
                 }
             case 2:
                 cells[cursorRow] = blankLine(style: style)
@@ -693,7 +699,7 @@ enum Ansi {
         private func eraseCharacters(_ count: Int) {
             guard count > 0 else { return }
             for col in cursorCol..<min(cols, cursorCol + count) {
-                cells[cursorRow][col] = Cell(text: " ", style: style)
+                cells[cursorRow][col] = Cell(scalar: " ", style: style)
             }
         }
 
@@ -702,7 +708,7 @@ enum Ansi {
             guard count > 0 else { return }
             var line = cells[cursorRow]
             for _ in 0..<count {
-                line.insert(Cell(text: " ", style: style), at: cursorCol)
+                line.insert(Cell(scalar: " ", style: style), at: cursorCol)
                 _ = line.popLast()
             }
             cells[cursorRow] = line
@@ -714,7 +720,7 @@ enum Ansi {
             var line = cells[cursorRow]
             for _ in 0..<count {
                 line.remove(at: cursorCol)
-                line.append(Cell(text: " ", style: style))
+                line.append(Cell(scalar: " ", style: style))
             }
             cells[cursorRow] = line
         }
@@ -826,14 +832,14 @@ enum Ansi {
 
         private func renderedColumnCount(in row: [Cell]) -> Int {
             var count = row.count
-            while count > 0, row[count - 1].text == " " {
+            while count > 0, row[count - 1].scalar == " " {
                 count -= 1
             }
             return count
         }
 
         private func blankLine(style: TextStyle = TextStyle()) -> [Cell] {
-            Array(repeating: Cell(text: " ", style: style), count: cols)
+            Array(repeating: Cell(scalar: " ", style: style), count: cols)
         }
 
         private func parameter(_ parameters: [Int?], at index: Int, defaultValue: Int) -> Int {
@@ -904,6 +910,15 @@ enum Ansi {
         }
     }
 
+    private static func isCharacterSetSelectionIntroducer(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x28...0x2F:
+            return true
+        default:
+            return false
+        }
+    }
+
     private struct RenderedRow {
         let row: Int
         let columnCount: Int
@@ -922,7 +937,7 @@ enum Ansi {
         run.reserveCapacity(cells.underestimatedCount)
 
         for cell in cells {
-            plain.append(cell.text)
+            plain.unicodeScalars.append(cell.scalar)
             if currentStyle == nil {
                 currentStyle = cell.style
             } else if currentStyle != cell.style {
@@ -935,7 +950,7 @@ enum Ansi {
                 run.removeAll(keepingCapacity: true)
                 currentStyle = cell.style
             }
-            run.append(cell.text)
+            run.unicodeScalars.append(cell.scalar)
         }
 
         if let currentStyle, !run.isEmpty {
@@ -977,7 +992,7 @@ enum Ansi {
     }
 
     private struct Cell: Hashable {
-        var text = " "
+        var scalar: Unicode.Scalar = " "
         var style = TextStyle()
     }
 
@@ -1207,12 +1222,34 @@ enum Ansi {
         }
     }
 
-    private static func parseParameters(_ body: String) -> [Int?] {
+    private static func parseParameters<C: Collection>(_ body: C) -> [Int?] where C.Element == Unicode.Scalar {
         guard !body.isEmpty else { return [] }
-        return body.split(omittingEmptySubsequences: false) { ch in
-            ch == ";" || ch == ":"
-        }.map { part in
-            Int(part)
+
+        var parameters: [Int?] = []
+        var value = 0
+        var hasDigits = false
+        var isValid = true
+
+        func appendParameter() {
+            parameters.append(hasDigits && isValid ? value : nil)
+            value = 0
+            hasDigits = false
+            isValid = true
         }
+
+        for scalar in body {
+            switch scalar.value {
+            case 0x30...0x39:
+                value = value * 10 + Int(scalar.value - 0x30)
+                hasDigits = true
+            case 0x3A, 0x3B:
+                appendParameter()
+            default:
+                isValid = false
+            }
+        }
+
+        appendParameter()
+        return parameters
     }
 }
