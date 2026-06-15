@@ -2977,6 +2977,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.pendingBlockID = block.id
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
+        scrollToBottomNow(tab)
         startTtyModePolling(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
@@ -3640,17 +3641,21 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func scrollToBottom(_ tab: TerminalTab) {
         guard !tab.isScrollToBottomScheduled else { return }
         tab.isScrollToBottomScheduled = true
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             tab.isScrollToBottomScheduled = false
-            guard let documentView = tab.scrollView.documentView else {
-                return
-            }
-            documentView.layoutSubtreeIfNeeded()
-            tab.scrollView.contentView.layoutSubtreeIfNeeded()
-            let maxY = max(0, documentView.bounds.height - tab.scrollView.contentView.bounds.height)
-            tab.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
-            tab.scrollView.reflectScrolledClipView(tab.scrollView.contentView)
+            self?.scrollToBottomNow(tab)
         }
+    }
+
+    private func scrollToBottomNow(_ tab: TerminalTab) {
+        guard let documentView = tab.scrollView.documentView else {
+            return
+        }
+        documentView.layoutSubtreeIfNeeded()
+        tab.scrollView.contentView.layoutSubtreeIfNeeded()
+        let maxY = max(0, documentView.bounds.height - tab.scrollView.contentView.bounds.height)
+        tab.scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+        tab.scrollView.reflectScrolledClipView(tab.scrollView.contentView)
     }
 
     private func decodeBase64(_ value: String) -> String? {
