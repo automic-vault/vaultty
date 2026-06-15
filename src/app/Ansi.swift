@@ -31,6 +31,7 @@ enum Ansi {
         private var savedCursorRow = 0
         private var savedCursorCol = 0
         private var droppedLineCount = 0
+        private var attributeCache: AttributeCache = [:]
 
         func reset() {
             pending.removeAll()
@@ -41,6 +42,7 @@ enum Ansi {
             savedCursorRow = 0
             savedCursorCol = 0
             droppedLineCount = 0
+            attributeCache.removeAll(keepingCapacity: true)
         }
 
         func process(_ text: String) -> StyledOutput {
@@ -297,21 +299,39 @@ enum Ansi {
         private func renderedOutput() -> StyledOutput {
             let attributed = NSMutableAttributedString()
             var plain = ""
+            let visibleCellCount = lines.reduce(0) { $0 + $1.count }
+            plain.reserveCapacity(
+                visibleCellCount
+                    + max(0, lines.count - 1)
+                    + (droppedLineCount > 0 ? 48 : 0)
+            )
 
             if droppedLineCount > 0 {
                 let notice = "[Vaultty trimmed \(droppedLineCount) earlier output lines]\n"
                 plain.append(notice)
-                attributed.append(NSAttributedString(string: notice, attributes: TextStyle().attributes()))
+                Ansi.appendAttributed(
+                    notice,
+                    style: TextStyle(),
+                    to: attributed,
+                    cache: &attributeCache
+                )
             }
 
             for (rowIndex, line) in lines.enumerated() {
-                for cell in line {
-                    plain.append(cell.text)
-                    attributed.append(NSAttributedString(string: cell.text, attributes: cell.style.attributes()))
-                }
+                Ansi.appendStyledCells(
+                    line,
+                    to: &plain,
+                    attributed: attributed,
+                    cache: &attributeCache
+                )
                 if rowIndex < lines.count - 1 {
                     plain.append("\n")
-                    attributed.append(NSAttributedString(string: "\n", attributes: TextStyle().attributes()))
+                    Ansi.appendAttributed(
+                        "\n",
+                        style: TextStyle(),
+                        to: attributed,
+                        cache: &attributeCache
+                    )
                 }
             }
 
@@ -354,6 +374,7 @@ enum Ansi {
         private var isApplicationCursorModeActive = false
         private var wrapsAtRightMargin = true
         private var style = TextStyle()
+        private var attributeCache: AttributeCache = [:]
 
         init(rows: Int, cols: Int) {
             self.rows = max(1, rows)
@@ -398,6 +419,7 @@ enum Ansi {
             isAlternateScreenActive = false
             isApplicationCursorModeActive = false
             wrapsAtRightMargin = true
+            attributeCache.removeAll(keepingCapacity: true)
         }
 
         @discardableResult
@@ -441,12 +463,7 @@ enum Ansi {
         }
 
         var state: TerminalScreenState {
-            TerminalScreenState(
-                text: renderedText(),
-                attributedText: renderedAttributedText(),
-                isAlternateScreenActive: isAlternateScreenActive,
-                isApplicationCursorModeActive: isApplicationCursorModeActive
-            )
+            renderedState()
         }
 
         private func processEscape(_ scalars: [Unicode.Scalar], index: inout Int) -> Bool {
@@ -748,46 +765,71 @@ enum Ansi {
             cursorCol = min(savedCursorCol, cols - 1)
         }
 
-        private func renderedText() -> String {
-            let lines = renderedRows().map { row in
-                row.map(\.text).joined()
-            }
-            return lines.isEmpty ? " " : lines.joined(separator: "\n")
-        }
-
-        private func renderedAttributedText() -> NSAttributedString {
+        private func renderedState() -> TerminalScreenState {
             let rows = renderedRows()
             guard !rows.isEmpty else {
-                return Ansi.emptyAttributedOutput()
+                return TerminalScreenState(
+                    text: " ",
+                    attributedText: Ansi.emptyAttributedOutput(),
+                    isAlternateScreenActive: isAlternateScreenActive,
+                    isApplicationCursorModeActive: isApplicationCursorModeActive
+                )
             }
 
             let output = NSMutableAttributedString()
-            for (rowIndex, row) in rows.enumerated() {
-                for cell in row {
-                    output.append(NSAttributedString(string: cell.text, attributes: cell.style.attributes()))
-                }
-                if rowIndex < rows.count - 1 {
-                    output.append(NSAttributedString(string: "\n", attributes: TextStyle().attributes()))
+            var plain = ""
+            let cellCount = rows.reduce(0) { $0 + $1.columnCount }
+            plain.reserveCapacity(cellCount + max(0, rows.count - 1))
+
+            for (index, row) in rows.enumerated() {
+                Ansi.appendStyledCells(
+                    cells[row.row][0..<row.columnCount],
+                    to: &plain,
+                    attributed: output,
+                    cache: &attributeCache
+                )
+                if index < rows.count - 1 {
+                    plain.append("\n")
+                    Ansi.appendAttributed(
+                        "\n",
+                        style: TextStyle(),
+                        to: output,
+                        cache: &attributeCache
+                    )
                 }
             }
-            return output
+
+            return TerminalScreenState(
+                text: plain,
+                attributedText: output,
+                isAlternateScreenActive: isAlternateScreenActive,
+                isApplicationCursorModeActive: isApplicationCursorModeActive
+            )
         }
 
-        private func renderedRows() -> [[Cell]] {
-            var lines = cells.map { row in
-                var text = row
-                while text.last?.text == " " {
-                    text.removeLast()
-                }
-                return text
+        private func renderedRows() -> [RenderedRow] {
+            var rows = [RenderedRow]()
+            rows.reserveCapacity(self.rows)
+
+            for row in 0..<self.rows {
+                rows.append(RenderedRow(row: row, columnCount: renderedColumnCount(in: cells[row])))
             }
-            while lines.first?.isEmpty == true {
-                lines.removeFirst()
+
+            while rows.first?.columnCount == 0 {
+                rows.removeFirst()
             }
-            while lines.last?.isEmpty == true {
-                lines.removeLast()
+            while rows.last?.columnCount == 0 {
+                rows.removeLast()
             }
-            return lines
+            return rows
+        }
+
+        private func renderedColumnCount(in row: [Cell]) -> Int {
+            var count = row.count
+            while count > 0, row[count - 1].text == " " {
+                count -= 1
+            }
+            return count
         }
 
         private func blankLine(style: TextStyle = TextStyle()) -> [Cell] {
@@ -862,12 +904,84 @@ enum Ansi {
         }
     }
 
-    private struct Cell: Equatable {
+    private struct RenderedRow {
+        let row: Int
+        let columnCount: Int
+    }
+
+    private typealias AttributeCache = [TextStyle: [NSAttributedString.Key: Any]]
+
+    private static func appendStyledCells<C: Collection>(
+        _ cells: C,
+        to plain: inout String,
+        attributed: NSMutableAttributedString,
+        cache: inout AttributeCache
+    ) where C.Element == Cell {
+        var currentStyle: TextStyle?
+        var run = ""
+        run.reserveCapacity(cells.underestimatedCount)
+
+        for cell in cells {
+            plain.append(cell.text)
+            if currentStyle == nil {
+                currentStyle = cell.style
+            } else if currentStyle != cell.style {
+                appendAttributed(
+                    run,
+                    style: currentStyle ?? TextStyle(),
+                    to: attributed,
+                    cache: &cache
+                )
+                run.removeAll(keepingCapacity: true)
+                currentStyle = cell.style
+            }
+            run.append(cell.text)
+        }
+
+        if let currentStyle, !run.isEmpty {
+            appendAttributed(
+                run,
+                style: currentStyle,
+                to: attributed,
+                cache: &cache
+            )
+        }
+    }
+
+    private static func appendAttributed(
+        _ text: String,
+        style: TextStyle,
+        to output: NSMutableAttributedString,
+        cache: inout AttributeCache
+    ) {
+        guard !text.isEmpty else { return }
+        output.append(NSAttributedString(
+            string: text,
+            attributes: attributes(for: style, cache: &cache)
+        ))
+    }
+
+    private static func attributes(
+        for style: TextStyle,
+        cache: inout AttributeCache
+    ) -> [NSAttributedString.Key: Any] {
+        if let attributes = cache[style] {
+            return attributes
+        }
+        if cache.count > 512 {
+            cache.removeAll(keepingCapacity: true)
+        }
+        let attributes = style.attributes()
+        cache[style] = attributes
+        return attributes
+    }
+
+    private struct Cell: Hashable {
         var text = " "
         var style = TextStyle()
     }
 
-    private struct TextStyle: Equatable {
+    private struct TextStyle: Hashable {
         var foreground: TerminalColor?
         var background: TerminalColor?
         var isBold = false
@@ -1032,7 +1146,7 @@ enum Ansi {
         }
     }
 
-    private enum TerminalColor: Equatable {
+    private enum TerminalColor: Hashable {
         case palette(Int)
         case rgb(Int, Int, Int)
 
