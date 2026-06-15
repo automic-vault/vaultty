@@ -54,6 +54,8 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
 
     var isShown: Bool { popover.isShown }
     var onExternalDismiss: (() -> Void)?
+    var onSelectionChanged: ((CompletionSuggestion) -> Void)?
+    var onAcceptSuggestion: ((CompletionSuggestion) -> Void)?
     var selectedSuggestion: CompletionSuggestion? {
         guard suggestions.indices.contains(selectedIndex) else { return nil }
         return suggestions[selectedIndex]
@@ -77,6 +79,13 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         popover.behavior = .semitransient
         popover.animates = false
         popover.delegate = self
+
+        listView.onHoverRow = { [weak self] index in
+            self?.selectMouseHoveredRow(index)
+        }
+        listView.onClickRow = { [weak self] index in
+            self?.acceptMouseClickedRow(index)
+        }
     }
 
     func show(
@@ -158,9 +167,17 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         let screenRect = window.convertToScreen(windowRect)
         let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         let bottomMargin: CGFloat = 12
+        let topMargin: CGFloat = 12
         let availableBelow = screenRect.minY - (visibleFrame?.minY ?? 0)
+        let availableAbove = (visibleFrame?.maxY ?? 0) - screenRect.maxY
 
-        return availableBelow >= popupHeight + bottomMargin ? .minY : .maxY
+        if availableBelow >= popupHeight + bottomMargin {
+            return .maxY
+        }
+        if availableAbove >= popupHeight + topMargin {
+            return .minY
+        }
+        return availableAbove > availableBelow ? .minY : .maxY
     }
 
     private func clampedPositioningRect(for rect: NSRect, in view: NSView) -> NSRect {
@@ -258,6 +275,24 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         scrollView.contentView.scroll(to: NSPoint(x: visibleRect.minX, y: clampedY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
+
+    private func selectMouseHoveredRow(_ row: Int) {
+        guard suggestions.indices.contains(row) else { return }
+        showsSelection = true
+        guard selectedIndex != row || listView.selectedIndex != row else { return }
+
+        selectedIndex = row
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        onSelectionChanged?(suggestions[row])
+    }
+
+    private func acceptMouseClickedRow(_ row: Int) {
+        guard suggestions.indices.contains(row) else { return }
+        showsSelection = true
+        selectedIndex = row
+        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
+        onAcceptSuggestion?(suggestions[row])
+    }
 }
 
 private final class CompletionListView: NSView {
@@ -267,9 +302,17 @@ private final class CompletionListView: NSView {
     private static let rowContentPadding: CGFloat = 10
 
     private var suggestions: [CompletionSuggestion] = []
-    private var selectedIndex: Int?
+    fileprivate private(set) var selectedIndex: Int?
+    var onHoverRow: ((Int) -> Void)?
+    var onClickRow: ((Int) -> Void)?
+    private var trackingArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
 
     static func contentHeight(forRowCount rowCount: Int) -> CGFloat {
         max(rowHeight, CGFloat(rowCount) * rowHeight) + verticalPadding * 2
@@ -288,6 +331,49 @@ private final class CompletionListView: NSView {
             width: max(0, bounds.width - Self.horizontalPadding * 2),
             height: Self.rowHeight
         )
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseMoved, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        self.trackingArea = trackingArea
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let row = rowIndex(at: convert(event.locationInWindow, from: nil)) else { return }
+        onHoverRow?(row)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        mouseMoved(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let row = rowIndex(at: convert(event.locationInWindow, from: nil)) else {
+            super.mouseDown(with: event)
+            return
+        }
+        onClickRow?(row)
+    }
+
+    private func rowIndex(at point: NSPoint) -> Int? {
+        guard point.y >= Self.verticalPadding else { return nil }
+        let row = Int((point.y - Self.verticalPadding) / Self.rowHeight)
+        guard suggestions.indices.contains(row),
+              rowRect(for: row).contains(point)
+        else {
+            return nil
+        }
+        return row
     }
 
     override func draw(_ dirtyRect: NSRect) {

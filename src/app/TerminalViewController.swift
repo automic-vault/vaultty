@@ -2172,6 +2172,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         completionPopup.onExternalDismiss = { [weak self] in
             self?.dismissCompletion()
         }
+        completionPopup.onSelectionChanged = { [weak self] suggestion in
+            self?.previewCompletionSelection(suggestion)
+        }
+        completionPopup.onAcceptSuggestion = { [weak self] suggestion in
+            self?.acceptCompletionSelection(suggestion)
+        }
         createTab()
         installTabMouseDownMonitor()
         installCommandFocusMonitor()
@@ -2944,6 +2950,25 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         applyCompletion(suggestion, in: tab)
         submitCommand(in: tab)
+    }
+
+    private func previewCompletionSelection(_ suggestion: CompletionSuggestion) {
+        guard let tab = activeTab else { return }
+        isCompletionInteractionArmed = true
+        renderCompletionPreview(suggestion, in: tab)
+    }
+
+    private func acceptCompletionSelection(_ suggestion: CompletionSuggestion) {
+        guard let tab = activeTab else {
+            dismissCompletion()
+            return
+        }
+        isCompletionInteractionArmed = true
+        renderCompletionPreview(suggestion, in: tab)
+        applyCompletion(suggestion, in: tab, dismissAfterApplying: !shouldContinueCompletion(afterApplying: suggestion))
+        if shouldContinueCompletion(afterApplying: suggestion) {
+            requestCompletion(in: tab, mode: .continuation)
+        }
     }
 
     private func applyCompletion(
