@@ -3014,6 +3014,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             replacementRange: replacementRange,
             renderedRange: renderedRange
         )
+        activeCompletionRange = renderedRange
     }
 
     @discardableResult
