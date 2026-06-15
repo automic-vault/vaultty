@@ -861,7 +861,7 @@ private final class BlockView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(with block: TerminalBlock) {
+    func update(with block: TerminalBlock, now: Date = Date()) {
         commandLabel.stringValue = block.command
         hasVisibleOutput = !block.output.isEmpty
         outputView.isHidden = !hasVisibleOutput
@@ -880,7 +880,10 @@ private final class BlockView: NSView {
         switch block.state {
         case .running:
             layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
-            metadata.append(MetadataSegment(text: "running…", color: .tertiaryLabelColor))
+            metadata.append(MetadataSegment(
+                text: liveDurationText(startedAt: block.startedAt, now: now),
+                color: .tertiaryLabelColor
+            ))
             minimumHeightConstraint?.constant = Metrics.runningMinimumHeight
             contentBottomConstraint?.isActive = hasVisibleOutput
         case .completed(let code):
@@ -980,6 +983,17 @@ private final class BlockView: NSView {
         return "\(hours)h \(minutes)m \(secondsText(remainingSeconds))s"
     }
 
+    static func liveDurationRefreshInterval(startedAt: Date, now: Date, refreshInterval: TimeInterval) -> TimeInterval {
+        let seconds = max(0, now.timeIntervalSince(startedAt))
+        guard seconds >= 1 else {
+            return refreshInterval
+        }
+
+        let step = liveSecondsDisplayStep(for: seconds)
+        let nextDisplayValue = (floor(seconds / step) + 1) * step
+        return max(refreshInterval, nextDisplayValue - seconds)
+    }
+
     private func attributedMetadata(_ metadata: [MetadataSegment]) -> NSAttributedString {
         let output = NSMutableAttributedString()
         let font = metaLabel.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -1017,6 +1031,14 @@ private final class BlockView: NSView {
         return cwd
     }
 
+    private func liveDurationText(startedAt: Date, now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(startedAt))
+        if seconds < 1 {
+            return "\(Int(floor(seconds * 1000))) ms"
+        }
+        return "\(twoSignificantSecondsText(seconds))s"
+    }
+
     private func secondsText(_ seconds: Double) -> String {
         var text = String(format: "%.2f", seconds)
         while text.contains(".") && text.last == "0" {
@@ -1026,6 +1048,23 @@ private final class BlockView: NSView {
             text.removeLast()
         }
         return text
+    }
+
+    private func twoSignificantSecondsText(_ seconds: Double) -> String {
+        let step = Self.liveSecondsDisplayStep(for: seconds)
+        let roundedDown = floor(seconds / step) * step
+        if roundedDown < 10 {
+            return String(format: "%.1f", roundedDown)
+        }
+        return String(format: "%.0f", roundedDown)
+    }
+
+    private static func liveSecondsDisplayStep(for seconds: Double) -> TimeInterval {
+        guard seconds >= 10 else {
+            return 0.1
+        }
+        let exponent = floor(log10(seconds)) - 1
+        return pow(10, exponent)
     }
 
     private func twoSignificantFigures(_ value: Double) -> String {
@@ -1684,6 +1723,7 @@ private final class TerminalTab {
     var isApplicationCursorModeActive = false
     let terminalScreen = Ansi.TerminalScreen(rows: 30, cols: 100)
     let styledRenderer = Ansi.StyledTextRenderer()
+    var runningElapsedTimer: Timer?
     var ttyModeTimer: Timer?
     var commandHistory: [String] = []
     var commandHistoryIndex: Int?
@@ -1865,6 +1905,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let shellOutputFlushDelay: TimeInterval = 1.0 / 30.0
     private let blockViewRenderDelay: TimeInterval = 1.0 / 12.0
     private let interactiveBlockViewRenderDelay: TimeInterval = 1.0 / 30.0
+    private let fallbackDisplayRefreshRate = 60
 
     private enum TabClickTarget {
         case select(UUID)
@@ -1999,6 +2040,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     func stopAllSessions() {
         for tab in tabs {
+            stopRunningElapsedUpdates(for: tab)
             stopTtyModePolling(for: tab)
             tab.session.stop()
         }
@@ -2254,6 +2296,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard confirmCloseIfNeeded(tab) else {
             return false
         }
+        stopRunningElapsedUpdates(for: tab)
         stopTtyModePolling(for: tab)
         tab.session.stop()
         guard tabs.count > 1 else {
@@ -2979,6 +3022,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         updateCommandBarVisibility(for: tab)
         scrollToBottomNow(tab)
         startTtyModePolling(for: tab)
+        startRunningElapsedUpdates(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
         let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
@@ -3197,6 +3241,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 ensureBlockView(for: activeBlockID, in: tab)
                 updateBlockViewNow(for: activeBlockID, in: tab)
             }
+            stopRunningElapsedUpdates(for: tab)
             tab.activeBlockID = nil
             tab.isAlternateScreenActive = false
             tab.isApplicationCursorModeActive = false
@@ -3400,6 +3445,59 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return name
         }
         return nil
+    }
+
+    private func startRunningElapsedUpdates(for tab: TerminalTab) {
+        stopRunningElapsedUpdates(for: tab)
+        refreshRunningElapsedTime(in: tab)
+    }
+
+    private func stopRunningElapsedUpdates(for tab: TerminalTab) {
+        tab.runningElapsedTimer?.invalidate()
+        tab.runningElapsedTimer = nil
+    }
+
+    private func refreshRunningElapsedTime(in tab: TerminalTab) {
+        let now = Date()
+        let runningBlocks = tab.blocks.filter { block in
+            if case .running = block.state {
+                return true
+            }
+            return false
+        }
+        guard !runningBlocks.isEmpty else {
+            stopRunningElapsedUpdates(for: tab)
+            return
+        }
+
+        for block in runningBlocks {
+            tab.blockViews[block.id]?.update(with: block, now: now)
+        }
+
+        let refreshInterval = displayRefreshInterval(for: tab)
+        let interval = runningBlocks
+            .map { BlockView.liveDurationRefreshInterval(
+                startedAt: $0.startedAt,
+                now: now,
+                refreshInterval: refreshInterval
+            ) }
+            .min() ?? refreshInterval
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self, weak tab] timer in
+            guard let self, let tab else {
+                timer.invalidate()
+                return
+            }
+            self.refreshRunningElapsedTime(in: tab)
+        }
+        tab.runningElapsedTimer = timer
+    }
+
+    private func displayRefreshInterval(for tab: TerminalTab) -> TimeInterval {
+        let refreshRate = tab.rootView.window?.screen?.maximumFramesPerSecond
+            ?? view.window?.screen?.maximumFramesPerSecond
+            ?? NSScreen.main?.maximumFramesPerSecond
+            ?? fallbackDisplayRefreshRate
+        return 1.0 / TimeInterval(max(1, refreshRate))
     }
 
     private func startTtyModePolling(for tab: TerminalTab) {
@@ -3630,6 +3728,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.activeBlockID = nil
         tab.pendingBlockID = nil
         tab.isShellReady = false
+        stopRunningElapsedUpdates(for: tab)
     }
 
     private func copy(_ value: String) {
