@@ -37,9 +37,7 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
-    static let titleTabShieldSize: CGFloat = 13
-    static let titleTabShieldTextGap: CGFloat = 3
-    static let titleTabShieldBaselineAdjustment: CGFloat = 1
+    static let commandStatusShieldSize: CGFloat = 13
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
         calibratedRed: 0.05,
@@ -1077,19 +1075,15 @@ private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = TitleTabCloseButton()
     private let titleContentView = NSView()
-    private let dotenvShieldImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
     private var minimumWidthConstraint: NSLayoutConstraint?
     private var titleContentWidthConstraint: NSLayoutConstraint?
     private var titleContentTrailingConstraint: NSLayoutConstraint?
-    private var dotenvShieldWidthConstraint: NSLayoutConstraint?
-    private var dotenvShieldGapConstraint: NSLayoutConstraint?
     private var fillColor = NSColor.clear {
         didSet { needsDisplay = true }
     }
-    private var showsDotenvShield = false
     var isSelectedTab = false {
         didSet { updateAppearance() }
     }
@@ -1128,19 +1122,8 @@ private final class TitleTabButton: NSButton {
         contentTintColor = .secondaryLabelColor
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        dotenvShieldImageView.image = NSImage(
-            systemSymbolName: "checkmark.shield.fill",
-            accessibilityDescription: "Dotenv secrets loaded"
-        )
-        dotenvShieldImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        dotenvShieldImageView.contentTintColor = .systemGreen
-        dotenvShieldImageView.imageScaling = .scaleProportionallyDown
-        dotenvShieldImageView.isHidden = true
-        dotenvShieldImageView.translatesAutoresizingMaskIntoConstraints = false
-
         titleContentView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleContentView)
-        titleContentView.addSubview(dotenvShieldImageView)
 
         titleLabel.stringValue = title
         titleLabel.font = font
@@ -1178,16 +1161,6 @@ private final class TitleTabButton: NSButton {
         titleContentWidthConstraint.priority = .defaultHigh
         self.titleContentWidthConstraint = titleContentWidthConstraint
 
-        let dotenvShieldWidthConstraint = dotenvShieldImageView.widthAnchor.constraint(
-            equalToConstant: 0
-        )
-        self.dotenvShieldWidthConstraint = dotenvShieldWidthConstraint
-
-        let dotenvShieldGapConstraint = titleLabel.leadingAnchor.constraint(
-            equalTo: dotenvShieldImageView.trailingAnchor,
-            constant: 0
-        )
-        self.dotenvShieldGapConstraint = dotenvShieldGapConstraint
         let titleContentTrailingConstraint = titleContentView.trailingAnchor.constraint(
             lessThanOrEqualTo: trailingAnchor,
             constant: -TahoeGlassPalette.titleTabTitleTrailingInset
@@ -1205,17 +1178,7 @@ private final class TitleTabButton: NSButton {
             titleContentWidthConstraint,
             titleContentView.heightAnchor.constraint(equalTo: heightAnchor),
 
-            dotenvShieldImageView.leadingAnchor.constraint(
-                equalTo: titleContentView.leadingAnchor
-            ),
-            dotenvShieldImageView.centerYAnchor.constraint(
-                equalTo: titleLabel.centerYAnchor,
-                constant: TahoeGlassPalette.titleTabShieldBaselineAdjustment
-            ),
-            dotenvShieldWidthConstraint,
-            dotenvShieldImageView.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabShieldSize),
-
-            dotenvShieldGapConstraint,
+            titleLabel.leadingAnchor.constraint(equalTo: titleContentView.leadingAnchor),
             titleLabel.trailingAnchor.constraint(
                 equalTo: titleContentView.trailingAnchor
             ),
@@ -1313,7 +1276,7 @@ private final class TitleTabButton: NSButton {
     }
 
     private var minimumWidth: CGFloat {
-        TahoeGlassPalette.titleTabMinimumWidth + dotenvShieldWidth
+        TahoeGlassPalette.titleTabMinimumWidth
     }
 
     private var preferredWidth: CGFloat {
@@ -1322,7 +1285,7 @@ private final class TitleTabButton: NSButton {
             + TahoeGlassPalette.titleTabMeasurementSlack
         return max(
             TahoeGlassPalette.titleTabMinimumWidth,
-            titleTextWidth + horizontalInsets + dotenvShieldWidth
+            titleTextWidth + horizontalInsets
         )
     }
 
@@ -1333,13 +1296,7 @@ private final class TitleTabButton: NSButton {
     }
 
     private var titleContentWidth: CGFloat {
-        titleTextWidth + dotenvShieldWidth
-    }
-
-    private var dotenvShieldWidth: CGFloat {
-        showsDotenvShield
-            ? TahoeGlassPalette.titleTabShieldSize + TahoeGlassPalette.titleTabShieldTextGap
-            : 0
+        titleTextWidth
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
@@ -1360,19 +1317,6 @@ private final class TitleTabButton: NSButton {
         minimumWidthConstraint?.constant = minimumWidth
         invalidateIntrinsicContentSize()
         updateToolTipForCurrentLayout()
-    }
-
-    func updateDotenvShield(isVisible: Bool) {
-        guard showsDotenvShield != isVisible else { return }
-        showsDotenvShield = isVisible
-        dotenvShieldImageView.isHidden = !isVisible
-        dotenvShieldWidthConstraint?.constant = isVisible ? TahoeGlassPalette.titleTabShieldSize : 0
-        dotenvShieldGapConstraint?.constant = isVisible ? TahoeGlassPalette.titleTabShieldTextGap : 0
-        titleContentWidthConstraint?.constant = titleContentWidth
-        preferredWidthConstraint?.constant = preferredWidth
-        minimumWidthConstraint?.constant = minimumWidth
-        invalidateIntrinsicContentSize()
-        needsLayout = true
     }
 
     private func updateToolTipForCurrentLayout() {
@@ -1683,7 +1627,9 @@ private final class TerminalTab {
     let scrollView = NSScrollView()
     let stackView = NSStackView()
     let inputView = CommandInputTextView(frame: .zero)
+    let statusLineStack = NSStackView()
     let statusLabel = NSTextField(labelWithString: "Starting shell...")
+    let dotenvStatusShieldImageView = NSImageView()
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
     let ptyPassthroughView = PtyPassthroughView(frame: .zero)
@@ -1769,7 +1715,32 @@ private final class TerminalTab {
         statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .left
+        statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        dotenvStatusShieldImageView.image = NSImage(
+            systemSymbolName: "checkmark.shield.fill",
+            accessibilityDescription: "Dotenv secrets loaded"
+        )
+        dotenvStatusShieldImageView.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: 12,
+            weight: .semibold
+        )
+        dotenvStatusShieldImageView.contentTintColor = .systemGreen
+        dotenvStatusShieldImageView.imageScaling = .scaleProportionallyDown
+        dotenvStatusShieldImageView.isHidden = true
+        dotenvStatusShieldImageView.toolTip = "Dotenv secrets loaded"
+        dotenvStatusShieldImageView.translatesAutoresizingMaskIntoConstraints = false
+        dotenvStatusShieldImageView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        statusLineStack.orientation = .horizontal
+        statusLineStack.spacing = 6
+        statusLineStack.alignment = .centerY
+        statusLineStack.distribution = .fill
+        statusLineStack.translatesAutoresizingMaskIntoConstraints = false
+        statusLineStack.addArrangedSubview(statusLabel)
+        statusLineStack.addArrangedSubview(dotenvStatusShieldImageView)
 
         commandBarView.wantsLayer = true
         commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
@@ -1782,7 +1753,7 @@ private final class TerminalTab {
         ptyPassthroughView.usesApplicationCursorKeys = { [weak self] in
             self?.isApplicationCursorModeActive == true
         }
-        commandBarView.addSubview(statusLabel)
+        commandBarView.addSubview(statusLineStack)
         commandBarView.addSubview(inputScroll)
 
         rootView.addSubview(scrollView)
@@ -1819,13 +1790,22 @@ private final class TerminalTab {
             commandBarView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
             commandBarView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
 
-            statusLabel.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor, constant: 12),
-            statusLabel.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor, constant: -12),
-            statusLabel.topAnchor.constraint(equalTo: commandBarView.topAnchor, constant: 8),
+            statusLineStack.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor, constant: 12),
+            statusLineStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: commandBarView.trailingAnchor,
+                constant: -12
+            ),
+            statusLineStack.topAnchor.constraint(equalTo: commandBarView.topAnchor, constant: 8),
+            dotenvStatusShieldImageView.widthAnchor.constraint(
+                equalToConstant: TahoeGlassPalette.commandStatusShieldSize
+            ),
+            dotenvStatusShieldImageView.heightAnchor.constraint(
+                equalToConstant: TahoeGlassPalette.commandStatusShieldSize
+            ),
 
             inputScroll.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor),
             inputScroll.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor),
-            inputScroll.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 4),
+            inputScroll.topAnchor.constraint(equalTo: statusLineStack.bottomAnchor, constant: 4),
             inputScroll.bottomAnchor.constraint(equalTo: commandBarView.bottomAnchor),
             inputScroll.heightAnchor.constraint(equalToConstant: 64),
 
@@ -3267,7 +3247,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.title = displayTitle
         if let button = tabButtons[tab.id] {
             button.updateTitle(displayTitle, detail: detail)
-            button.updateDotenvShield(isVisible: tab.hasInjectedDotenvSecrets)
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
@@ -3276,10 +3255,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func updateDotenvShield(_ isVisible: Bool, in tab: TerminalTab) {
         guard tab.hasInjectedDotenvSecrets != isVisible else { return }
         tab.hasInjectedDotenvSecrets = isVisible
-        guard let button = tabButtons[tab.id] else { return }
-        button.updateDotenvShield(isVisible: isVisible)
-        layoutTabStripBeforeMeasuringSelection()
-        updateActiveTabCutoutFrame()
+        tab.dotenvStatusShieldImageView.isHidden = !isVisible
     }
 
     private func updateTabTitleForDirectory(_ tab: TerminalTab) {
