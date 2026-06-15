@@ -94,8 +94,11 @@ final class PtySession {
         write("\u{3}")
     }
 
-    func write(_ string: String) {
+    func write(_ string: String, suppressEcho: Bool = false) {
         guard master >= 0, let data = string.data(using: .utf8) else { return }
+        if suppressEcho {
+            disableEcho(fd: master)
+        }
         data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
             var offset = 0

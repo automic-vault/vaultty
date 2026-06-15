@@ -2798,7 +2798,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             printf '\\033]133;R;%s\\a' "$(pwd | base64)"
 
             """
-            tab.session.write(initScript)
+            tab.session.write(initScript, suppressEcho: true)
         } catch {
             tab.statusLabel.stringValue = "Failed to start shell: \(error.localizedDescription)"
         }
@@ -3207,7 +3207,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         printf '\\033]133;D;%s\\a' "$__vaultty_status"
 
         """
-        tab.session.write(script)
+        tab.session.write(script, suppressEcho: true)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
     }
@@ -3232,7 +3232,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
-        tab.session.write(rawCommand + "\n")
+        tab.session.write(rawCommand + "\n", suppressEcho: true)
         updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         focusInput(for: tab)
     }
