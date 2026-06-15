@@ -3333,8 +3333,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             string: directoryText,
             attributes: directoryAttributes
         )
+        let showsDiffLineStats = gitSummary.insertions > 0 || gitSummary.deletions > 0
+        let gitState = if showsDiffLineStats {
+            ""
+        } else {
+            " \(gitSummary.isDirty ? "dirty" : "clean")"
+        }
         output.append(NSAttributedString(
-            string: "  git \(gitSummary.branch) \(gitSummary.isDirty ? "dirty" : "clean")",
+            string: "  git \(gitSummary.branch)\(gitState)",
             attributes: gitAttributes
         ))
         if gitSummary.insertions > 0 {
