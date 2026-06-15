@@ -28,17 +28,19 @@ final class GitDirectoryStateProvider {
         self.cacheTTL = cacheTTL
     }
 
-    func summary(forDirectory url: URL) -> Summary? {
+    func summary(forDirectory url: URL, forceRefresh: Bool = false) -> Summary? {
         let path = url.standardizedFileURL.path
         guard let location = repositoryLocation(containing: path) else { return nil }
 
         let now = Date()
-        lock.lock()
-        if let entry = cache[location.worktreePath], entry.expiresAt > now {
+        if !forceRefresh {
+            lock.lock()
+            if let entry = cache[location.worktreePath], entry.expiresAt > now {
+                lock.unlock()
+                return entry.summary
+            }
             lock.unlock()
-            return entry.summary
         }
-        lock.unlock()
 
         let summary = loadSummary(for: location)
         lock.lock()

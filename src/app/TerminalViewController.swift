@@ -3195,6 +3195,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
         tab.session.write(rawCommand + "\n")
+        updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         focusInput(for: tab)
     }
 
@@ -3211,7 +3212,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.isShellReady = true
         setTerminalControl(false, in: tab)
         clearCommandInput(in: tab)
-        updateCommandBarDirectoryStatus(for: tab)
+        updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         updateCommandBarVisibility(for: tab)
         updateTabTitleForDirectory(tab)
         focusInput(for: tab)
@@ -3308,7 +3309,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case "R":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             tab.isShellReady = true
-            updateCommandBarDirectoryStatus(for: tab)
+            updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
             runSelfTestIfNeeded(in: tab)
@@ -3337,7 +3338,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
             clearCommandInput(in: tab)
-            updateCommandBarDirectoryStatus(for: tab)
+            updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
             scrollToBottom(tab)
@@ -3405,7 +3406,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return path
     }
 
-    private func updateCommandBarDirectoryStatus(for tab: TerminalTab) {
+    private func updateCommandBarDirectoryStatus(for tab: TerminalTab, forceRefresh: Bool = false) {
         let cwd = tab.currentCwd
         let directoryText = detailForDirectory(cwd)
         tab.statusLabel.stringValue = directoryText
@@ -3413,7 +3414,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         gitStateQueue.async { [weak self, weak tab] in
             guard let self else { return }
             let gitSummary = self.gitStateProvider.summary(
-                forDirectory: URL(fileURLWithPath: cwd, isDirectory: true)
+                forDirectory: URL(fileURLWithPath: cwd, isDirectory: true),
+                forceRefresh: forceRefresh
             )
 
             DispatchQueue.main.async { [weak tab] in
