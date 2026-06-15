@@ -98,7 +98,19 @@ final class PtySession {
         guard master >= 0, let data = string.data(using: .utf8) else { return }
         data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
-            _ = Darwin.write(master, base, data.count)
+            var offset = 0
+            while offset < data.count {
+                let written = Darwin.write(master, base.advanced(by: offset), data.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written == -1, errno == EINTR {
+                    continue
+                } else if written == -1, errno == EAGAIN || errno == EWOULDBLOCK {
+                    usleep(1_000)
+                } else {
+                    break
+                }
+            }
         }
     }
 

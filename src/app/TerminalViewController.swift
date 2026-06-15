@@ -1621,6 +1621,8 @@ private final class PtyPassthroughView: NSView {
 }
 
 private final class TerminalOutputProcessor {
+    private static let vaulttyMarkerPrefix = "\u{1B}]133;"
+
     struct Snapshot {
         let blockID: UUID
         let plainText: String
@@ -1729,9 +1731,14 @@ private final class TerminalOutputProcessor {
         var visible = ""
 
         while true {
-            guard let start = parserBuffer.range(of: "\u{1B}]133;") else {
-                visible += parserBuffer
-                parserBuffer.removeAll(keepingCapacity: true)
+            guard let start = parserBuffer.range(of: Self.vaulttyMarkerPrefix) else {
+                if let partialPrefix = trailingMarkerPrefixRange(in: parserBuffer) {
+                    visible += String(parserBuffer[..<partialPrefix.lowerBound])
+                    parserBuffer.removeSubrange(..<partialPrefix.lowerBound)
+                } else {
+                    visible += parserBuffer
+                    parserBuffer.removeAll(keepingCapacity: true)
+                }
                 break
             }
 
@@ -1754,6 +1761,20 @@ private final class TerminalOutputProcessor {
         }
 
         flushVisible(visible)
+    }
+
+    private func trailingMarkerPrefixRange(in text: String) -> Range<String.Index>? {
+        guard !text.isEmpty else { return nil }
+
+        var prefix = Self.vaulttyMarkerPrefix
+        while prefix.count > 1 {
+            prefix.removeLast()
+            if text.hasSuffix(prefix) {
+                let start = text.index(text.endIndex, offsetBy: -prefix.count)
+                return start..<text.endIndex
+            }
+        }
+        return nil
     }
 
     private func flushVisible(_ text: String) {
@@ -2749,7 +2770,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
               if [ ! -x "$VAULTTY_ENV" ]; then
                 return 0
               fi
-              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh)"
+              __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh 2>/dev/null)"
               __vaultty_status=$?
               if [ "$__vaultty_status" -eq 0 ]; then
                 eval "$__vaultty_dotenv"
@@ -3168,7 +3189,24 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startRunningElapsedUpdates(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>&1; elif [ -x \"$VAULTTY_ENV\" ]; then eval \"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh)\" 2>&1; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = """
+        __vaultty_cmd=\(shellQuote(command))
+        __vaultty_command_b64=\(shellQuote(encodedCommand))
+        printf '\\033]133;C;%s\\a' "$__vaultty_command_b64"
+        if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then
+          __vaultty_dotenv_hook 2>/dev/null
+        elif [ -x "$VAULTTY_ENV" ]; then
+          __vaultty_dotenv="$("$VAULTTY_ENV" export --cwd "$PWD" --format zsh 2>/dev/null)"
+          if [ $? -eq 0 ]; then
+            eval "$__vaultty_dotenv"
+          fi
+        fi
+        eval "$__vaultty_cmd"
+        __vaultty_status=$?
+        printf '\\033]133;P;%s\\a' "$(pwd | base64)"
+        printf '\\033]133;D;%s\\a' "$__vaultty_status"
+
+        """
         tab.session.write(script)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
