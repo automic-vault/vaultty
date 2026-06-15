@@ -839,7 +839,7 @@ private final class BlockView: NSView {
             header.widthAnchor.constraint(equalTo: content.widthAnchor),
             header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
             metaLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            metaLabel.centerYAnchor.constraint(equalTo: menuButton.centerYAnchor),
+            metaLabel.topAnchor.constraint(equalTo: header.topAnchor),
             metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: copyMarkdownButton.leadingAnchor, constant: -8),
             copyMarkdownButton.centerYAnchor.constraint(equalTo: menuButton.centerYAnchor),
             copyMarkdownButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -4),
