@@ -1080,6 +1080,9 @@ final class VaulttyCompletionEngine {
                 if isHiddenPathSuggestion(left) != isHiddenPathSuggestion(right) {
                     return !isHiddenPathSuggestion(left)
                 }
+                let leftExact = isExactMatch(prefix: prefix, suggestion: left)
+                let rightExact = isExactMatch(prefix: prefix, suggestion: right)
+                if leftExact != rightExact { return leftExact }
                 if left.priority != right.priority { return left.priority > right.priority }
                 return left.displayText.localizedStandardCompare(right.displayText) == .orderedAscending
             }
@@ -1102,8 +1105,27 @@ final class VaulttyCompletionEngine {
         }
     }
 
+    private func isExactMatch(prefix: String, suggestion: CompletionSuggestion) -> Bool {
+        guard !prefix.isEmpty else { return false }
+        if equalsIgnoringCase(suggestion.displayText, prefix) {
+            return true
+        }
+
+        let insertText = suggestion.insertText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch suggestion.kind {
+        case .file, .folder:
+            return equalsIgnoringCase(insertText.replacingOccurrences(of: "\\", with: ""), prefix)
+        default:
+            return equalsIgnoringCase(insertText, prefix)
+        }
+    }
+
     private func hasCaseInsensitivePrefix(_ value: String, _ prefix: String) -> Bool {
         value.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
+    }
+
+    private func equalsIgnoringCase(_ left: String, _ right: String) -> Bool {
+        left.compare(right, options: [.caseInsensitive]) == .orderedSame
     }
 
     private func commonPrefix(for suggestions: [CompletionSuggestion], strippingTrailingSpace: Bool) -> String? {
