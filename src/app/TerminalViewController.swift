@@ -1579,14 +1579,20 @@ private final class TitleAddButton: NSButton {
 }
 
 private final class TitleUpdateButton: NSButton {
-    static let visibleWidth: CGFloat = 122
+    static let visibleWidth: CGFloat = 94
+    static let installingWidth: CGFloat = 110
+    static let visibleHeight: CGFloat = 28
 
     private enum Metrics {
-        static let cornerRadius: CGFloat = 10
-        static let horizontalInset: CGFloat = 13
+        static let cornerRadius: CGFloat = 9
+        static let horizontalInset: CGFloat = 11
+        static let iconTextSpacing: CGFloat = 7
+        static let iconSize: CGFloat = 14
         static let symbolPointSize: CGFloat = 12
     }
 
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
         didSet { updateAppearance() }
@@ -1608,13 +1614,8 @@ private final class TitleUpdateButton: NSButton {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        updateContent()
-        imagePosition = .imageLeading
-        imageScaling = .scaleProportionallyDown
-        symbolConfiguration = NSImage.SymbolConfiguration(
-            pointSize: Metrics.symbolPointSize,
-            weight: .semibold
-        )
+        title = ""
+        image = nil
         isBordered = false
         bezelStyle = .regularSquare
         controlSize = .regular
@@ -1629,6 +1630,41 @@ private final class TitleUpdateButton: NSButton {
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityLabel("Install staged update")
         setButtonType(.momentaryChange)
+
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Metrics.symbolPointSize,
+            weight: .semibold
+        )
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconView)
+
+        titleLabel.font = font
+        titleLabel.alignment = .left
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.horizontalInset),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: Metrics.iconSize),
+            iconView.heightAnchor.constraint(equalToConstant: Metrics.iconSize),
+
+            titleLabel.leadingAnchor.constraint(
+                equalTo: iconView.trailingAnchor,
+                constant: Metrics.iconTextSpacing
+            ),
+            titleLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingAnchor,
+                constant: -Metrics.horizontalInset
+            ),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+
+        updateContent()
         updateAppearance()
     }
 
@@ -1665,6 +1701,10 @@ private final class TitleUpdateButton: NSButton {
         isHovering = false
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         isPressing = true
         defer { isPressing = false }
@@ -1689,12 +1729,14 @@ private final class TitleUpdateButton: NSButton {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: Self.visibleWidth, height: TahoeGlassPalette.titleTabHeight)
+        NSSize(
+            width: isInstalling ? Self.installingWidth : Self.visibleWidth,
+            height: Self.visibleHeight
+        )
     }
 
     override func draw(_ dirtyRect: NSRect) {
         drawBackground()
-        super.draw(dirtyRect)
         drawBorder()
     }
 
@@ -1754,23 +1796,23 @@ private final class TitleUpdateButton: NSButton {
     }
 
     private func updateContent() {
-        title = isInstalling ? "Installing" : "Update"
-        image = NSImage(
+        titleLabel.stringValue = isInstalling ? "Installing" : "Update"
+        let icon = NSImage(
             systemSymbolName: isInstalling ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath",
             accessibilityDescription: isInstalling ? "Installing Update" : "Install Update"
         )
-        symbolConfiguration = NSImage.SymbolConfiguration(
+        icon?.isTemplate = true
+        iconView.image = icon
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(
             pointSize: Metrics.symbolPointSize,
             weight: .semibold
         )
+        invalidateIntrinsicContentSize()
     }
 
     private func updateAppearance() {
-        let textAttributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: labelColor
-        ]
-        attributedTitle = NSAttributedString(string: title, attributes: textAttributes)
+        titleLabel.textColor = labelColor
+        iconView.contentTintColor = labelColor
         contentTintColor = labelColor
         layer?.shadowColor = accentColor.cgColor
         layer?.shadowOpacity = Float((isHovering || isInstalling) && isEnabled ? 0.22 : 0.10)
@@ -2424,12 +2466,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             newTabButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
             newTabButton.widthAnchor.constraint(equalTo: newTabButton.heightAnchor),
 
-            updateButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            updateButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             updateButton.topAnchor.constraint(
                 equalTo: view.topAnchor,
                 constant: TahoeGlassPalette.titleTabTopInset
+                    + ((TahoeGlassPalette.titleTabHeight - TitleUpdateButton.visibleHeight) / 2)
             ),
-            updateButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabHeight),
+            updateButton.heightAnchor.constraint(equalToConstant: TitleUpdateButton.visibleHeight),
             updateButtonWidthConstraint,
 
             contentContainer.leadingAnchor.constraint(
@@ -2513,6 +2556,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         updateButton.isInstalling = isInstalling
         updateButton.isEnabled = !isInstalling
         updateButton.toolTip = isInstalling ? "Installing update" : "Install staged update"
+        updateButtonWidthConstraint?.constant = isInstalling
+            ? TitleUpdateButton.installingWidth
+            : TitleUpdateButton.visibleWidth
     }
 
     func beginWindowResizeTooltip() {
