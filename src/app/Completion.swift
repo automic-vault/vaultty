@@ -130,7 +130,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
 
         if popover.isShown {
             if presentationView !== view || presentationEdge != edge {
-                popover.performClose(nil)
+                performInternalRepositionClose()
                 present(relativeTo: positioningRect, of: view, preferredEdge: edge)
             } else {
                 popover.positioningRect = positioningRect
@@ -146,6 +146,31 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
                 guard let self, self.popover.isShown else { return }
                 self.scrollView.flashScrollers()
             }
+        }
+    }
+
+    func reposition(relativeTo rect: NSRect, of view: NSView) {
+        guard popover.isShown else { return }
+
+        let edge = preferredEdge(for: rect, of: view, popupHeight: currentContentSize.height)
+        let positioningRect = clampedPositioningRect(for: rect, in: view)
+        placementSerial += 1
+        let serial = placementSerial
+
+        if presentationView !== view || presentationEdge != edge {
+            performInternalRepositionClose()
+            present(relativeTo: positioningRect, of: view, preferredEdge: edge)
+        } else {
+            popover.positioningRect = positioningRect
+            reapplyPositioningRect(positioningRect, serial: serial)
+        }
+    }
+
+    private func performInternalRepositionClose() {
+        suppressCloseNotification = true
+        popover.performClose(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.suppressCloseNotification = false
         }
     }
 

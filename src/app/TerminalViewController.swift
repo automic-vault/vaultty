@@ -2387,6 +2387,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         for tab in tabs {
             resizePtyToViewport(for: tab)
         }
+        updateCompletionAnchorForActiveTab()
         updateWindowResizeTooltip()
     }
 
@@ -2510,12 +2511,37 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.normalizePlainTextStorage()
         tab.inputView.clearMutedCompletionPreview()
         if completionPopup.isShown {
+            updateCompletionAnchor(for: tab)
             requestCompletion(in: tab, mode: .filtering)
         } else if shouldStartAutomaticCompletion(in: textView) {
             isCompletionInteractionArmed = false
             requestCompletion(in: tab, mode: .automatic)
         } else {
             dismissCompletion()
+        }
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        guard !isApplyingCompletion,
+              completionPopup.isShown,
+              let textView = notification.object as? NSTextView,
+              let tab = tabs.first(where: { $0.inputView === textView })
+        else {
+            return
+        }
+
+        let selectedRange = textView.selectedRange()
+        guard selectedRange.length == 0 else {
+            dismissCompletion()
+            return
+        }
+
+        updateCompletionAnchor(for: tab)
+
+        if let activeCompletionRange,
+           selectedRange.location != activeCompletionRange.location + activeCompletionRange.length {
+            tab.inputView.clearMutedCompletionPreview()
+            requestCompletion(in: tab, mode: .filtering)
         }
     }
 
@@ -3045,6 +3071,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
            prefix.utf16.count > existing.utf16.count {
             replace(range: result.replacementRange, with: prefix, in: tab)
             activeCompletionRange = NSRange(location: result.replacementRange.location, length: prefix.utf16.count)
+            updateCompletionAnchor(for: tab)
             if shouldContinueCompletion(afterInserting: prefix, from: result) {
                 requestCompletion(in: tab, mode: .continuation)
                 return
@@ -3117,6 +3144,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         replace(range: range, with: suggestion.insertText, in: tab)
         if dismissAfterApplying {
             dismissCompletion()
+        } else {
+            updateCompletionAnchor(for: tab)
         }
     }
 
@@ -3171,6 +3200,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
         isApplyingCompletion = false
+    }
+
+    private func updateCompletionAnchorForActiveTab() {
+        guard let tab = activeTab else { return }
+        updateCompletionAnchor(for: tab)
+    }
+
+    private func updateCompletionAnchor(for tab: TerminalTab) {
+        guard completionPopup.isShown else { return }
+        guard tab.inputView.selectedRange().length == 0 else {
+            dismissCompletion()
+            return
+        }
+
+        let anchor = completionAnchorRect(for: tab.inputView, in: tab.commandBarView)
+        completionPopup.reposition(relativeTo: anchor, of: tab.commandBarView)
     }
 
     private func dismissCompletion() {
@@ -3239,6 +3284,28 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             height: lineHeight
         )
 
+        let selectedRange = textView.selectedRange()
+        let textLength = (textView.string as NSString).length
+        let cursorLocation = min(max(0, selectedRange.location), textLength)
+
+        if let window = textView.window {
+            var actualRange = NSRange(location: NSNotFound, length: 0)
+            let screenRect = textView.firstRect(
+                forCharacterRange: NSRange(location: cursorLocation, length: 0),
+                actualRange: &actualRange
+            )
+            if !screenRect.isEmpty, !screenRect.origin.x.isNaN, !screenRect.origin.y.isNaN {
+                let windowRect = window.convertFromScreen(screenRect)
+                let containerRect = containerView.convert(windowRect, from: nil)
+                return boundedAnchorRect(NSRect(
+                    x: containerRect.minX,
+                    y: containerRect.minY,
+                    width: 1,
+                    height: max(lineHeight, containerRect.height)
+                ))
+            }
+        }
+
         guard let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer
         else {
@@ -3247,9 +3314,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         layoutManager.ensureLayout(for: textContainer)
 
-        let selectedRange = textView.selectedRange()
-        let textLength = (textView.string as NSString).length
-        let cursorLocation = min(max(0, selectedRange.location), textLength)
         guard textLength > 0, layoutManager.numberOfGlyphs > 0 else {
             return boundedAnchorRect(fallbackRect)
         }
