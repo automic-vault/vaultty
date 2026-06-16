@@ -2469,8 +2469,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             updateButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             updateButton.topAnchor.constraint(
                 equalTo: view.topAnchor,
-                constant: TahoeGlassPalette.titleTabTopInset
-                    + ((TahoeGlassPalette.titleTabHeight - TitleUpdateButton.visibleHeight) / 2)
+                constant: (TahoeGlassPalette.titleBarHeight - TitleUpdateButton.visibleHeight) / 2
             ),
             updateButton.heightAnchor.constraint(equalToConstant: TitleUpdateButton.visibleHeight),
             updateButtonWidthConstraint,
