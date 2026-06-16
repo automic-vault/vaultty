@@ -36,6 +36,7 @@ private enum TahoeGlassPalette {
     static let titleTabTitleCloseTrailingInset: CGFloat = 34
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
+    static let titleTabCloseButtonCornerRadius: CGFloat = 1.5
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let titleTabCloseButtonVerticalOffset: CGFloat = 1
     static let commandStatusShieldSize: CGFloat = 13
@@ -583,7 +584,7 @@ private final class TitleTabStackView: NSStackView {
 private final class TitleTabCloseButton: NSButton {
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
-        didSet { updateBackground() }
+        didSet { needsDisplay = true }
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -623,11 +624,23 @@ private final class TitleTabCloseButton: NSButton {
         isHovering = false
     }
 
-    private func updateBackground() {
-        layer?.backgroundColor = (isHovering
-            ? NSColor.white.withAlphaComponent(0.08)
-            : NSColor.clear
-        ).cgColor
+    override func draw(_ dirtyRect: NSRect) {
+        if isHovering {
+            let side = min(bounds.width, bounds.height)
+            let hoverRect = NSRect(
+                x: bounds.midX - (side / 2),
+                y: bounds.midY - (side / 2),
+                width: side,
+                height: side
+            )
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(
+                roundedRect: hoverRect,
+                xRadius: TahoeGlassPalette.titleTabCloseButtonCornerRadius,
+                yRadius: TahoeGlassPalette.titleTabCloseButtonCornerRadius
+            ).fill()
+        }
+        super.draw(dirtyRect)
     }
 }
 
@@ -1272,10 +1285,6 @@ private final class TitleTabButton: NSButton {
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
         closeButton.contentTintColor = TahoeGlassPalette.titleText
-        closeButton.wantsLayer = true
-        closeButton.layer?.cornerRadius = 1
-        closeButton.layer?.cornerCurve = .circular
-        closeButton.layer?.backgroundColor = NSColor.clear.cgColor
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
