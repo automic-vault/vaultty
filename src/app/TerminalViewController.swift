@@ -69,6 +69,11 @@ private enum TahoeGlassPalette {
     static let titleSegmentHoverFill = NSColor.white.withAlphaComponent(0.045)
 }
 
+private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
+    color.blended(withFraction: 0.1, of: .tertiaryLabelColor)
+        ?? color.withAlphaComponent(0.75)
+}
+
 private final class SeparatorView: NSBox {
     init() {
         super.init(frame: .zero)
@@ -2047,7 +2052,7 @@ private final class TerminalTab {
             pointSize: 12,
             weight: .semibold
         )
-        dotenvStatusShieldImageView.contentTintColor = .systemGreen
+        dotenvStatusShieldImageView.contentTintColor = mutedGitStatusColor(.systemGreen)
         dotenvStatusShieldImageView.imageScaling = .scaleProportionallyDown
         dotenvStatusShieldImageView.isHidden = true
         dotenvStatusShieldImageView.toolTip = "Dotenv secrets loaded"
@@ -3698,11 +3703,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             ))
         }
         return output
-    }
-
-    private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
-        color.blended(withFraction: 0.1, of: .tertiaryLabelColor)
-            ?? color.withAlphaComponent(0.75)
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
