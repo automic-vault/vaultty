@@ -240,51 +240,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     @objc private func manageSSHHosts(_ sender: Any?) {
         let stored = loadSSHHosts()
-        let alert = NSAlert()
-        alert.messageText = "Manage SSH Hosts"
-        alert.informativeText = sshHostSummary(stored.hosts)
-        alert.addButton(withTitle: "Add Host")
-        alert.addButton(withTitle: "Close")
+        let form = makeSSHHostPanel(hosts: stored.hosts)
+        let panel = form.panel
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        let response = NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        guard response == .OK else { return }
 
-        let aliasField = NSTextField()
-        aliasField.placeholderString = "Alias"
-        let hostField = NSTextField()
-        hostField.placeholderString = "Host name or SSH config alias"
-        let userField = NSTextField()
-        userField.placeholderString = NSUserName()
-        let portField = NSTextField()
-        portField.placeholderString = "22"
-        let helperField = NSTextField()
-        helperField.placeholderString = "~/Library/Application Support/Vaultty/vaultty-session-bridge"
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(label("Add a host for future Vaultty session enrollment:"))
-        stack.addArrangedSubview(aliasField)
-        stack.addArrangedSubview(hostField)
-        stack.addArrangedSubview(userField)
-        stack.addArrangedSubview(portField)
-        stack.addArrangedSubview(helperField)
-        NSLayoutConstraint.activate([
-            stack.widthAnchor.constraint(equalToConstant: 420)
-        ])
-        alert.accessoryView = stack
-
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
-
-        let hostname = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hostname = form.hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !hostname.isEmpty else {
             NSSound.beep()
             return
         }
 
-        let alias = aliasField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let helperPath = helperField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
+        let alias = form.aliasField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = form.userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let helperPath = form.helperField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(form.portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
         var updated = stored
         updated.hosts.append(StoredSSHHost(
             id: UUID().uuidString,
@@ -300,11 +273,160 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         saveSSHHosts(updated)
     }
 
-    private func label(_ value: String) -> NSTextField {
+    private struct SSHHostPanelForm {
+        var panel: NSPanel
+        var aliasField: NSTextField
+        var hostField: NSTextField
+        var userField: NSTextField
+        var portField: NSTextField
+        var helperField: NSTextField
+    }
+
+    private func makeSSHHostPanel(hosts: [StoredSSHHost]) -> SSHHostPanelForm {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Manage SSH Hosts"
+        panel.isMovableByWindowBackground = true
+        panel.preventsApplicationTerminationWhenModal = false
+
+        let contentView = NSView()
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView = contentView
+
+        let title = NSTextField(labelWithString: "Manage SSH Hosts")
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let summary = NSTextField(labelWithString: sshHostSummary(hosts))
+        summary.font = .systemFont(ofSize: 13)
+        summary.textColor = .secondaryLabelColor
+        summary.lineBreakMode = .byWordWrapping
+        summary.maximumNumberOfLines = 3
+        summary.translatesAutoresizingMaskIntoConstraints = false
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        let aliasField = textField(placeholder: "workstation")
+        let hostField = textField(placeholder: "host.example.com or SSH config alias")
+        let userField = textField(placeholder: NSUserName())
+        let portField = textField(placeholder: "22")
+        portField.stringValue = "22"
+        let helperField = textField(placeholder: "~/Library/Application Support/Vaultty/vaultty-session-bridge")
+
+        let grid = NSGridView(views: [
+            [formLabel("Alias"), aliasField],
+            [formLabel("Host"), hostField],
+            [formLabel("User"), userField],
+            [formLabel("Port"), portField],
+            [formLabel("Bridge"), helperField]
+        ])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 12
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .fill
+
+        let bridgeNote = NSTextField(labelWithString: "Hosts stay unenrolled until the forced-command bridge installer is implemented.")
+        bridgeNote.font = .systemFont(ofSize: 12)
+        bridgeNote.textColor = .tertiaryLabelColor
+        bridgeNote.lineBreakMode = .byWordWrapping
+        bridgeNote.maximumNumberOfLines = 2
+        bridgeNote.translatesAutoresizingMaskIntoConstraints = false
+
+        let cancelButton = NSButton(title: "Close", target: self, action: #selector(cancelModalPanel(_:)))
+        cancelButton.bezelStyle = .rounded
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let addButton = NSButton(title: "Add Host", target: self, action: #selector(acceptModalPanel(_:)))
+        addButton.bezelStyle = .rounded
+        addButton.keyEquivalent = "\r"
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let buttonStack = NSStackView(views: [cancelButton, addButton])
+        buttonStack.orientation = .horizontal
+        buttonStack.spacing = 12
+        buttonStack.distribution = .fillEqually
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+
+        for view in [title, summary, separator, grid, bridgeNote, buttonStack] {
+            contentView.addSubview(view)
+        }
+
+        NSLayoutConstraint.activate([
+            contentView.widthAnchor.constraint(equalToConstant: 560),
+            contentView.heightAnchor.constraint(equalToConstant: 420),
+
+            title.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            title.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            title.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 26),
+
+            summary.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            summary.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            summary.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+
+            separator.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: summary.bottomAnchor, constant: 18),
+
+            grid.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            grid.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            grid.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 18),
+
+            aliasField.widthAnchor.constraint(equalToConstant: 390),
+            hostField.widthAnchor.constraint(equalTo: aliasField.widthAnchor),
+            userField.widthAnchor.constraint(equalTo: aliasField.widthAnchor),
+            portField.widthAnchor.constraint(equalTo: aliasField.widthAnchor),
+            helperField.widthAnchor.constraint(equalTo: aliasField.widthAnchor),
+
+            bridgeNote.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            bridgeNote.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
+            bridgeNote.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 12),
+
+            buttonStack.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
+            buttonStack.widthAnchor.constraint(equalToConstant: 240),
+            cancelButton.heightAnchor.constraint(equalToConstant: 32),
+            addButton.heightAnchor.constraint(equalTo: cancelButton.heightAnchor)
+        ])
+
+        panel.initialFirstResponder = hostField
+
+        return SSHHostPanelForm(
+            panel: panel,
+            aliasField: aliasField,
+            hostField: hostField,
+            userField: userField,
+            portField: portField,
+            helperField: helperField
+        )
+    }
+
+    private func formLabel(_ value: String) -> NSTextField {
         let field = NSTextField(labelWithString: value)
-        field.lineBreakMode = .byWordWrapping
-        field.maximumNumberOfLines = 0
+        field.alignment = .right
+        field.textColor = .secondaryLabelColor
         return field
+    }
+
+    private func textField(placeholder: String) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
+        field.translatesAutoresizingMaskIntoConstraints = false
+        return field
+    }
+
+    @objc private func acceptModalPanel(_ sender: Any?) {
+        NSApp.stopModal(withCode: .OK)
+    }
+
+    @objc private func cancelModalPanel(_ sender: Any?) {
+        NSApp.stopModal(withCode: .cancel)
     }
 
     private func sshHostSummary(_ hosts: [StoredSSHHost]) -> String {
