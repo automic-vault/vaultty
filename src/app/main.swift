@@ -8,6 +8,20 @@ private enum AppWindowMetrics {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
+    private struct StoredSSHHost: Codable {
+        var id: String
+        var alias: String
+        var hostname: String
+        var user: String
+        var port: Int
+        var remoteHelperPath: String
+        var enrolled: Bool
+    }
+
+    private struct StoredSSHHosts: Codable {
+        var hosts: [StoredSSHHost]
+    }
+
     private let updater = AppUpdater(owner: "automic-vault", repo: "vaultty")
     private var window: NSWindow?
     private var controller: TerminalViewController?
@@ -224,6 +238,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.killClosedTabs(sender)
     }
 
+    @objc private func manageSSHHosts(_ sender: Any?) {
+        let stored = loadSSHHosts()
+        let alert = NSAlert()
+        alert.messageText = "Manage SSH Hosts"
+        alert.informativeText = sshHostSummary(stored.hosts)
+        alert.addButton(withTitle: "Add Host")
+        alert.addButton(withTitle: "Close")
+
+        let aliasField = NSTextField()
+        aliasField.placeholderString = "Alias"
+        let hostField = NSTextField()
+        hostField.placeholderString = "Host name or SSH config alias"
+        let userField = NSTextField()
+        userField.placeholderString = NSUserName()
+        let portField = NSTextField()
+        portField.placeholderString = "22"
+        let helperField = NSTextField()
+        helperField.placeholderString = "~/Library/Application Support/Vaultty/vaultty-session-bridge"
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(label("Add a host for future Vaultty session enrollment:"))
+        stack.addArrangedSubview(aliasField)
+        stack.addArrangedSubview(hostField)
+        stack.addArrangedSubview(userField)
+        stack.addArrangedSubview(portField)
+        stack.addArrangedSubview(helperField)
+        NSLayoutConstraint.activate([
+            stack.widthAnchor.constraint(equalToConstant: 420)
+        ])
+        alert.accessoryView = stack
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        let hostname = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let alias = aliasField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let helperPath = helperField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
+        var updated = stored
+        updated.hosts.append(StoredSSHHost(
+            id: UUID().uuidString,
+            alias: alias.isEmpty ? hostname : alias,
+            hostname: hostname,
+            user: user.isEmpty ? NSUserName() : user,
+            port: port,
+            remoteHelperPath: helperPath.isEmpty
+                ? "~/Library/Application Support/Vaultty/vaultty-session-bridge"
+                : helperPath,
+            enrolled: false
+        ))
+        saveSSHHosts(updated)
+    }
+
+    private func label(_ value: String) -> NSTextField {
+        let field = NSTextField(labelWithString: value)
+        field.lineBreakMode = .byWordWrapping
+        field.maximumNumberOfLines = 0
+        return field
+    }
+
+    private func sshHostSummary(_ hosts: [StoredSSHHost]) -> String {
+        guard !hosts.isEmpty else {
+            return "No SSH hosts are configured. Added hosts are stored but remain unenrolled until a forced-command bridge installer is implemented."
+        }
+        let lines = hosts.map { host in
+            let status = host.enrolled ? "enrolled" : "not enrolled"
+            return "\(host.alias): \(host.user)@\(host.hostname):\(host.port) (\(status))"
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func loadSSHHosts() -> StoredSSHHosts {
+        let url = sshHostsURL()
+        guard let data = try? Data(contentsOf: url),
+              let stored = try? JSONDecoder().decode(StoredSSHHosts.self, from: data)
+        else {
+            return StoredSSHHosts(hosts: [])
+        }
+        return stored
+    }
+
+    private func saveSSHHosts(_ hosts: StoredSSHHosts) {
+        do {
+            let url = sshHostsURL()
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(hosts)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Could not save SSH hosts"
+            alert.runModal()
+        }
+    }
+
+    private func sshHostsURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("Vaultty", isDirectory: true)
+            .appendingPathComponent("hosts.json", isDirectory: false)
+    }
+
     @objc private func selectPreviousTab(_ sender: Any?) {
         controller?.selectPreviousTab(sender)
     }
@@ -382,6 +510,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         )
         reopenClosedTabItem.keyEquivalentModifierMask = [.command, .shift]
         reopenClosedTabItem.target = self
+        let manageHostsItem = windowMenu.addItem(
+            withTitle: "Manage SSH Hosts...",
+            action: #selector(manageSSHHosts(_:)),
+            keyEquivalent: ""
+        )
+        manageHostsItem.target = self
         windowMenu.addItem(.separator())
 
         let previousTabItem = windowMenu.addItem(
