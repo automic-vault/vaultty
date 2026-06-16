@@ -37,6 +37,7 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
+    static let titleTabCloseButtonVerticalOffset: CGFloat = -1
     static let commandStatusShieldSize: CGFloat = 13
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
@@ -1234,7 +1235,10 @@ private final class TitleTabButton: NSButton {
                 equalTo: trailingAnchor,
                 constant: -TahoeGlassPalette.titleTabCloseButtonTrailingInset
             ),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.centerYAnchor.constraint(
+                equalTo: centerYAnchor,
+                constant: TahoeGlassPalette.titleTabCloseButtonVerticalOffset
+            ),
             closeButton.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize),
             closeButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize)
         ])
