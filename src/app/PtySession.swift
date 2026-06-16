@@ -215,7 +215,7 @@ final class PtySession {
         process.arguments = ["serve"]
         var env = ProcessInfo.processInfo.environment
         env["VAULTTY_SESSIOND_SOCKET"] = socketPath()
-        if helper.contains("/target/debug/") || helper.contains("/target/release/") {
+        if helper.contains("/target/debug/") || helper.contains("/target/app/debug/") {
             env["VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT"] = "1"
         }
         process.environment = env
