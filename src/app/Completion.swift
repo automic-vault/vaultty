@@ -897,7 +897,7 @@ final class VaulttyCompletionEngine {
 
         let cacheKey = request.environment["PATH"] ?? ""
         if let cached = commandCache[cacheKey] {
-            return cached.filter { matches(prefix: prefix, candidate: $0.displayText) }
+            return rankedSuggestions(cached, prefix: prefix, limit: request.limit)
         }
 
         var names = Set<String>()
@@ -924,7 +924,7 @@ final class VaulttyCompletionEngine {
             )
         }
         commandCache[cacheKey] = suggestions
-        return suggestions.filter { matches(prefix: prefix, candidate: $0.displayText) }
+        return rankedSuggestions(suggestions, prefix: prefix, limit: request.limit)
     }
 
     private func shouldCompleteCommandAsPath(prefix: String) -> Bool {
