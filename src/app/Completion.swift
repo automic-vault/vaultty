@@ -62,7 +62,6 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         guard suggestions.indices.contains(selectedIndex) else { return nil }
         return suggestions[selectedIndex]
     }
-    var hasSingleSuggestion: Bool { suggestions.count == 1 }
 
     override init() {
         super.init()
@@ -94,12 +93,11 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         suggestions: [CompletionSuggestion],
         relativeTo rect: NSRect,
         of view: NSView,
-        resetSelection: Bool = true,
-        showsSelection: Bool = true
+        resetSelection: Bool = true
     ) {
         self.suggestions = suggestions
         selectedIndex = suggestions.isEmpty ? 0 : (resetSelection ? 0 : min(selectedIndex, suggestions.count - 1))
-        self.showsSelection = showsSelection && !suggestions.isEmpty
+        self.showsSelection = !suggestions.isEmpty
 
         let contentHeight = CompletionListView.contentHeight(forRowCount: suggestions.count)
         let visibleHeight = min(Self.maxPopupHeight, contentHeight)
@@ -240,14 +238,6 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         placementSerial += 1
         listView.update(suggestions: [], selectedIndex: nil)
         onExternalDismiss?()
-    }
-
-    func activateSelection() -> CompletionSuggestion? {
-        guard !suggestions.isEmpty else { return nil }
-        showsSelection = true
-        listView.update(suggestions: suggestions, selectedIndex: selectedIndex)
-        scrollRowToVisible(selectedIndex)
-        return selectedSuggestion
     }
 
     @discardableResult

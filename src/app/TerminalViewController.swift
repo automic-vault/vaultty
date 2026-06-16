@@ -1167,8 +1167,11 @@ private final class TitleTabButton: NSButton {
         )
         self.titleContentTrailingConstraint = titleContentTrailingConstraint
 
+        let titleContentCenterXConstraint = titleContentView.centerXAnchor.constraint(equalTo: centerXAnchor)
+        titleContentCenterXConstraint.priority = .defaultLow
+
         NSLayoutConstraint.activate([
-            titleContentView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleContentCenterXConstraint,
             titleContentView.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleContentView.leadingAnchor.constraint(
                 greaterThanOrEqualTo: leadingAnchor,
@@ -2280,15 +2283,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
 
-        if completionPopup.isShown &&
-            (isCompletionInteractionArmed || commandSelector == #selector(NSResponder.insertTab(_:))) {
+        if completionPopup.isShown {
             if commandSelector == #selector(NSResponder.moveUp(_:)) {
+                isCompletionInteractionArmed = true
                 if let suggestion = completionPopup.selectPrevious() {
                     renderCompletionPreview(suggestion, in: tab)
                 }
                 return true
             }
             if commandSelector == #selector(NSResponder.moveDown(_:)) {
+                isCompletionInteractionArmed = true
                 if let suggestion = completionPopup.selectNext() {
                     renderCompletionPreview(suggestion, in: tab)
                 }
@@ -2296,19 +2300,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
                 isCompletionInteractionArmed = true
-                if completionPopup.hasSingleSuggestion {
-                    acceptSelectedCompletion(in: tab, continuingDirectories: true)
-                    return true
-                }
-                let suggestion = completionPreviewState == nil
-                    ? completionPopup.activateSelection()
-                    : completionPopup.selectNext()
-                if let suggestion {
-                    renderCompletionPreview(suggestion, in: tab)
-                }
+                acceptSelectedCompletion(in: tab, continuingDirectories: true)
                 return true
             }
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                isCompletionInteractionArmed = true
                 if let suggestion = completionPopup.selectPrevious() {
                     renderCompletionPreview(suggestion, in: tab)
                 }
@@ -2321,11 +2317,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     textView.insertNewlineIgnoringFieldEditor(nil)
                     return true
                 }
-                acceptSelectedCompletionAndSubmit(in: tab)
-                return true
-            }
-            if commandSelector == #selector(NSResponder.moveRight(_:)) {
-                acceptSelectedCompletion(in: tab, continuingDirectories: true)
+                submitCommandWithVisibleCompletionPreview(in: tab)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
@@ -2973,8 +2965,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             suggestions: result.suggestions,
             relativeTo: anchor,
             of: tab.commandBarView,
-            resetSelection: mode != .explicit,
-            showsSelection: isCompletionInteractionArmed
+            resetSelection: mode != .explicit
         )
         let shouldRenderPreview = mode == .explicit || mode == .continuation
         if shouldRenderPreview, let suggestion = completionPopup.selectedSuggestion {
@@ -2994,12 +2985,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func acceptSelectedCompletionAndSubmit(in tab: TerminalTab) {
-        guard let suggestion = completionPopup.selectedSuggestion else {
-            dismissCompletion()
-            return
+    private func submitCommandWithVisibleCompletionPreview(in tab: TerminalTab) {
+        if completionPreviewState != nil {
+            _ = commitCompletionPreview(in: tab)
         }
-        applyCompletion(suggestion, in: tab)
+        dismissCompletion(restoringPreview: false)
         submitCommand(in: tab)
     }
 
