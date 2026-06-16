@@ -1570,34 +1570,56 @@ private final class TitleAddButton: NSButton {
 }
 
 private final class TitleUpdateButton: NSButton {
-    static let visibleWidth: CGFloat = 108
+    static let visibleWidth: CGFloat = 122
+
+    private enum Metrics {
+        static let cornerRadius: CGFloat = 10
+        static let horizontalInset: CGFloat = 13
+        static let symbolPointSize: CGFloat = 12
+    }
 
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovering = false {
         didSet { updateAppearance() }
     }
+    private var isPressing = false {
+        didSet { updateAppearance() }
+    }
+    var isInstalling = false {
+        didSet {
+            guard isInstalling != oldValue else { return }
+            updateContent()
+            updateAppearance()
+        }
+    }
+
+    override var isEnabled: Bool {
+        didSet { updateAppearance() }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        title = "Update"
-        image = NSImage(
-            systemSymbolName: "arrow.triangle.2.circlepath",
-            accessibilityDescription: "Install Update"
-        )
+        updateContent()
         imagePosition = .imageLeading
         imageScaling = .scaleProportionallyDown
-        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Metrics.symbolPointSize,
+            weight: .semibold
+        )
         isBordered = false
         bezelStyle = .regularSquare
         controlSize = .regular
         font = .systemFont(ofSize: 13, weight: .semibold)
+        focusRingType = .none
+        alignment = .center
         wantsLayer = true
-        layer?.cornerRadius = 7
+        layer?.cornerRadius = Metrics.cornerRadius
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = NSColor.clear.cgColor
-        contentTintColor = TahoeGlassPalette.titleTextActive
+        layer?.masksToBounds = false
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityLabel("Install staged update")
+        setButtonType(.momentaryChange)
         updateAppearance()
     }
 
@@ -1634,17 +1656,152 @@ private final class TitleUpdateButton: NSButton {
         isHovering = false
     }
 
-    private func updateAppearance() {
-        let fillAlpha: CGFloat
-        if !isEnabled {
-            fillAlpha = 0.08
-        } else {
-            fillAlpha = isHovering ? 0.18 : 0.12
+    override func mouseDown(with event: NSEvent) {
+        isPressing = true
+        defer { isPressing = false }
+        super.mouseDown(with: event)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if isEnabled {
+            addCursorRect(bounds, cursor: .pointingHand)
         }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(fillAlpha).cgColor
-        contentTintColor = isEnabled
-            ? TahoeGlassPalette.titleTextActive
-            : TahoeGlassPalette.titleText
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.shadowPath = CGPath(
+            roundedRect: bounds.insetBy(dx: 1, dy: 1),
+            cornerWidth: Metrics.cornerRadius,
+            cornerHeight: Metrics.cornerRadius,
+            transform: nil
+        )
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.visibleWidth, height: TahoeGlassPalette.titleTabHeight)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        drawBackground()
+        super.draw(dirtyRect)
+        drawBorder()
+    }
+
+    private var accentColor: NSColor {
+        NSColor(calibratedRed: 0.52, green: 0.92, blue: 0.78, alpha: 1)
+    }
+
+    private var labelColor: NSColor {
+        if !isEnabled && !isInstalling {
+            return TahoeGlassPalette.titleText
+        }
+        if isPressing {
+            return NSColor.white.withAlphaComponent(0.88)
+        }
+        return NSColor(calibratedRed: 0.86, green: 1.0, blue: 0.94, alpha: 0.92)
+    }
+
+    private var gradientColors: [NSColor] {
+        if !isEnabled && !isInstalling {
+            return [
+                NSColor.white.withAlphaComponent(0.08),
+                NSColor.white.withAlphaComponent(0.04)
+            ]
+        }
+        if isPressing {
+            return [
+                accentColor.withAlphaComponent(0.18),
+                NSColor.white.withAlphaComponent(0.08)
+            ]
+        }
+        if isHovering {
+            return [
+                accentColor.withAlphaComponent(0.26),
+                NSColor.white.withAlphaComponent(0.12)
+            ]
+        }
+        if isInstalling {
+            return [
+                accentColor.withAlphaComponent(0.20),
+                NSColor.white.withAlphaComponent(0.10)
+            ]
+        }
+        return [
+            NSColor.white.withAlphaComponent(0.17),
+            NSColor.white.withAlphaComponent(0.09)
+        ]
+    }
+
+    private var borderColor: NSColor {
+        if !isEnabled && !isInstalling {
+            return NSColor.white.withAlphaComponent(0.09)
+        }
+        if isHovering || isPressing || isInstalling {
+            return accentColor.withAlphaComponent(0.38)
+        }
+        return NSColor.white.withAlphaComponent(0.17)
+    }
+
+    private func updateContent() {
+        title = isInstalling ? "Installing" : "Update"
+        image = NSImage(
+            systemSymbolName: isInstalling ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath",
+            accessibilityDescription: isInstalling ? "Installing Update" : "Install Update"
+        )
+        symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Metrics.symbolPointSize,
+            weight: .semibold
+        )
+    }
+
+    private func updateAppearance() {
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: labelColor
+        ]
+        attributedTitle = NSAttributedString(string: title, attributes: textAttributes)
+        contentTintColor = labelColor
+        layer?.shadowColor = accentColor.cgColor
+        layer?.shadowOpacity = Float((isHovering || isInstalling) && isEnabled ? 0.22 : 0.10)
+        layer?.shadowRadius = (isHovering || isInstalling) && isEnabled ? 7 : 3
+        layer?.shadowOffset = .zero
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func drawBackground() {
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(
+            roundedRect: rect,
+            xRadius: Metrics.cornerRadius,
+            yRadius: Metrics.cornerRadius
+        )
+        NSGraphicsContext.saveGraphicsState()
+        path.addClip()
+        NSGradient(colors: gradientColors)?.draw(in: path, angle: 90)
+
+        let glossRect = NSRect(
+            x: rect.minX + Metrics.horizontalInset,
+            y: isFlipped ? rect.minY + 1 : rect.maxY - 2,
+            width: max(0, rect.width - (Metrics.horizontalInset * 2)),
+            height: 1
+        )
+        NSColor.white.withAlphaComponent(isHovering ? 0.22 : 0.14).setFill()
+        glossRect.fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawBorder() {
+        let path = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: Metrics.cornerRadius,
+            yRadius: Metrics.cornerRadius
+        )
+        path.lineWidth = 1
+        borderColor.setStroke()
+        path.stroke()
     }
 }
 
@@ -2332,6 +2489,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     func setUpdateStaged(_ isStaged: Bool) {
+        if !isStaged {
+            updateButton.isInstalling = false
+            updateButton.alphaValue = 1
+        }
         updateButton.isHidden = !isStaged
         updateButton.isEnabled = isStaged
         updateButton.toolTip = isStaged ? "Install staged update" : nil
@@ -2340,7 +2501,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     func setUpdateInstallInProgress(_ isInstalling: Bool) {
+        updateButton.isInstalling = isInstalling
         updateButton.isEnabled = !isInstalling
+        updateButton.toolTip = isInstalling ? "Installing update" : "Install staged update"
     }
 
     func beginWindowResizeTooltip() {
