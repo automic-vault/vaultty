@@ -2317,7 +2317,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     textView.insertNewlineIgnoringFieldEditor(nil)
                     return true
                 }
-                submitCommandWithVisibleCompletionPreview(in: tab)
+                submitCommandExcludingVisibleCompletionPreview(in: tab)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
@@ -2985,11 +2985,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func submitCommandWithVisibleCompletionPreview(in tab: TerminalTab) {
-        if completionPreviewState != nil {
-            _ = commitCompletionPreview(in: tab)
-        }
-        dismissCompletion(restoringPreview: false)
+    private func submitCommandExcludingVisibleCompletionPreview(in tab: TerminalTab) {
+        dismissCompletion(restoringPreview: true)
         submitCommand(in: tab)
     }
 
