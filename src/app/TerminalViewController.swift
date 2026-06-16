@@ -94,6 +94,13 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
 }
 
 private final class CommandInputTextView: NSTextView {
+    private struct MutedCompletionPreview {
+        let text: String
+        let characterLocation: Int
+    }
+
+    private var mutedCompletionPreview: MutedCompletionPreview?
+
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
         configurePlainTextInput()
@@ -120,6 +127,11 @@ private final class CommandInputTextView: NSTextView {
         normalizePlainTextStorage()
     }
 
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawMutedCompletionPreview()
+    }
+
     func resetPlainTextAttributes() {
         typingAttributes = commandTextAttributes
     }
@@ -134,20 +146,27 @@ private final class CommandInputTextView: NSTextView {
         resetPlainTextAttributes()
     }
 
-    func renderMutedCompletionPreview(mutedRange: NSRange) {
+    func renderMutedCompletionPreview(_ text: String, afterCharacterLocation characterLocation: Int) {
         normalizePlainTextStorage()
-        guard mutedRange.length > 0,
-              mutedRange.location >= 0,
-              mutedRange.location + mutedRange.length <= (string as NSString).length
-        else {
+        if text.isEmpty {
+            clearMutedCompletionPreview()
             return
         }
-        textStorage?.addAttribute(
-            .foregroundColor,
-            value: mutedCompletionTextColor,
-            range: mutedRange
+
+        let textLength = (string as NSString).length
+        let boundedLocation = min(max(0, characterLocation), textLength)
+        mutedCompletionPreview = MutedCompletionPreview(
+            text: text,
+            characterLocation: boundedLocation
         )
         resetPlainTextAttributes()
+        needsDisplay = true
+    }
+
+    func clearMutedCompletionPreview() {
+        guard mutedCompletionPreview != nil else { return }
+        mutedCompletionPreview = nil
+        needsDisplay = true
     }
 
     private var commandTextAttributes: [NSAttributedString.Key: Any] {
@@ -159,6 +178,63 @@ private final class CommandInputTextView: NSTextView {
 
     private var mutedCompletionTextColor: NSColor {
         (textColor ?? NSColor.labelColor).withAlphaComponent(0.38)
+    }
+
+    private func drawMutedCompletionPreview() {
+        guard let preview = mutedCompletionPreview,
+              let rect = mutedCompletionPreviewRect(afterCharacterLocation: preview.characterLocation)
+        else {
+            return
+        }
+
+        var attributes = commandTextAttributes
+        attributes[.foregroundColor] = mutedCompletionTextColor
+        (preview.text as NSString).draw(in: rect, withAttributes: attributes)
+    }
+
+    private func mutedCompletionPreviewRect(afterCharacterLocation characterLocation: Int) -> NSRect? {
+        guard let layoutManager,
+              let textContainer
+        else {
+            return nil
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+
+        let textLength = (string as NSString).length
+        let lineHeight = font.map {
+            layoutManager.defaultLineHeight(for: $0)
+        } ?? 16
+        let origin = textContainerOrigin
+        let fallbackRect = NSRect(
+            x: origin.x,
+            y: origin.y,
+            width: max(1, bounds.maxX - origin.x),
+            height: lineHeight
+        )
+
+        guard textLength > 0, layoutManager.numberOfGlyphs > 0 else {
+            return fallbackRect
+        }
+
+        let boundedLocation = min(max(0, characterLocation), textLength)
+        let characterIndex = boundedLocation < textLength ? boundedLocation : textLength - 1
+        let glyphIndex = min(
+            layoutManager.glyphIndexForCharacter(at: characterIndex),
+            max(0, layoutManager.numberOfGlyphs - 1)
+        )
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1),
+            in: textContainer
+        )
+        let x = origin.x + (boundedLocation < textLength ? glyphRect.minX : glyphRect.maxX)
+        let y = origin.y + glyphRect.minY
+        return NSRect(
+            x: x,
+            y: y,
+            width: max(1, bounds.maxX - x),
+            height: max(lineHeight, glyphRect.height)
+        )
     }
 
     private func configurePlainTextInput() {
@@ -2080,12 +2156,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let cols: UInt16
     }
 
-    private struct CompletionPreviewState {
-        let baseText: String
-        let replacementRange: NSRange
-        var renderedRange: NSRange
-    }
-
     private let selfTestCommand: String?
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
@@ -2106,7 +2176,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
-    private var completionPreviewState: CompletionPreviewState?
     private var isApplyingCompletion = false
     private var isCompletionInteractionArmed = false
     private var isShowingResizeTooltip = false
@@ -2427,21 +2496,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         shouldChangeTextIn affectedCharRange: NSRange,
         replacementString: String?
     ) -> Bool {
-        guard !isApplyingCompletion,
-              let replacementString,
-              let tab = tabs.first(where: { $0.inputView === textView }),
-              let preview = completionPreviewState
-        else {
-            return true
-        }
-
-        applyUserEdit(
-            affectedCharRange,
-            replacementString: replacementString,
-            afterDiscarding: preview,
-            in: tab
-        )
-        return false
+        true
     }
 
     func textDidChange(_ notification: Notification) {
@@ -2453,14 +2508,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return
         }
         tab.inputView.normalizePlainTextStorage()
-        if completionPreviewState != nil {
-            completionPreviewState = nil
-            activeCompletionRange = nil
-            isCompletionInteractionArmed = false
-            completionPopup.dismiss()
-            completionRequestSerial += 1
-            return
-        }
+        tab.inputView.clearMutedCompletionPreview()
         if completionPopup.isShown {
             requestCompletion(in: tab, mode: .filtering)
         } else if shouldStartAutomaticCompletion(in: textView) {
@@ -3036,7 +3084,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func submitCommandExcludingVisibleCompletionPreview(in tab: TerminalTab) {
-        dismissCompletion(restoringPreview: true)
+        dismissCompletion()
         submitCommand(in: tab)
     }
 
@@ -3064,139 +3112,37 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         in tab: TerminalTab,
         dismissAfterApplying: Bool = true
     ) {
-        if !commitCompletionPreview(in: tab) {
-            guard let range = activeCompletionRange else { return }
-            replace(range: range, with: suggestion.insertText, in: tab)
-        }
+        tab.inputView.clearMutedCompletionPreview()
+        guard let range = activeCompletionRange else { return }
+        replace(range: range, with: suggestion.insertText, in: tab)
         if dismissAfterApplying {
-            dismissCompletion(restoringPreview: false)
+            dismissCompletion()
         }
     }
 
     private func renderCompletionPreview(_ suggestion: CompletionSuggestion, in tab: TerminalTab) {
-        guard let replacementRange = completionPreviewState?.replacementRange ?? activeCompletionRange else { return }
-        let baseText = completionPreviewState?.baseText ?? tab.inputView.string
-        guard let existing = substring(in: baseText, range: replacementRange) else { return }
-
-        let updated = (baseText as NSString).replacingCharacters(in: replacementRange, with: suggestion.insertText)
-        let renderedRange = NSRange(
-            location: replacementRange.location,
-            length: (suggestion.insertText as NSString).length
-        )
-        let typedPrefixLength = commonPrefixLength(existing, suggestion.insertText)
-        let mutedRange = NSRange(
-            location: renderedRange.location + typedPrefixLength,
-            length: max(0, renderedRange.length - typedPrefixLength)
-        )
-
-        isApplyingCompletion = true
-        tab.inputView.string = updated
-        tab.inputView.renderMutedCompletionPreview(mutedRange: mutedRange)
-        let cursor = replacementRange.location + replacementRange.length
-        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
-        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
-        isApplyingCompletion = false
-
-        completionPreviewState = CompletionPreviewState(
-            baseText: baseText,
-            replacementRange: replacementRange,
-            renderedRange: renderedRange
-        )
-        activeCompletionRange = renderedRange
-    }
-
-    @discardableResult
-    private func commitCompletionPreview(in tab: TerminalTab) -> Bool {
-        guard let preview = completionPreviewState else { return false }
-        isApplyingCompletion = true
-        tab.inputView.normalizePlainTextStorage()
-        let cursor = preview.renderedRange.location + preview.renderedRange.length
-        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
-        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
-        isApplyingCompletion = false
-        completionPreviewState = nil
-        activeCompletionRange = preview.renderedRange
-        return true
-    }
-
-    private func clearCompletionPreview(in tab: TerminalTab, restoringOriginal: Bool) {
-        guard let preview = completionPreviewState else { return }
-        completionPreviewState = nil
-        isApplyingCompletion = true
-        if restoringOriginal {
-            tab.inputView.string = preview.baseText
-            tab.inputView.normalizePlainTextStorage()
-            let cursor = preview.replacementRange.location + preview.replacementRange.length
-            tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
-            tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
-            activeCompletionRange = preview.replacementRange
-        } else {
-            tab.inputView.normalizePlainTextStorage()
-            activeCompletionRange = preview.renderedRange
-        }
-        isApplyingCompletion = false
-    }
-
-    private func applyUserEdit(
-        _ affectedCharRange: NSRange,
-        replacementString: String,
-        afterDiscarding preview: CompletionPreviewState,
-        in tab: TerminalTab
-    ) {
-        guard let baseRange = baseRangeForPreviewEdit(affectedCharRange, preview: preview) else {
-            dismissCompletion()
+        guard let replacementRange = activeCompletionRange,
+              let existing = substring(in: tab.inputView.string, range: replacementRange)
+        else {
+            tab.inputView.clearMutedCompletionPreview()
             return
         }
 
-        let updated = (preview.baseText as NSString).replacingCharacters(
-            in: baseRange,
-            with: replacementString
+        let insertText = suggestion.insertText as NSString
+        let typedPrefixLength = commonPrefixLength(existing, suggestion.insertText)
+        let mutedText: String
+        if typedPrefixLength < insertText.length {
+            mutedText = insertText.substring(from: typedPrefixLength)
+        } else {
+            mutedText = ""
+        }
+        let cursor = replacementRange.location + replacementRange.length
+        tab.inputView.renderMutedCompletionPreview(
+            mutedText,
+            afterCharacterLocation: replacementRange.location + typedPrefixLength
         )
-        let cursor = baseRange.location + (replacementString as NSString).length
-
-        completionPreviewState = nil
-        activeCompletionRange = nil
-        isCompletionInteractionArmed = false
-        completionRequestSerial += 1
-        completionPopup.dismiss()
-
-        isApplyingCompletion = true
-        tab.inputView.string = updated
-        tab.inputView.normalizePlainTextStorage()
         tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
-        isApplyingCompletion = false
-
-        requestCompletion(in: tab, mode: .filtering)
-    }
-
-    private func baseRangeForPreviewEdit(_ affectedCharRange: NSRange, preview: CompletionPreviewState) -> NSRange? {
-        guard affectedCharRange.location >= 0,
-              affectedCharRange.length >= 0
-        else {
-            return nil
-        }
-
-        let baseLength = (preview.baseText as NSString).length
-        let renderedStart = preview.renderedRange.location
-        let renderedEnd = preview.renderedRange.location + preview.renderedRange.length
-        let replacementEnd = preview.replacementRange.location + preview.replacementRange.length
-        let renderedDelta = preview.renderedRange.length - preview.replacementRange.length
-        let affectedEnd = affectedCharRange.location + affectedCharRange.length
-
-        func mapLocation(_ location: Int) -> Int {
-            if location <= renderedStart {
-                return location
-            }
-            if location < renderedEnd {
-                return replacementEnd
-            }
-            return location - renderedDelta
-        }
-
-        let location = min(max(0, mapLocation(affectedCharRange.location)), baseLength)
-        let end = min(max(location, mapLocation(affectedEnd)), baseLength)
-        return NSRange(location: location, length: end - location)
     }
 
     private func shouldContinueCompletion(afterApplying suggestion: CompletionSuggestion) -> Bool {
@@ -3227,11 +3173,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         isApplyingCompletion = false
     }
 
-    private func dismissCompletion(restoringPreview: Bool = true) {
+    private func dismissCompletion() {
         if let tab = activeTab {
-            clearCompletionPreview(in: tab, restoringOriginal: restoringPreview)
-        } else {
-            completionPreviewState = nil
+            tab.inputView.clearMutedCompletionPreview()
         }
         activeCompletionRange = nil
         isCompletionInteractionArmed = false
@@ -3463,6 +3407,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func setInput(_ value: String, in tab: TerminalTab) {
+        tab.inputView.clearMutedCompletionPreview()
         tab.inputView.string = value
         tab.inputView.normalizePlainTextStorage()
         let location = (value as NSString).length
@@ -3697,6 +3642,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
+        tab.inputView.clearMutedCompletionPreview()
         tab.inputView.string = ""
         tab.inputView.resetPlainTextAttributes()
         tab.inputView.isEditable = true
