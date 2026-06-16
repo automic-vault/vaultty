@@ -2384,6 +2384,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
+    private var activeCompletionCommonPrefix: String?
     private var isApplyingCompletion = false
     private var isCompletionInteractionArmed = false
     private var isShowingResizeTooltip = false
@@ -2630,6 +2631,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
                 isCompletionInteractionArmed = true
+                if insertSharedCompletionPrefixIfAvailable(in: tab) {
+                    return true
+                }
                 acceptSelectedCompletion(in: tab, continuingDirectories: true)
                 return true
             }
@@ -3282,6 +3286,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         activeCompletionRange = result.replacementRange
+        activeCompletionCommonPrefix = result.commonPrefix
         if mode == .explicit,
            let prefix = result.commonPrefix,
            let existing = substring(in: tab.inputView.string, range: result.replacementRange),
@@ -3313,6 +3318,31 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if shouldRenderPreview, let suggestion = completionPopup.selectedSuggestion {
             renderCompletionPreview(suggestion, in: tab)
         }
+    }
+
+    private func insertSharedCompletionPrefixIfAvailable(in tab: TerminalTab) -> Bool {
+        guard let range = activeCompletionRange,
+              let prefix = activeCompletionCommonPrefix,
+              let existing = substring(in: tab.inputView.string, range: range),
+              prefix.utf16.count > existing.utf16.count
+        else {
+            return false
+        }
+
+        guard existing.isEmpty ||
+            prefix.range(of: existing, options: [.caseInsensitive, .anchored]) != nil
+        else {
+            return false
+        }
+
+        tab.inputView.clearMutedCompletionPreview()
+        replace(range: range, with: prefix, in: tab)
+        activeCompletionRange = NSRange(location: range.location, length: prefix.utf16.count)
+        updateCompletionAnchor(for: tab)
+        if let suggestion = completionPopup.selectedSuggestion {
+            renderCompletionPreview(suggestion, in: tab)
+        }
+        return true
     }
 
     private func acceptSelectedCompletion(in tab: TerminalTab, continuingDirectories: Bool = false) {
@@ -3440,6 +3470,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.inputView.clearMutedCompletionPreview()
         }
         activeCompletionRange = nil
+        activeCompletionCommonPrefix = nil
         isCompletionInteractionArmed = false
         completionPopup.dismiss()
         completionRequestSerial += 1
