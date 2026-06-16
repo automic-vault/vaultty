@@ -216,6 +216,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.clearActiveTab(sender)
     }
 
+    @objc private func reopenClosedTab(_ sender: Any?) {
+        controller?.reopenClosedTab(sender)
+    }
+
+    @objc private func killClosedTabs(_ sender: Any?) {
+        controller?.killClosedTabs(sender)
+    }
+
     @objc private func selectPreviousTab(_ sender: Any?) {
         controller?.selectPreviousTab(sender)
     }
@@ -367,6 +375,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             keyEquivalent: "t"
         )
         newTabItem.target = self
+        let reopenClosedTabItem = windowMenu.addItem(
+            withTitle: "Reopen Closed Tab",
+            action: #selector(reopenClosedTab(_:)),
+            keyEquivalent: "T"
+        )
+        reopenClosedTabItem.keyEquivalentModifierMask = [.command, .shift]
+        reopenClosedTabItem.target = self
         windowMenu.addItem(.separator())
 
         let previousTabItem = windowMenu.addItem(
@@ -392,6 +407,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             keyEquivalent: "w"
         )
         closeItem.target = self
+        let killClosedTabsItem = windowMenu.addItem(
+            withTitle: "Kill Closed Tabs...",
+            action: #selector(killClosedTabs(_:)),
+            keyEquivalent: ""
+        )
+        killClosedTabsItem.target = self
+        windowMenu.addItem(.separator())
         windowMenu.addItem(
             withTitle: "Minimize",
             action: #selector(NSWindow.performMiniaturize(_:)),

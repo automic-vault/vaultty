@@ -1994,6 +1994,7 @@ private final class TerminalOutputProcessor {
     enum Event {
         case snapshot(Snapshot)
         case marker(String)
+        case replayCommandStarted(blockID: UUID, command: String)
     }
 
     var onEvent: ((Event) -> Void)?
@@ -2118,8 +2119,17 @@ private final class TerminalOutputProcessor {
             visible.removeAll(keepingCapacity: true)
             emit(.marker(marker))
             if marker.hasPrefix("C;") {
-                activeBlockID = pendingBlockID
-                pendingBlockID = nil
+                if let pendingBlockID {
+                    activeBlockID = pendingBlockID
+                    self.pendingBlockID = nil
+                } else {
+                    let blockID = UUID()
+                    activeBlockID = blockID
+                    emit(.replayCommandStarted(
+                        blockID: blockID,
+                        command: Self.commandPayload(fromCommandStartMarker: marker)
+                    ))
+                }
             }
             if marker.hasPrefix("D;") {
                 activeBlockID = nil
@@ -2180,11 +2190,24 @@ private final class TerminalOutputProcessor {
             self?.onEvent?(event)
         }
     }
+
+    private static func commandPayload(fromCommandStartMarker marker: String) -> String {
+        guard let separator = marker.firstIndex(of: ";") else { return "" }
+        let payloadStart = marker.index(after: separator)
+        let payload = String(marker[payloadStart...])
+        guard let data = Data(base64Encoded: payload),
+              let command = String(data: data, encoding: .utf8)
+        else {
+            return ""
+        }
+        return command
+    }
 }
 
 private final class TerminalTab {
     let id = UUID()
-    let session = PtySession()
+    let sessionID: String
+    let session: PtySession
     let outputProcessor = TerminalOutputProcessor()
     let rootView = NSView()
     let scrollView = NSScrollView()
@@ -2220,7 +2243,9 @@ private final class TerminalTab {
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
 
-    init(title: String, delegate: NSTextViewDelegate) {
+    init(title: String, delegate: NSTextViewDelegate, sessionID: String = UUID().uuidString) {
+        self.sessionID = sessionID
+        self.session = PtySession(sessionID: sessionID)
         self.title = title
         buildView(delegate: delegate)
     }
@@ -2389,6 +2414,18 @@ private final class TerminalTab {
 }
 
 final class TerminalViewController: NSViewController, NSTextViewDelegate {
+    private struct StoredTab: Codable {
+        var sessionID: String
+        var title: String
+        var cwd: String
+    }
+
+    private struct StoredSessions: Codable {
+        var visibleTabs: [StoredTab]
+        var closedTabs: [StoredTab]
+        var activeSessionID: String?
+    }
+
     private struct TerminalGridSize {
         let rows: UInt16
         let cols: UInt16
@@ -2397,6 +2434,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let selfTestCommand: String?
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
+    private var closedTabs: [StoredTab] = []
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
     var onInstallStagedUpdate: (() -> Void)?
@@ -2535,7 +2573,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         completionPopup.onAcceptSuggestion = { [weak self] suggestion in
             self?.acceptCompletionSelection(suggestion)
         }
-        createTab()
+        restoreSessionState()
         installTabMouseDownMonitor()
         installCommandFocusMonitor()
     }
@@ -2847,6 +2885,55 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         closeTab(withID: activeTabID)
     }
 
+    @objc func reopenClosedTab(_ sender: Any?) {
+        guard let stored = closedTabs.popLast() else {
+            NSSound.beep()
+            return
+        }
+        createTab(
+            workingDirectory: URL(fileURLWithPath: stored.cwd),
+            sessionID: stored.sessionID,
+            title: stored.title
+        )
+        persistSessionState()
+    }
+
+    @objc func killClosedTabs(_ sender: Any?) {
+        guard !closedTabs.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Kill closed tabs?"
+        alert.informativeText = "This will permanently stop \(closedTabs.count) closed shell session\(closedTabs.count == 1 ? "" : "s"). Visible tabs will not be killed."
+        alert.addButton(withTitle: "Kill Closed Tabs")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var remaining: [StoredTab] = []
+        var failures: [String] = []
+        for stored in closedTabs {
+            do {
+                try PtySession.killDetachedSession(sessionID: stored.sessionID)
+            } catch {
+                remaining.append(stored)
+                failures.append("\(stored.title): \(error.localizedDescription)")
+            }
+        }
+        closedTabs = remaining
+        persistSessionState()
+
+        if !failures.isEmpty {
+            let failureAlert = NSAlert()
+            failureAlert.alertStyle = .warning
+            failureAlert.messageText = "Some closed tabs could not be killed"
+            failureAlert.informativeText = failures.joined(separator: "\n")
+            failureAlert.runModal()
+        }
+    }
+
     @objc func clearActiveTab(_ sender: Any?) {
         guard let tab = activeTab, !tab.blocks.isEmpty else { return }
 
@@ -2882,23 +2969,25 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
         let tab = tabs[index]
-        guard confirmCloseIfNeeded(tab) else {
-            return false
-        }
+        closedTabs.append(storedTab(from: tab))
         stopRunningElapsedUpdates(for: tab)
         stopTtyModePolling(for: tab)
         tab.session.stop()
-        guard tabs.count > 1 else {
-            view.window?.performClose(nil)
-            return true
-        }
-
         let wasActive = activeTabID == tab.id
         tab.rootView.removeFromSuperview()
         titleTabStack.removeArrangedSubview(button)
         button.removeFromSuperview()
         tabButtons.removeValue(forKey: tab.id)
         tabs.remove(at: index)
+
+        guard !tabs.isEmpty else {
+            activeTabID = nil
+            layoutTabStripBeforeMeasuringSelection()
+            updateActiveTabCutoutFrame()
+            persistSessionState()
+            view.window?.performClose(nil)
+            return true
+        }
 
         if wasActive {
             let nextIndex = min(index, tabs.count - 1)
@@ -2907,6 +2996,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
+        persistSessionState()
         return true
     }
 
@@ -2915,10 +3005,79 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return tabs.first { $0.id == activeTabID }
     }
 
-    private func createTab(workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    private func restoreSessionState() {
+        let stored = loadSessionState()
+        closedTabs = stored.closedTabs
+
+        if stored.visibleTabs.isEmpty {
+            createTab()
+            return
+        }
+
+        for tab in stored.visibleTabs {
+            createTab(
+                workingDirectory: URL(fileURLWithPath: tab.cwd),
+                sessionID: tab.sessionID,
+                title: tab.title
+            )
+        }
+
+        if let activeSessionID = stored.activeSessionID,
+           let tab = tabs.first(where: { $0.sessionID == activeSessionID }) {
+            activateTab(tab.id)
+        }
+        persistSessionState()
+    }
+
+    private func loadSessionState() -> StoredSessions {
+        let url = sessionStateURL()
+        guard let data = try? Data(contentsOf: url),
+              let stored = try? JSONDecoder().decode(StoredSessions.self, from: data)
+        else {
+            return StoredSessions(visibleTabs: [], closedTabs: [], activeSessionID: nil)
+        }
+        return stored
+    }
+
+    private func persistSessionState() {
+        let stored = StoredSessions(
+            visibleTabs: tabs.map(storedTab(from:)),
+            closedTabs: closedTabs,
+            activeSessionID: activeTab?.sessionID
+        )
+        do {
+            let url = sessionStateURL()
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(stored)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            NSLog("Failed to persist Vaultty session state: \(error.localizedDescription)")
+        }
+    }
+
+    private func storedTab(from tab: TerminalTab) -> StoredTab {
+        StoredTab(sessionID: tab.sessionID, title: tab.title, cwd: tab.currentCwd)
+    }
+
+    private func sessionStateURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("Vaultty", isDirectory: true)
+            .appendingPathComponent("sessions.json", isDirectory: false)
+    }
+
+    private func createTab(
+        workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        sessionID: String = UUID().uuidString,
+        title: String? = nil
+    ) {
         let directoryURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
         let directoryPath = directoryURL.path
-        let tab = TerminalTab(title: titleForDirectory(directoryPath), delegate: self)
+        let tab = TerminalTab(title: title ?? titleForDirectory(directoryPath), delegate: self, sessionID: sessionID)
         tab.currentCwd = directoryPath
         tabs.append(tab)
         configureSession(for: tab)
@@ -2927,6 +3086,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         installTabButton(tab)
         activateTab(tab.id, tabStripLayoutChanged: true)
         startShell(for: tab, workingDirectory: directoryURL)
+        persistSessionState()
     }
 
     private func installTabView(_ tab: TerminalTab) {
@@ -3095,6 +3255,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tab = activeTab {
             focusInput(for: tab)
         }
+        persistSessionState()
     }
 
     private func activateAdjacentTab(offset: Int) {
@@ -3190,9 +3351,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         env["PROMPT"] = ""
         env["RPROMPT"] = ""
 
-        do {
-            try tab.session.start(shellPath: shell, environment: env, workingDirectory: workingDirectory)
-            let initScript = """
+        let initScript = """
             export VAULTTY=1
             export TERM=xterm-256color
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
@@ -3230,7 +3389,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             printf '\\033]133;R;%s\\a' "$(pwd | base64)"
 
             """
-            tab.session.write(initScript, suppressEcho: true)
+
+        tab.session.onReady = { [weak tab] created in
+            guard created else { return }
+            tab?.session.write(initScript, suppressEcho: true)
+        }
+
+        do {
+            try tab.session.start(shellPath: shell, environment: env, workingDirectory: workingDirectory)
         } catch {
             tab.statusLabel.stringValue = "Failed to start shell: \(error.localizedDescription)"
         }
@@ -3771,7 +3937,30 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             applyOutputSnapshot(snapshot, in: tab)
         case .marker(let marker):
             handleMarker(marker, in: tab)
+        case .replayCommandStarted(let blockID, let command):
+            beginReplayedCommandBlock(blockID: blockID, command: command, in: tab)
         }
+    }
+
+    private func beginReplayedCommandBlock(blockID: UUID, command: String, in tab: TerminalTab) {
+        guard !tab.blocks.contains(where: { $0.id == blockID }) else { return }
+        let block = TerminalBlock(
+            id: blockID,
+            command: command,
+            cwd: tab.currentCwd,
+            startedAt: Date(),
+            finishedAt: nil,
+            output: "",
+            attributedOutput: NSMutableAttributedString(),
+            outputRevision: 0,
+            state: .running
+        )
+        tab.blocks.append(block)
+        tab.activeBlockID = blockID
+        tab.pendingBlockID = nil
+        addBlockView(block, to: tab)
+        updateTabTitle(command.isEmpty ? tab.title : titleForCommand(command), detail: command, in: tab)
+        updateCommandBarVisibility(for: tab)
     }
 
     private func applyOutputSnapshot(_ snapshot: TerminalOutputProcessor.Snapshot, in tab: TerminalTab) {
@@ -3811,12 +4000,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
+            persistSessionState()
             runSelfTestIfNeeded(in: tab)
         case "C":
-            tab.activeBlockID = tab.pendingBlockID
-            tab.pendingBlockID = nil
+            if let pendingBlockID = tab.pendingBlockID {
+                tab.activeBlockID = pendingBlockID
+                tab.pendingBlockID = nil
+            }
         case "P":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
+            persistSessionState()
         case "V":
             updateDotenvShield(payload.trimmingCharacters(in: .whitespacesAndNewlines) == "1", in: tab)
         case "D":
@@ -3840,6 +4033,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
+            persistSessionState()
             scrollToBottom(tab)
             focusInput(for: tab)
             runSelfTestIfNeeded(in: tab)

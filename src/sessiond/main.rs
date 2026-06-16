@@ -239,6 +239,20 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
         return Ok(());
     }
 
+    if let Some(encoded_session_id) = line.trim_end().strip_prefix("KILL ") {
+        let session_id = decode_string(encoded_session_id)?;
+        if let Some(session) = state
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .remove(&session_id)
+        {
+            session.kill();
+        }
+        writeln!(stream, "OK")?;
+        return Ok(());
+    }
+
     let request = parse_attach(line.trim_end())?;
     let (session, created) = {
         let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
