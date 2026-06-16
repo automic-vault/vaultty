@@ -1239,7 +1239,7 @@ private final class TitleTabButton: NSButton {
         layer?.cornerRadius = 0
         layer?.backgroundColor = NSColor.clear.cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        contentTintColor = .secondaryLabelColor
+        contentTintColor = TahoeGlassPalette.titleText
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         titleContentView.translatesAutoresizingMaskIntoConstraints = false
@@ -1266,7 +1266,7 @@ private final class TitleTabButton: NSButton {
         closeButton.imagePosition = .imageOnly
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-        closeButton.contentTintColor = .secondaryLabelColor
+        closeButton.contentTintColor = TahoeGlassPalette.titleText
         closeButton.wantsLayer = true
         closeButton.layer?.cornerRadius = 6
         closeButton.layer?.cornerCurve = .continuous
@@ -1464,21 +1464,21 @@ private final class TitleTabButton: NSButton {
                 ? TahoeGlassPalette.titleTabTitleCloseTrailingInset
                 : TahoeGlassPalette.titleTabTitleTrailingInset
         )
+        let titleColor: NSColor
         if isSelectedTab {
             fillColor = .clear
-            contentTintColor = TahoeGlassPalette.titleTextActive
-            titleLabel.textColor = TahoeGlassPalette.titleTextActive
+            titleColor = TahoeGlassPalette.titleTextActive
         } else if isHovering {
             fillColor = TahoeGlassPalette.titleSegmentHoverFill
-            contentTintColor = TahoeGlassPalette.titleTextActive
-            titleLabel.textColor = TahoeGlassPalette.titleTextActive
+            titleColor = TahoeGlassPalette.titleTextActive
         } else {
             fillColor = .clear
-            contentTintColor = TahoeGlassPalette.titleText
-            titleLabel.textColor = TahoeGlassPalette.titleText
+            titleColor = TahoeGlassPalette.titleText
         }
+        contentTintColor = titleColor
+        titleLabel.textColor = titleColor
         closeButton.isHidden = !isHovering
-        closeButton.contentTintColor = isHovering ? .labelColor : .secondaryLabelColor
+        closeButton.contentTintColor = titleColor
     }
 }
 
