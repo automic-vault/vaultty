@@ -2316,6 +2316,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
                 commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                if shouldInsertLineContinuationNewline(in: textView) {
+                    dismissCompletion()
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                }
                 acceptSelectedCompletionAndSubmit(in: tab)
                 return true
             }
@@ -2341,7 +2346,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return true
         }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true ||
+                shouldInsertLineContinuationNewline(in: textView) {
                 textView.insertNewlineIgnoringFieldEditor(nil)
             } else {
                 dismissCompletion()
@@ -2356,6 +2362,29 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return showNextCommand(in: tab)
         }
         return false
+    }
+
+    private func shouldInsertLineContinuationNewline(in textView: NSTextView) -> Bool {
+        let selectedRange = textView.selectedRange()
+        guard selectedRange.length == 0 else { return false }
+
+        let input = textView.string as NSString
+        guard selectedRange.location > 0,
+              selectedRange.location <= input.length
+        else {
+            return false
+        }
+
+        let textBeforeCursor = input.substring(to: selectedRange.location) as NSString
+        let currentLineRange = textBeforeCursor.range(
+            of: "\n",
+            options: [.backwards]
+        )
+        let lineStart = currentLineRange.location == NSNotFound
+            ? 0
+            : currentLineRange.location + currentLineRange.length
+        let currentLine = textBeforeCursor.substring(from: lineStart)
+        return currentLine.hasSuffix("\\")
     }
 
     func textView(
