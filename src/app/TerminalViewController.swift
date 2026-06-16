@@ -499,10 +499,53 @@ private final class TitleTabStackView: NSStackView {
 }
 
 private final class TitleTabCloseButton: NSButton {
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isHovering = false {
+        didSet { updateBackground() }
+    }
+
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            if isHidden {
+                isHovering = false
+            }
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    private func updateBackground() {
+        layer?.backgroundColor = (isHovering
+            ? NSColor.white.withAlphaComponent(0.08)
+            : NSColor.clear
+        ).cgColor
     }
 }
 
@@ -1356,10 +1399,6 @@ private final class TitleTabButton: NSButton {
         }
         closeButton.isHidden = !isHovering
         closeButton.contentTintColor = isHovering ? .labelColor : .secondaryLabelColor
-        closeButton.layer?.backgroundColor = (isHovering
-            ? NSColor.white.withAlphaComponent(0.08)
-            : NSColor.clear
-        ).cgColor
     }
 }
 
@@ -2958,6 +2997,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 requestCompletion(in: tab, mode: .continuation)
                 return
             }
+        }
+
+        if mode == .explicit,
+           result.suggestions.count == 1,
+           let suggestion = result.suggestions.first {
+            applyCompletion(suggestion, in: tab)
+            return
         }
 
         let anchor = completionAnchorRect(for: tab.inputView, in: tab.commandBarView)
