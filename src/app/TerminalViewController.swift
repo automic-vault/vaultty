@@ -1706,9 +1706,29 @@ private final class TitleUpdateButton: NSButton {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
         isPressing = true
-        defer { isPressing = false }
-        super.mouseDown(with: event)
+        var didReleaseInside = false
+
+        while let nextEvent = window?.nextEvent(
+            matching: [.leftMouseDragged, .leftMouseUp],
+            until: .distantFuture,
+            inMode: .eventTracking,
+            dequeue: true
+        ) {
+            let point = convert(nextEvent.locationInWindow, from: nil)
+            isPressing = bounds.contains(point)
+
+            if nextEvent.type == .leftMouseUp {
+                didReleaseInside = isPressing
+                break
+            }
+        }
+
+        isPressing = false
+        if didReleaseInside, let action {
+            NSApp.sendAction(action, to: target, from: self)
+        }
     }
 
     override func resetCursorRects() {
