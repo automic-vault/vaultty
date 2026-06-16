@@ -554,6 +554,7 @@ dependencies = [
  "base64",
  "cc",
  "ecies",
+ "libc",
  "sha2",
 ]
 
