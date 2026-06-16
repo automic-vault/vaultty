@@ -3162,6 +3162,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
         tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
         isApplyingCompletion = false
+
+        requestCompletion(in: tab, mode: .filtering)
     }
 
     private func baseRangeForPreviewEdit(_ affectedCharRange: NSRange, preview: CompletionPreviewState) -> NSRange? {
