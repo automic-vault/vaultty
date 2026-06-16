@@ -313,6 +313,8 @@ private final class TahoeGlassRootView: NSView {
     private let topBarSeparatorLayer = CAShapeLayer()
 
     var onLayout: (() -> Void)?
+    var onUpdateButtonMouseDown: (() -> Void)?
+    var updateButtonFrame: CGRect?
 
     var activeTabFrame: CGRect? {
         didSet {
@@ -379,6 +381,24 @@ private final class TahoeGlassRootView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if updateButtonFrame?.contains(point) == true {
+            onUpdateButtonMouseDown?()
+            return
+        }
+
+        let titlebarMinY = bounds.height - TahoeGlassPalette.titleContentTop
+        if point.y >= titlebarMinY {
+            window?.performDrag(with: event)
+            return
+        }
+
+        super.mouseDown(with: event)
     }
 
     override func layout() {
@@ -1707,6 +1727,11 @@ private final class TitleUpdateButton: NSButton {
 
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
+        triggerAction()
+    }
+
+    func triggerAction() {
+        guard isEnabled else { return }
         isPressing = true
         if let action {
             NSApp.sendAction(action, to: target, from: self)
@@ -2420,6 +2445,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         rootView.onLayout = { [weak self] in
             self?.handleRootLayout()
         }
+        rootView.onUpdateButtonMouseDown = { [weak self] in
+            self?.updateButton.triggerAction()
+        }
         view = rootView
 
         titleTabStack.orientation = .horizontal
@@ -2606,6 +2634,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func handleRootLayout() {
         updateTitleSegmentCornerMasks()
         updateActiveTabCutoutFrame()
+        if let rootView = view as? TahoeGlassRootView {
+            rootView.updateButtonFrame = updateButton.isHidden
+                ? nil
+                : updateButton.convert(updateButton.bounds, to: rootView)
+        }
         titleTabBorderView.needsDisplay = true
         for tab in tabs {
             resizePtyToViewport(for: tab)
