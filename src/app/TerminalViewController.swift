@@ -2358,6 +2358,28 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return false
     }
 
+    func textView(
+        _ textView: NSTextView,
+        shouldChangeTextIn affectedCharRange: NSRange,
+        replacementString: String?
+    ) -> Bool {
+        guard !isApplyingCompletion,
+              let replacementString,
+              let tab = tabs.first(where: { $0.inputView === textView }),
+              let preview = completionPreviewState
+        else {
+            return true
+        }
+
+        applyUserEdit(
+            affectedCharRange,
+            replacementString: replacementString,
+            afterDiscarding: preview,
+            in: tab
+        )
+        return false
+    }
+
     func textDidChange(_ notification: Notification) {
         guard !isApplyingCompletion else { return }
         guard let textView = notification.object as? NSTextView,
@@ -3047,6 +3069,66 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             activeCompletionRange = preview.renderedRange
         }
         isApplyingCompletion = false
+    }
+
+    private func applyUserEdit(
+        _ affectedCharRange: NSRange,
+        replacementString: String,
+        afterDiscarding preview: CompletionPreviewState,
+        in tab: TerminalTab
+    ) {
+        guard let baseRange = baseRangeForPreviewEdit(affectedCharRange, preview: preview) else {
+            dismissCompletion()
+            return
+        }
+
+        let updated = (preview.baseText as NSString).replacingCharacters(
+            in: baseRange,
+            with: replacementString
+        )
+        let cursor = baseRange.location + (replacementString as NSString).length
+
+        completionPreviewState = nil
+        activeCompletionRange = nil
+        isCompletionInteractionArmed = false
+        completionRequestSerial += 1
+        completionPopup.dismiss()
+
+        isApplyingCompletion = true
+        tab.inputView.string = updated
+        tab.inputView.normalizePlainTextStorage()
+        tab.inputView.setSelectedRange(NSRange(location: cursor, length: 0))
+        tab.inputView.scrollRangeToVisible(NSRange(location: cursor, length: 0))
+        isApplyingCompletion = false
+    }
+
+    private func baseRangeForPreviewEdit(_ affectedCharRange: NSRange, preview: CompletionPreviewState) -> NSRange? {
+        guard affectedCharRange.location >= 0,
+              affectedCharRange.length >= 0
+        else {
+            return nil
+        }
+
+        let baseLength = (preview.baseText as NSString).length
+        let renderedStart = preview.renderedRange.location
+        let renderedEnd = preview.renderedRange.location + preview.renderedRange.length
+        let replacementEnd = preview.replacementRange.location + preview.replacementRange.length
+        let renderedDelta = preview.renderedRange.length - preview.replacementRange.length
+        let affectedEnd = affectedCharRange.location + affectedCharRange.length
+
+        func mapLocation(_ location: Int) -> Int {
+            if location <= renderedStart {
+                return location
+            }
+            if location < renderedEnd {
+                return replacementEnd
+            }
+            return location - renderedDelta
+        }
+
+        let location = min(max(0, mapLocation(affectedCharRange.location)), baseLength)
+        let end = min(max(location, mapLocation(affectedEnd)), baseLength)
+        return NSRange(location: location, length: end - location)
     }
 
     private func shouldContinueCompletion(afterApplying suggestion: CompletionSuggestion) -> Bool {
