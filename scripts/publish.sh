@@ -32,19 +32,22 @@ Usage: scripts/publish.sh [--output PATH] [--with-ghostty-vt] [--clobber]
 
 Plan, build, notarize, and publish the Vaultty DMG to a GitHub release.
 
-The script asks Codex to produce:
+By default, the script asks Codex to produce:
   1. Release Notes
   2. New Semantic Version based on the changes since the last release
 
 It then updates Cargo.toml and Cargo.lock, commits vX.Y.Z, pushes the branch,
 and publishes GitHub release vX.Y.Z.
 
+With --clobber, the script rebuilds and replaces the existing release for the
+current Cargo.toml version without asking Codex for notes or a new version.
+
 The shebang injects APPLE_PASSWORD from Automic Vault before the script starts.
 
 Options:
   --output PATH       Write the DMG to PATH before publishing.
   --with-ghostty-vt  Build the app with bundled libghostty-vt support.
-  --clobber          Delete an existing GitHub release for vX.Y.Z first.
+  --clobber          Replace the existing GitHub release for the current version.
   --help             Show this help.
 
 EOF
@@ -415,6 +418,24 @@ clobber_github_release() {
     die "Unable to clobber existing GitHub release ${tag}"
 }
 
+existing_release_notes_path() {
+  local tag="$1"
+  local notes_path view_error
+
+  require_tool gh
+  notes_path="$(mktemp "${TMPDIR:-/tmp}/vaultty-existing-release-notes.XXXXXX")"
+  view_error="$(mktemp "${TMPDIR:-/tmp}/vaultty-release-view.XXXXXX")"
+
+  if ! gh release view "${tag}" --json body --jq '.body // ""' >"${notes_path}" 2>"${view_error}"; then
+    cat "${view_error}" >&2
+    rm -f "${notes_path}" "${view_error}"
+    die "--clobber requires an existing GitHub release ${tag}"
+  fi
+
+  rm -f "${view_error}"
+  printf '%s\n' "${notes_path}"
+}
+
 publish_github_release() {
   local tag="$1"
   local version="$2"
@@ -491,23 +512,28 @@ fi
 ensure_clean_worktree
 
 current_version="$(package_version)"
-release_plan="$(generate_release_plan "${current_version}")"
-release_notes_path="$(printf '%s\n' "${release_plan}" | sed -n '1p')"
-version_path="$(printf '%s\n' "${release_plan}" | sed -n '2p')"
-version="$(<"${version_path}")"
 
-if ! version_gt "${version}" "${current_version}"; then
-  die "Codex proposed ${version}, which is not newer than current Cargo version ${current_version}"
+if [[ "${clobber_release}" == "true" ]]; then
+  version="${current_version}"
+  release_notes_path="$(existing_release_notes_path "v${version}")"
+else
+  release_plan="$(generate_release_plan "${current_version}")"
+  release_notes_path="$(printf '%s\n' "${release_plan}" | sed -n '1p')"
+  version_path="$(printf '%s\n' "${release_plan}" | sed -n '2p')"
+  version="$(<"${version_path}")"
+
+  if ! version_gt "${version}" "${current_version}"; then
+    die "Codex proposed ${version}, which is not newer than current Cargo version ${current_version}"
+  fi
+
+  if git -C "${repo_root}" rev-parse --verify --quiet "v${version}^{commit}" >/dev/null; then
+    die "Tag v${version} already exists"
+  fi
+
+  bump_cargo_version "${version}"
+  commit_release_version "${version}"
+  push_current_branch
 fi
-
-if [[ "${clobber_release}" != "true" ]] &&
-    git -C "${repo_root}" rev-parse --verify --quiet "v${version}^{commit}" >/dev/null; then
-  die "Tag v${version} already exists"
-fi
-
-bump_cargo_version "${version}"
-commit_release_version "${version}"
-push_current_branch
 
 app_path="$(build_release_app)"
 plist_path="${app_path}/Contents/Info.plist"
