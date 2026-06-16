@@ -124,7 +124,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         }
 
         let edge = preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
-        let positioningRect = clampedPositioningRect(for: rect, in: view)
+        let positioningRect = positioningRect(for: rect)
         placementSerial += 1
         let serial = placementSerial
 
@@ -153,7 +153,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         guard popover.isShown else { return }
 
         let edge = preferredEdge(for: rect, of: view, popupHeight: currentContentSize.height)
-        let positioningRect = clampedPositioningRect(for: rect, in: view)
+        let positioningRect = positioningRect(for: rect)
         placementSerial += 1
         let serial = placementSerial
 
@@ -216,24 +216,11 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         return availableAbove > availableBelow ? .minY : .maxY
     }
 
-    private func clampedPositioningRect(for rect: NSRect, in view: NSView) -> NSRect {
-        let halfPopupWidth = Self.popupWidth / 2
-        let horizontalMargin: CGFloat = 8
-        let minMidX = view.bounds.minX + halfPopupWidth + horizontalMargin
-        let maxMidX = view.bounds.maxX - halfPopupWidth - horizontalMargin
-        let rectWidth = max(1, rect.width)
-        let boundedMidX: CGFloat
-
-        if minMidX <= maxMidX {
-            boundedMidX = min(max(rect.midX, minMidX), maxMidX)
-        } else {
-            boundedMidX = view.bounds.midX
-        }
-
+    private func positioningRect(for rect: NSRect) -> NSRect {
         return NSRect(
-            x: boundedMidX - rectWidth / 2,
+            x: rect.minX,
             y: rect.minY,
-            width: rectWidth,
+            width: max(1, rect.width),
             height: max(1, rect.height)
         )
     }
