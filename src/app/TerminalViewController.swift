@@ -37,7 +37,7 @@ private enum TahoeGlassPalette {
     static let titleTabMeasurementSlack: CGFloat = 4
     static let titleTabCloseButtonSize: CGFloat = 16
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
-    static let titleTabCloseButtonVerticalOffset: CGFloat = -1
+    static let titleTabCloseButtonVerticalOffset: CGFloat = 1
     static let commandStatusShieldSize: CGFloat = 13
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
