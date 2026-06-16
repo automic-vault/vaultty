@@ -51,6 +51,8 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
     private var presentationEdge: NSRectEdge?
     private var placementSerial = 0
     private var suppressCloseNotification = false
+    private var currentContentSize = NSSize(width: popupWidth, height: 44)
+    private var currentDocumentHeight: CGFloat = 0
 
     var isShown: Bool { popover.isShown }
     var onExternalDismiss: (() -> Void)?
@@ -103,14 +105,25 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         let visibleHeight = min(Self.maxPopupHeight, contentHeight)
         let shouldFlashScrollers = contentHeight > visibleHeight
         let size = NSSize(width: Self.popupWidth, height: visibleHeight)
-        scrollView.frame = NSRect(origin: .zero, size: size)
-        scrollView.hasVerticalScroller = shouldFlashScrollers
-        listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: contentHeight)
+        let geometryChanged = currentContentSize != size ||
+            currentDocumentHeight != contentHeight ||
+            scrollView.hasVerticalScroller != shouldFlashScrollers
+        let needsGeometryUpdate = !popover.isShown || geometryChanged
+
+        if needsGeometryUpdate {
+            currentContentSize = size
+            currentDocumentHeight = contentHeight
+            scrollView.frame = NSRect(origin: .zero, size: size)
+            scrollView.hasVerticalScroller = shouldFlashScrollers
+            listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: contentHeight)
+        }
         listView.update(suggestions: suggestions, selectedIndex: self.showsSelection ? selectedIndex : nil)
-        scrollView.contentView.scroll(to: .zero)
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-        popover.contentViewController?.preferredContentSize = size
-        popover.contentSize = size
+        if needsGeometryUpdate {
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            popover.contentViewController?.preferredContentSize = size
+            popover.contentSize = size
+        }
 
         let edge = preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
         let positioningRect = clampedPositioningRect(for: rect, in: view)
