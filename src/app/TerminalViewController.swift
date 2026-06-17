@@ -5234,7 +5234,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         blockView.onCopyMarkdown = { [weak self, weak tab] in
             guard let self else { return }
             let latest = tab?.blocks.first(where: { $0.id == block.id }) ?? block
-            self.copy(markdownTranscript(command: latest.command, output: latest.output))
+            let exitCode: Int32?
+            if case .completed(let code) = latest.state {
+                exitCode = code
+            } else {
+                exitCode = nil
+            }
+            self.copy(markdownTranscript(command: latest.command, output: latest.output, exitCode: exitCode))
         }
         tab.stackView.addArrangedSubview(blockView)
         blockView.translatesAutoresizingMaskIntoConstraints = false
@@ -5349,13 +5355,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    private func markdownTranscript(command: String, output: String) -> String {
+    private func markdownTranscript(command: String, output: String, exitCode: Int32?) -> String {
         var transcript = "```sh\n$ \(command)\n"
         if !output.isEmpty {
             transcript += output
             if !output.hasSuffix("\n") {
                 transcript += "\n"
             }
+        }
+        if let exitCode {
+            transcript += "# exit code: \(exitCode)\n"
         }
         transcript += "```"
         return transcript
