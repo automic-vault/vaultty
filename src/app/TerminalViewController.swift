@@ -2565,6 +2565,7 @@ private final class TerminalTab {
     var hasInjectedDotenvSecrets = false
     var isScrollToBottomScheduled = false
     var isShellReady = false
+    var hasExited = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
     var isApplicationCursorModeActive = false
@@ -2823,6 +2824,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
     private var closedTabs: [StoredTab] = []
+    private var exitedSessionIDs = Set<String>()
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
     var onInstallStagedUpdate: (() -> Void)?
@@ -3473,7 +3475,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             guard let storedWindowID = storedTab.windowID else { return false }
             return storedWindowID != windowID && shouldPersistStoredSession(storedTab)
         }
-        var activeSessionIDs = existing.activeSessionIDs ?? [:]
+        var activeSessionIDs = (existing.activeSessionIDs ?? [:]).filter { _, sessionID in
+            !exitedSessionIDs.contains(sessionID)
+        }
         if let activeTab, shouldPersistSession(activeTab) {
             activeSessionIDs[windowID] = activeTab.sessionID
         } else {
@@ -3503,11 +3507,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func shouldPersistSession(_ tab: TerminalTab) -> Bool {
-        tab.commandCount > 0
+        tab.commandCount > 0 && !tab.hasExited && !exitedSessionIDs.contains(tab.sessionID)
     }
 
     private func shouldPersistStoredSession(_ tab: StoredTab) -> Bool {
-        (tab.commandCount ?? 0) > 0
+        (tab.commandCount ?? 0) > 0 && !exitedSessionIDs.contains(tab.sessionID)
     }
 
     private func storedTab(from tab: TerminalTab) -> StoredTab {
@@ -3767,6 +3771,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.title = candidate.title
         tab.createdAt = candidate.createdAt ?? Date()
         tab.commandCount = candidate.commandCount
+        tab.hasExited = false
         tab.statusLabel.stringValue = "Rejoining session..."
         tab.isShellReady = false
         tab.isTerminalControlActive = false
@@ -3795,6 +3800,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func removeClosedSession(_ sessionID: String) {
         closedTabs.removeAll { $0.sessionID == sessionID }
+    }
+
+    private func removeExitedSessionFromPersistentHistory(_ sessionID: String) {
+        exitedSessionIDs.insert(sessionID)
+        closedTabs.removeAll { $0.sessionID == sessionID }
+        persistSessionState()
     }
 
     private func installTabView(_ tab: TerminalTab) {
@@ -4068,6 +4079,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func configureSession(for tab: TerminalTab) {
+        let configuredSessionID = tab.sessionID
         tab.outputProcessor.onEvent = { [weak self, weak tab] event in
             guard let self, let tab else { return }
             self.handleOutputProcessorEvent(event, in: tab)
@@ -4077,8 +4089,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         tab.session.onExit = { [weak self, weak tab] status in
             guard let self, let tab else { return }
+            guard tab.sessionID == configuredSessionID else { return }
+            tab.hasExited = true
+            self.removeExitedSessionFromPersistentHistory(configuredSessionID)
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
                 guard let self, let tab else { return }
+                guard tab.sessionID == configuredSessionID else { return }
                 tab.statusLabel.stringValue = "Shell exited with status \(status)"
                 self.finishRunningBlocks(in: tab, status: status)
                 self.updateTabTitleForDirectory(tab)

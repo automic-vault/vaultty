@@ -1,6 +1,6 @@
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use libc::{c_int, c_void, pid_t, winsize, TIOCGPGRP, TIOCSWINSZ};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use libc::{TIOCGPGRP, TIOCSWINSZ, c_int, c_void, pid_t, winsize};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::CString;
@@ -12,8 +12,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 #[derive(Clone)]
@@ -25,14 +26,17 @@ struct AttachRequest {
 }
 
 struct Session {
+    session_id: String,
     master_fd: RawFd,
     child_pid: pid_t,
+    exited: AtomicBool,
     history: Mutex<Vec<u8>>,
     clients: Mutex<Vec<Sender<Vec<u8>>>>,
+    state: Weak<DaemonState>,
 }
 
 impl Session {
-    fn new(request: &AttachRequest) -> io::Result<Arc<Self>> {
+    fn new(request: &AttachRequest, state: Weak<DaemonState>) -> io::Result<Arc<Self>> {
         let mut master_fd: c_int = -1;
         let mut size = winsize {
             ws_row: 30,
@@ -67,9 +71,8 @@ impl Session {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("zsh");
-            let login_shell = CString::new(format!("-{shell_name}")).unwrap_or_else(|_| {
-                CString::new("-zsh").expect("static argv must be valid")
-            });
+            let login_shell = CString::new(format!("-{shell_name}"))
+                .unwrap_or_else(|_| CString::new("-zsh").expect("static argv must be valid"));
             let mut argv = [login_shell.as_ptr(), std::ptr::null()];
             unsafe {
                 libc::execv(shell.as_ptr(), argv.as_mut_ptr());
@@ -79,17 +82,23 @@ impl Session {
         }
 
         let session = Arc::new(Self {
+            session_id: request.session_id.clone(),
             master_fd,
             child_pid: pid,
+            exited: AtomicBool::new(false),
             history: Mutex::new(Vec::new()),
             clients: Mutex::new(Vec::new()),
+            state,
         });
         Self::start_reader(session.clone());
         Ok(session)
     }
 
     fn add_client(&self, sender: Sender<Vec<u8>>) {
-        self.clients.lock().expect("clients lock poisoned").push(sender);
+        self.clients
+            .lock()
+            .expect("clients lock poisoned")
+            .push(sender);
     }
 
     fn history(&self) -> Vec<u8> {
@@ -108,7 +117,9 @@ impl Session {
             };
             if written > 0 {
                 offset += written as usize;
-            } else if written == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            } else if written == -1
+                && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+            {
                 continue;
             } else {
                 break;
@@ -175,9 +186,21 @@ impl Session {
             }
 
             let status = reap_child(session.child_pid);
+            session.exited.store(true, Ordering::SeqCst);
             let exit_line = format!("EXIT {status}\n").into_bytes();
             let mut clients = session.clients.lock().expect("clients lock poisoned");
             clients.retain(|client| client.send(exit_line.clone()).is_ok());
+            drop(clients);
+
+            if let Some(state) = session.state.upgrade() {
+                let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
+                if sessions
+                    .get(&session.session_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &session))
+                {
+                    sessions.remove(&session.session_id);
+                }
+            }
         });
     }
 }
@@ -256,10 +279,16 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
     let request = parse_attach(line.trim_end())?;
     let (session, created) = {
         let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
+        if sessions
+            .get(&request.session_id)
+            .is_some_and(|session| session.exited.load(Ordering::SeqCst))
+        {
+            sessions.remove(&request.session_id);
+        }
         if let Some(session) = sessions.get(&request.session_id) {
             (session.clone(), false)
         } else {
-            let session = Session::new(&request)?;
+            let session = Session::new(&request, Arc::downgrade(&state))?;
             sessions.insert(request.session_id.clone(), session.clone());
             (session, true)
         }
@@ -417,8 +446,8 @@ fn validate_peer_signature(stream: &UnixStream) -> io::Result<()> {
     let looks_like_vaultty = path_text.ends_with("/Contents/MacOS/Vaultty")
         || path_text.ends_with("/Vaultty")
         || env::var_os("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT").is_some();
-    let signed_by_expected_team = text.contains("TeamIdentifier=")
-        && !text.contains("TeamIdentifier=not set");
+    let signed_by_expected_team =
+        text.contains("TeamIdentifier=") && !text.contains("TeamIdentifier=not set");
 
     if output.status.success() && looks_like_vaultty && signed_by_expected_team {
         return Ok(());
@@ -458,13 +487,8 @@ fn peer_pid(fd: RawFd) -> io::Result<pid_t> {
 #[cfg(target_os = "macos")]
 fn process_path(pid: pid_t) -> io::Result<PathBuf> {
     let mut buffer = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    let count = unsafe {
-        libc::proc_pidpath(
-            pid,
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer.len() as u32,
-        )
-    };
+    let count =
+        unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr() as *mut c_void, buffer.len() as u32) };
     if count <= 0 {
         return Err(io::Error::last_os_error());
     }
