@@ -3538,7 +3538,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func publishVisibleSessionState() {
         for tab in tabs where shouldPersistSession(tab) {
             tab.session.updateState(
-                title: tab.title,
+                title: standardTabTitle(tab.title, in: tab),
                 cwd: tab.currentCwd,
                 createdAt: tab.createdAt,
                 commandCount: tab.commandCount,
@@ -3552,7 +3552,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         StoredTab(
             sessionRef: tab.sessionRef,
             sessionID: tab.sessionID,
-            title: tab.title,
+            title: standardTabTitle(tab.title, in: tab),
             cwd: tab.currentCwd,
             windowID: windowID,
             createdAt: tab.createdAt,
@@ -3958,8 +3958,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func installTabButton(_ tab: TerminalTab) {
-        let button = TitleTabButton(tabID: tab.id, title: displayTabTitle(tab.title, in: tab))
-        button.updateTitle(displayTabTitle(tab.title, in: tab), detail: detailForDirectory(tab.currentCwd))
+        tab.title = displayTabTitle(standardTabTitle(tab.title, in: tab), in: tab)
+        let button = TitleTabButton(tabID: tab.id, title: tab.title)
+        button.updateTitle(tab.title, detail: detailForDirectory(tab.currentCwd))
         button.target = self
         button.action = #selector(selectTab(_:))
         button.configureClose(target: self, action: #selector(closeTab(_:)))
@@ -4982,11 +4983,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func updateTabTitle(_ title: String, detail: String? = nil, in tab: TerminalTab) {
         let fallback = titleForDirectory(tab.currentCwd)
-        let normalizedTitle = singleLineTitle(title)
-        let displayTitle = normalizedTitle.isEmpty ? fallback : normalizedTitle
+        let normalizedTitle = singleLineTitle(standardTabTitle(title, in: tab))
+        let standardTitle = normalizedTitle.isEmpty ? fallback : normalizedTitle
+        let displayTitle = displayTabTitle(standardTitle, in: tab)
         tab.title = displayTitle
         if let button = tabButtons[tab.id] {
-            button.updateTitle(displayTabTitle(displayTitle, in: tab), detail: detail)
+            button.updateTitle(displayTitle, detail: detail)
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
@@ -4997,6 +4999,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return title
         }
         return "\(hostname):\(title)"
+    }
+
+    private func standardTabTitle(_ title: String, in tab: TerminalTab) -> String {
+        guard let hostname = hostname(for: tab.sessionRef.location) else {
+            return title
+        }
+        let prefix = "\(hostname):"
+        guard title.hasPrefix(prefix) else {
+            return title
+        }
+        return String(title.dropFirst(prefix.count))
     }
 
     private func updateDotenvShield(_ isVisible: Bool, in tab: TerminalTab) {
