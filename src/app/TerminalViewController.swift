@@ -3551,17 +3551,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             view.removeFromSuperview()
         }
 
-        let title = NSTextField(labelWithString: "Join existing session")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.textColor = .secondaryLabelColor
-        title.lineBreakMode = .byClipping
-        title.maximumNumberOfLines = 1
-        title.translatesAutoresizingMaskIntoConstraints = false
-        tab.sessionPickerStack.addArrangedSubview(title)
-        title.heightAnchor.constraint(equalToConstant: 20).isActive = true
-
-        let visibleCandidates = candidates
-        for rowCandidates in visibleCandidates.chunked(into: 4) {
+        let orderedCandidates = candidates.sorted { lhs, rhs in
+            let lhsCreatedAt = lhs.createdAt ?? .distantPast
+            let rhsCreatedAt = rhs.createdAt ?? .distantPast
+            if lhsCreatedAt != rhsCreatedAt {
+                return lhsCreatedAt > rhsCreatedAt
+            }
+            return lhs.sessionID < rhs.sessionID
+        }
+        let candidateRows = orderedCandidates.chunked(into: 4).reversed()
+        for rowCandidates in candidateRows {
             let buttons = rowCandidates.map { candidate in
                 let button = SessionCandidateButton(
                     sessionID: candidate.sessionID,
@@ -3580,8 +3579,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         tab.sessionPickerView.isHidden = false
-        let rowCount = Int(ceil(Double(visibleCandidates.count) / 4.0))
-        tab.sessionPickerHeightConstraint?.constant = CGFloat(38 + rowCount * 92)
+        let rowCount = Int(ceil(Double(orderedCandidates.count) / 4.0))
+        let rowSpacing = max(0, rowCount - 1) * 10
+        tab.sessionPickerHeightConstraint?.constant = CGFloat(16 + rowCount * 82 + rowSpacing)
         tab.rootView.needsLayout = true
     }
 
