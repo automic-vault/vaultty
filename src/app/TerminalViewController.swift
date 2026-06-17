@@ -3797,6 +3797,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             submitEmptyCommand(rawCommand, in: tab)
             return
         }
+        if let previousIndex = tab.commandHistory.firstIndex(of: command) {
+            tab.commandHistory.remove(at: previousIndex)
+        }
         tab.commandHistory.append(command)
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
