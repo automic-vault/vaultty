@@ -2841,6 +2841,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var exitedSessionRefs = Set<SessionRef>()
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
+    private var sessionPickerCandidatesByTab: [UUID: [SessionRef: LocalSessionCandidate]] = [:]
     var onInstallStagedUpdate: (() -> Void)?
 
     private let titleTabStack = TitleTabStackView()
@@ -2853,6 +2854,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let completionQueue = DispatchQueue(label: "com.automicvault.vaultty.completion", qos: .userInitiated)
     private let gitStateProvider = GitDirectoryStateProvider()
     private let gitStateQueue = DispatchQueue(label: "com.automicvault.vaultty.git-state", qos: .utility)
+    private let remoteSessionQueue = DispatchQueue(label: "com.automicvault.vaultty.remote-sessions", qos: .utility)
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
@@ -3634,13 +3636,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func configureSessionPicker(for tab: TerminalTab) {
-        let candidates = sessionCandidates(excluding: tab)
+        let (candidates, seen) = localSessionCandidates(excluding: tab)
+        renderSessionPicker(candidates, for: tab)
+        loadRemoteSessionCandidates(for: tab, excluding: seen, existing: candidates)
+    }
+
+    private func renderSessionPicker(_ candidates: [LocalSessionCandidate], for tab: TerminalTab) {
         guard !candidates.isEmpty else {
             hideSessionPicker(for: tab)
             return
         }
 
         tab.canReplaceFreshSession = true
+        sessionPickerCandidatesByTab[tab.id] = Dictionary(uniqueKeysWithValues: candidates.map { ($0.sessionRef, $0) })
         for view in tab.sessionPickerStack.arrangedSubviews {
             tab.sessionPickerStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -3680,8 +3688,32 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.rootView.needsLayout = true
     }
 
+    private func loadRemoteSessionCandidates(
+        for tab: TerminalTab,
+        excluding seen: Set<SessionRef>,
+        existing: [LocalSessionCandidate]
+    ) {
+        let tabID = tab.id
+        remoteSessionQueue.async { [weak self] in
+            guard let self else { return }
+            let remoteCandidates = self.remoteSessionCandidates(excluding: seen)
+            guard !remoteCandidates.isEmpty else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let tab = self.tabs.first(where: { $0.id == tabID }),
+                      tab.blocks.isEmpty,
+                      tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else {
+                    return
+                }
+                self.renderSessionPicker(existing + remoteCandidates, for: tab)
+            }
+        }
+    }
+
     private func hideSessionPicker(for tab: TerminalTab) {
         tab.canReplaceFreshSession = false
+        sessionPickerCandidatesByTab.removeValue(forKey: tab.id)
         tab.sessionPickerView.isHidden = true
         tab.sessionPickerHeightConstraint?.constant = 0
         for view in tab.sessionPickerStack.arrangedSubviews {
@@ -3691,7 +3723,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.rootView.needsLayout = true
     }
 
-    private func sessionCandidates(excluding tab: TerminalTab) -> [LocalSessionCandidate] {
+    private func localSessionCandidates(excluding tab: TerminalTab) -> ([LocalSessionCandidate], Set<SessionRef>) {
         var seen = Set(tabs.map(\.sessionRef))
         var candidates: [LocalSessionCandidate] = []
 
@@ -3736,11 +3768,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             ))
         }
 
-        for candidate in remoteSessionCandidates(excluding: seen) {
-            candidates.append(candidate)
-        }
-
-        return candidates
+        return (candidates, seen)
     }
 
     private func remoteSessionCandidates(excluding seen: Set<SessionRef>) -> [LocalSessionCandidate] {
@@ -3841,8 +3869,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return
         }
 
-        guard let candidate = sessionCandidates(excluding: tab)
-            .first(where: { $0.sessionRef == sender.sessionRef })
+        guard let candidate = sessionPickerCandidatesByTab[tab.id]?[sender.sessionRef]
         else {
             NSSound.beep()
             return

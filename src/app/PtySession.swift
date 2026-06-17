@@ -437,15 +437,29 @@ final class PtySession {
         return try output()
     }
 
-    private static func runProcess(_ process: Process) throws -> () throws -> Data {
+    private static func runProcess(_ process: Process, timeout: TimeInterval = 5) throws -> () throws -> Data {
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
         try process.run()
         return {
+            let timeoutWorkItem = DispatchWorkItem {
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
             let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
+            timeoutWorkItem.cancel()
+            if process.terminationStatus == SIGTERM {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(ETIMEDOUT),
+                    userInfo: [NSLocalizedDescriptionKey: "SSH command timed out"]
+                )
+            }
             if process.terminationStatus != 0 {
                 let errorText = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                 throw NSError(
