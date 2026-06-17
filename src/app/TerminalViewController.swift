@@ -2307,6 +2307,10 @@ private final class SessionCandidateButton: NSButton {
         didSet { updateAppearance() }
     }
 
+    override var isHighlighted: Bool {
+        didSet { updateAppearance() }
+    }
+
     init(sessionID: String, title: String, subtitle: String?, metadata: String) {
         self.sessionID = sessionID
         super.init(frame: .zero)
@@ -2418,15 +2422,39 @@ private final class SessionCandidateButton: NSButton {
         isHovering = false
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+
+        isHighlighted = true
+        defer { isHighlighted = false }
+
+        while let nextEvent = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let point = convert(nextEvent.locationInWindow, from: nil)
+            isHighlighted = bounds.contains(point)
+            guard nextEvent.type == .leftMouseUp else { continue }
+            guard isHighlighted,
+                  let action
+            else {
+                return
+            }
+            NSApp.sendAction(action, to: target, from: self)
+            return
+        }
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         bounds.contains(point) ? self : nil
     }
 
     private func updateAppearance() {
-        layer?.backgroundColor = isHovering
+        layer?.backgroundColor = (isHovering || isHighlighted)
             ? TahoeGlassPalette.titleSegmentHoverFill.cgColor
             : NSColor.clear.cgColor
-        iconView.contentTintColor = isHovering
+        iconView.contentTintColor = (isHovering || isHighlighted)
             ? NSColor.labelColor
             : TahoeGlassPalette.titleTextActive
     }
