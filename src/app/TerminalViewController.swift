@@ -39,6 +39,7 @@ private enum TahoeGlassPalette {
     static let titleTabCloseButtonCornerRadius: CGFloat = 1.5
     static let titleTabCloseButtonTrailingInset: CGFloat = 8
     static let titleTabCloseButtonVerticalOffset: CGFloat = 1
+    static let titleTabRunningIndicatorSize: CGFloat = 5
     static let commandStatusShieldSize: CGFloat = 13
     static let titleHairlineEndpointGap: CGFloat = 1
     static let windowTintStart = NSColor(
@@ -1280,6 +1281,7 @@ private final class BlockView: NSView {
 private final class TitleTabButton: NSButton {
     let tabID: UUID
     private let closeButton = TitleTabCloseButton()
+    private let runningIndicatorView = TitleTabRunningIndicatorView()
     private let titleContentView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private var toolTipText: String?
@@ -1291,6 +1293,9 @@ private final class TitleTabButton: NSButton {
         didSet { needsDisplay = true }
     }
     var isSelectedTab = false {
+        didSet { updateAppearance() }
+    }
+    var showsRunningIndicator = false {
         didSet { updateAppearance() }
     }
     var roundsLeadingTopCorner = false {
@@ -1357,6 +1362,9 @@ private final class TitleTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
 
+        runningIndicatorView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(runningIndicatorView)
+
         let titleContentWidthConstraint = titleContentView.widthAnchor.constraint(
             equalToConstant: titleContentWidth
         )
@@ -1398,7 +1406,12 @@ private final class TitleTabButton: NSButton {
                 constant: TahoeGlassPalette.titleTabCloseButtonVerticalOffset
             ),
             closeButton.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize),
-            closeButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize)
+            closeButton.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabCloseButtonSize),
+
+            runningIndicatorView.centerXAnchor.constraint(equalTo: closeButton.centerXAnchor),
+            runningIndicatorView.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            runningIndicatorView.widthAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabRunningIndicatorSize),
+            runningIndicatorView.heightAnchor.constraint(equalToConstant: TahoeGlassPalette.titleTabRunningIndicatorSize)
         ])
 
         updateTitle(title)
@@ -1556,6 +1569,21 @@ private final class TitleTabButton: NSButton {
         titleLabel.textColor = titleColor
         closeButton.isHidden = !isHovering
         closeButton.contentTintColor = titleColor
+        runningIndicatorView.isHidden = isHovering || !showsRunningIndicator
+        runningIndicatorView.fillColor = titleColor
+    }
+}
+
+private final class TitleTabRunningIndicatorView: NSView {
+    var fillColor = TahoeGlassPalette.titleText {
+        didSet { needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillColor.setFill()
+        NSBezierPath(ovalIn: bounds).fill()
     }
 }
 
@@ -3666,6 +3694,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         button.target = self
         button.action = #selector(selectTab(_:))
         button.configureClose(target: self, action: #selector(closeTab(_:)))
+        updateRunningIndicator(for: tab, button: button)
         tabButtons[tab.id] = button
         titleTabStack.insertArrangedSubview(button, at: max(0, titleTabStack.arrangedSubviews.count - 1))
         updateTitleSegmentCornerMasks()
@@ -4925,8 +4954,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.commandSeparator.isHidden = !shouldShowCommandBar
         tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
         tab.scrollBottomToRootConstraint?.isActive = !shouldShowCommandBar
+        updateRunningIndicator(for: tab, showsRunningIndicator: !shouldShowCommandBar)
         tab.rootView.needsLayout = true
         tab.rootView.layoutSubtreeIfNeeded()
+    }
+
+    private func updateRunningIndicator(for tab: TerminalTab, showsRunningIndicator: Bool? = nil) {
+        guard let button = tabButtons[tab.id] else { return }
+        updateRunningIndicator(for: tab, button: button, showsRunningIndicator: showsRunningIndicator)
+    }
+
+    private func updateRunningIndicator(
+        for tab: TerminalTab,
+        button: TitleTabButton,
+        showsRunningIndicator: Bool? = nil
+    ) {
+        button.showsRunningIndicator = showsRunningIndicator ?? tab.commandBarView.isHidden
     }
 
     private func focusInput(for tab: TerminalTab) {
