@@ -2032,6 +2032,22 @@ private final class TerminalOutputProcessor {
         }
     }
 
+    func resetForReplay() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingShellOutput.removeAll(keepingCapacity: true)
+            self.isShellOutputFlushScheduled = false
+            self.parserBuffer.removeAll(keepingCapacity: true)
+            self.pendingBlockID = nil
+            self.activeBlockID = nil
+            self.usesPagerKeyBindings = false
+            self.isAlternateScreenActive = false
+            self.isApplicationCursorModeActive = false
+            self.terminalScreen.resetForCommand()
+            self.styledRenderer.reset()
+        }
+    }
+
     func enqueueShellOutput(_ text: String) {
         queue.async { [weak self] in
             self?.enqueueShellOutputOnQueue(text)
@@ -2204,14 +2220,36 @@ private final class TerminalOutputProcessor {
     }
 }
 
+private final class SessionCandidateButton: NSButton {
+    let sessionID: String
+
+    init(sessionID: String, title: String) {
+        self.sessionID = sessionID
+        super.init(frame: .zero)
+        self.title = title
+        bezelStyle = .rounded
+        controlSize = .small
+        lineBreakMode = .byTruncatingTail
+        setButtonType(.momentaryPushIn)
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 private final class TerminalTab {
     let id = UUID()
-    let sessionID: String
-    let session: PtySession
+    var sessionID: String
+    var session: PtySession
     let outputProcessor = TerminalOutputProcessor()
     let rootView = NSView()
     let scrollView = NSScrollView()
     let stackView = NSStackView()
+    let sessionPickerView = NSView()
+    let sessionPickerStack = NSStackView()
     let inputView = CommandInputTextView(frame: .zero)
     let statusLineStack = NSStackView()
     let statusLabel = NSTextField(labelWithString: "Starting shell...")
@@ -2223,6 +2261,7 @@ private final class TerminalTab {
 
     var scrollBottomToCommandBarConstraint: NSLayoutConstraint?
     var scrollBottomToRootConstraint: NSLayoutConstraint?
+    var sessionPickerHeightConstraint: NSLayoutConstraint?
 
     var blocks: [TerminalBlock] = []
     var blockViews: [UUID: BlockView] = [:]
@@ -2242,6 +2281,7 @@ private final class TerminalTab {
     var commandHistory: [String] = []
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
+    var canReplaceFreshSession = false
 
     init(title: String, delegate: NSTextViewDelegate, sessionID: String = UUID().uuidString) {
         self.sessionID = sessionID
@@ -2269,6 +2309,18 @@ private final class TerminalTab {
         scrollView.drawsBackground = false
         scrollView.contentView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        sessionPickerView.wantsLayer = true
+        sessionPickerView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
+        sessionPickerView.isHidden = true
+        sessionPickerView.translatesAutoresizingMaskIntoConstraints = false
+
+        sessionPickerStack.orientation = .vertical
+        sessionPickerStack.spacing = 6
+        sessionPickerStack.alignment = .leading
+        sessionPickerStack.distribution = .fill
+        sessionPickerStack.translatesAutoresizingMaskIntoConstraints = false
+        sessionPickerView.addSubview(sessionPickerStack)
 
         inputView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         inputView.minSize = NSSize(width: 0, height: 44)
@@ -2340,19 +2392,37 @@ private final class TerminalTab {
         commandBarView.addSubview(inputScroll)
 
         rootView.addSubview(scrollView)
+        rootView.addSubview(sessionPickerView)
         rootView.addSubview(commandSeparator)
         rootView.addSubview(commandBarView)
         rootView.addSubview(ptyPassthroughView)
 
-        scrollBottomToCommandBarConstraint = scrollView.bottomAnchor.constraint(equalTo: commandSeparator.topAnchor)
+        scrollBottomToCommandBarConstraint = scrollView.bottomAnchor.constraint(equalTo: sessionPickerView.topAnchor)
         scrollBottomToRootConstraint = scrollView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor)
         scrollBottomToRootConstraint?.isActive = false
+        sessionPickerHeightConstraint = sessionPickerView.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: rootView.topAnchor),
             scrollBottomToCommandBarConstraint!,
+
+            sessionPickerView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            sessionPickerView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
+            sessionPickerView.bottomAnchor.constraint(equalTo: commandSeparator.topAnchor),
+            sessionPickerHeightConstraint!,
+
+            sessionPickerStack.leadingAnchor.constraint(equalTo: sessionPickerView.leadingAnchor, constant: 12),
+            sessionPickerStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: sessionPickerView.trailingAnchor,
+                constant: -12
+            ),
+            sessionPickerStack.topAnchor.constraint(equalTo: sessionPickerView.topAnchor, constant: 8),
+            sessionPickerStack.bottomAnchor.constraint(
+                lessThanOrEqualTo: sessionPickerView.bottomAnchor,
+                constant: -8
+            ),
 
             commandSeparator.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             commandSeparator.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
@@ -2424,6 +2494,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var visibleTabs: [StoredTab]
         var closedTabs: [StoredTab]
         var activeSessionID: String?
+    }
+
+    private struct LocalSessionCandidate {
+        var sessionID: String
+        var title: String
+        var cwd: String
+        var isClosedSession: Bool
     }
 
     private struct TerminalGridSize {
@@ -2893,7 +2970,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         createTab(
             workingDirectory: URL(fileURLWithPath: stored.cwd),
             sessionID: stored.sessionID,
-            title: stored.title
+            title: stored.title,
+            showsSessionPicker: false
         )
         persistSessionState()
     }
@@ -2915,6 +2993,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var remaining: [StoredTab] = []
         var failures: [String] = []
         for stored in closedTabs {
+            guard !tabs.contains(where: { $0.sessionID == stored.sessionID }) else {
+                remaining.append(stored)
+                continue
+            }
             do {
                 try PtySession.killDetachedSession(sessionID: stored.sessionID)
             } catch {
@@ -2969,7 +3051,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
         let tab = tabs[index]
-        closedTabs.append(storedTab(from: tab))
+        if !tabs.contains(where: { $0.id != tab.id && $0.sessionID == tab.sessionID }) {
+            closedTabs.append(storedTab(from: tab))
+        }
         stopRunningElapsedUpdates(for: tab)
         stopTtyModePolling(for: tab)
         tab.session.stop()
@@ -3018,7 +3102,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             createTab(
                 workingDirectory: URL(fileURLWithPath: tab.cwd),
                 sessionID: tab.sessionID,
-                title: tab.title
+                title: tab.title,
+                showsSessionPicker: false
             )
         }
 
@@ -3073,7 +3158,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func createTab(
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         sessionID: String = UUID().uuidString,
-        title: String? = nil
+        title: String? = nil,
+        showsSessionPicker: Bool = true
     ) {
         let directoryURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
         let directoryPath = directoryURL.path
@@ -3086,7 +3172,162 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         installTabButton(tab)
         activateTab(tab.id, tabStripLayoutChanged: true)
         startShell(for: tab, workingDirectory: directoryURL)
+        if showsSessionPicker {
+            configureSessionPicker(for: tab)
+        }
         persistSessionState()
+    }
+
+    private func configureSessionPicker(for tab: TerminalTab) {
+        let candidates = localSessionCandidates(excluding: tab)
+        guard !candidates.isEmpty else {
+            hideSessionPicker(for: tab)
+            return
+        }
+
+        tab.canReplaceFreshSession = true
+        for view in tab.sessionPickerStack.arrangedSubviews {
+            tab.sessionPickerStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        let title = NSTextField(labelWithString: "Join existing session")
+        title.font = .systemFont(ofSize: 11, weight: .semibold)
+        title.textColor = .secondaryLabelColor
+        title.translatesAutoresizingMaskIntoConstraints = false
+        tab.sessionPickerStack.addArrangedSubview(title)
+
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+        buttonRow.alignment = .centerY
+        buttonRow.distribution = .gravityAreas
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+        tab.sessionPickerStack.addArrangedSubview(buttonRow)
+
+        for candidate in candidates.prefix(6) {
+            let button = SessionCandidateButton(
+                sessionID: candidate.sessionID,
+                title: sessionCandidateTitle(candidate)
+            )
+            button.toolTip = sessionCandidateDetail(candidate)
+            button.target = self
+            button.action = #selector(attachSessionFromPicker(_:))
+            buttonRow.addArrangedSubview(button)
+            button.widthAnchor.constraint(lessThanOrEqualToConstant: 220).isActive = true
+        }
+
+        tab.sessionPickerView.isHidden = false
+        tab.sessionPickerHeightConstraint?.constant = 62
+        tab.rootView.needsLayout = true
+    }
+
+    private func hideSessionPicker(for tab: TerminalTab) {
+        tab.canReplaceFreshSession = false
+        tab.sessionPickerView.isHidden = true
+        tab.sessionPickerHeightConstraint?.constant = 0
+        for view in tab.sessionPickerStack.arrangedSubviews {
+            tab.sessionPickerStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        tab.rootView.needsLayout = true
+    }
+
+    private func localSessionCandidates(excluding tab: TerminalTab) -> [LocalSessionCandidate] {
+        var seen = Set<String>([tab.sessionID])
+        var candidates: [LocalSessionCandidate] = []
+
+        for existing in tabs where existing.id != tab.id {
+            guard seen.insert(existing.sessionID).inserted else { continue }
+            candidates.append(LocalSessionCandidate(
+                sessionID: existing.sessionID,
+                title: existing.title,
+                cwd: existing.currentCwd,
+                isClosedSession: false
+            ))
+        }
+
+        for closed in closedTabs.reversed() {
+            guard seen.insert(closed.sessionID).inserted else { continue }
+            candidates.append(LocalSessionCandidate(
+                sessionID: closed.sessionID,
+                title: closed.title,
+                cwd: closed.cwd,
+                isClosedSession: true
+            ))
+        }
+
+        return candidates
+    }
+
+    private func sessionCandidateTitle(_ candidate: LocalSessionCandidate) -> String {
+        let prefix = candidate.isClosedSession ? "Closed" : "Open"
+        return "\(prefix): \(candidate.title)"
+    }
+
+    private func sessionCandidateDetail(_ candidate: LocalSessionCandidate) -> String {
+        "\(candidate.title)\n\(candidate.cwd)"
+    }
+
+    @objc private func attachSessionFromPicker(_ sender: SessionCandidateButton) {
+        guard let tab = activeTab,
+              tab.canReplaceFreshSession,
+              tab.blocks.isEmpty,
+              tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            NSSound.beep()
+            return
+        }
+
+        guard let candidate = localSessionCandidates(excluding: tab)
+            .first(where: { $0.sessionID == sender.sessionID })
+        else {
+            NSSound.beep()
+            return
+        }
+
+        replaceFreshSession(in: tab, with: candidate)
+    }
+
+    private func replaceFreshSession(in tab: TerminalTab, with candidate: LocalSessionCandidate) {
+        let oldSessionID = tab.sessionID
+        tab.session.stop()
+        try? PtySession.killDetachedSession(sessionID: oldSessionID)
+
+        hideSessionPicker(for: tab)
+        resetTranscript(for: tab)
+        tab.sessionID = candidate.sessionID
+        tab.session = PtySession(sessionID: candidate.sessionID)
+        tab.currentCwd = candidate.cwd
+        tab.title = candidate.title
+        tab.statusLabel.stringValue = "Rejoining session..."
+        tab.isShellReady = false
+        tab.isTerminalControlActive = false
+        tab.isAlternateScreenActive = false
+        tab.isApplicationCursorModeActive = false
+        tab.ptyPassthroughView.usesPagerKeyBindings = false
+        tab.outputProcessor.resetForReplay()
+        configureSession(for: tab)
+        configureInterruptHandling(for: tab)
+        updateTabTitle(candidate.title, detail: candidate.cwd, in: tab)
+        removeClosedSession(candidate.sessionID)
+        startShell(for: tab, workingDirectory: URL(fileURLWithPath: candidate.cwd))
+        persistSessionState()
+    }
+
+    private func resetTranscript(for tab: TerminalTab) {
+        tab.blocks.removeAll()
+        tab.blockViews.removeAll()
+        tab.activeBlockID = nil
+        tab.pendingBlockID = nil
+        for view in tab.stackView.arrangedSubviews {
+            tab.stackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
+    private func removeClosedSession(_ sessionID: String) {
+        closedTabs.removeAll { $0.sessionID == sessionID }
     }
 
     private func installTabView(_ tab: TerminalTab) {
@@ -3791,6 +4032,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func submitCommand(in tab: TerminalTab) {
         guard tab.isShellReady else { return }
+        hideSessionPicker(for: tab)
         let rawCommand = tab.inputView.string
         let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
@@ -3843,6 +4085,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func submitEmptyCommand(_ rawCommand: String, in tab: TerminalTab) {
         let timestamp = Date()
+        hideSessionPicker(for: tab)
         clearCommandInput(in: tab)
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
