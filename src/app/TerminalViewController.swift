@@ -1590,8 +1590,8 @@ private final class TitleTabButton: NSButton {
         let attributedTitle = NSMutableAttributedString(
             string: hostPrefix.uppercased(),
             attributes: [
-                .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
-                .foregroundColor: currentTitleColor.withAlphaComponent(0.58)
+                .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
+                .foregroundColor: currentTitleColor.withAlphaComponent(0.34)
             ]
         )
         attributedTitle.append(NSAttributedString(string: "  "))
