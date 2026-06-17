@@ -2475,6 +2475,21 @@ private final class SessionCandidateRowView: NSView {
         NSSize(width: NSView.noIntrinsicMetric, height: Metrics.height)
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0.01 else { return nil }
+
+        for button in buttons.reversed() {
+            let buttonPoint = button.convert(point, from: self)
+            if let hit = button.hitTest(buttonPoint) {
+                return hit
+            }
+        }
+
+        return nil
+    }
+
     override func layout() {
         super.layout()
         let availableWidth = max(0, bounds.width - Metrics.spacing * CGFloat(Metrics.columnCount - 1))
