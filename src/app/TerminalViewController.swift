@@ -1305,6 +1305,9 @@ private final class TitleTabButton: NSButton {
     private let runningIndicatorView = TitleTabRunningIndicatorView()
     private let titleContentView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
+    private var titleText = ""
+    private var hostPrefix: String?
+    private var currentTitleColor = TahoeGlassPalette.titleText
     private var toolTipText: String?
     private var preferredWidthConstraint: NSLayoutConstraint?
     private var minimumWidthConstraint: NSLayoutConstraint?
@@ -1532,7 +1535,11 @@ private final class TitleTabButton: NSButton {
     }
 
     private var titleTextWidth: CGFloat {
-        ceil((titleLabel.stringValue as NSString).size(withAttributes: [
+        let attributedTitle = titleLabel.attributedStringValue
+        if attributedTitle.length > 0 {
+            return ceil(attributedTitle.size().width)
+        }
+        return ceil((titleLabel.stringValue as NSString).size(withAttributes: [
             .font: titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
         ]).width)
     }
@@ -1550,15 +1557,49 @@ private final class TitleTabButton: NSButton {
         !closeButton.isHidden && closeButton.frame.contains(point)
     }
 
-    func updateTitle(_ title: String, detail: String? = nil) {
-        titleLabel.stringValue = title
-        toolTipText = detail ?? title
-        setAccessibilityLabel(title)
+    func updateTitle(_ title: String, hostPrefix: String? = nil, detail: String? = nil) {
+        titleText = title
+        self.hostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyTitleText()
+        let fullTitle = self.hostPrefix.map { "\($0):\(title)" } ?? title
+        toolTipText = detail ?? fullTitle
+        setAccessibilityLabel(fullTitle)
         titleContentWidthConstraint?.constant = titleContentWidth
         preferredWidthConstraint?.constant = preferredWidth
         minimumWidthConstraint?.constant = minimumWidth
         invalidateIntrinsicContentSize()
         updateToolTipForCurrentLayout()
+    }
+
+    private func applyTitleText() {
+        let baseFont = titleLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: baseFont,
+            .foregroundColor: currentTitleColor
+        ]
+        guard let hostPrefix,
+              !hostPrefix.isEmpty
+        else {
+            titleLabel.attributedStringValue = NSAttributedString(
+                string: titleText,
+                attributes: titleAttributes
+            )
+            return
+        }
+
+        let attributedTitle = NSMutableAttributedString(
+            string: hostPrefix.uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
+                .foregroundColor: currentTitleColor.withAlphaComponent(0.58)
+            ]
+        )
+        attributedTitle.append(NSAttributedString(string: "  "))
+        attributedTitle.append(NSAttributedString(
+            string: titleText,
+            attributes: titleAttributes
+        ))
+        titleLabel.attributedStringValue = attributedTitle
     }
 
     private func updateToolTipForCurrentLayout() {
@@ -1586,8 +1627,9 @@ private final class TitleTabButton: NSButton {
             fillColor = .clear
             titleColor = TahoeGlassPalette.titleText
         }
+        currentTitleColor = titleColor
         contentTintColor = titleColor
-        titleLabel.textColor = titleColor
+        applyTitleText()
         closeButton.isHidden = !isHovering
         closeButton.contentTintColor = titleColor
         runningIndicatorView.isHidden = isHovering || !showsRunningIndicator
@@ -3958,9 +4000,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func installTabButton(_ tab: TerminalTab) {
-        tab.title = displayTabTitle(standardTabTitle(tab.title, in: tab), in: tab)
-        let button = TitleTabButton(tabID: tab.id, title: tab.title)
-        button.updateTitle(tab.title, detail: detailForDirectory(tab.currentCwd))
+        let standardTitle = standardTabTitle(tab.title, in: tab)
+        tab.title = displayTabTitle(standardTitle, in: tab)
+        let button = TitleTabButton(tabID: tab.id, title: standardTitle)
+        button.updateTitle(
+            standardTitle,
+            hostPrefix: hostname(for: tab.sessionRef.location),
+            detail: detailForDirectory(tab.currentCwd)
+        )
         button.target = self
         button.action = #selector(selectTab(_:))
         button.configureClose(target: self, action: #selector(closeTab(_:)))
@@ -4988,7 +5035,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let displayTitle = displayTabTitle(standardTitle, in: tab)
         tab.title = displayTitle
         if let button = tabButtons[tab.id] {
-            button.updateTitle(displayTitle, detail: detail)
+            button.updateTitle(
+                standardTitle,
+                hostPrefix: hostname(for: tab.sessionRef.location),
+                detail: detail
+            )
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
