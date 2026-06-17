@@ -129,12 +129,17 @@ final class PtySession {
     private var bridgeInput: FileHandle?
     private var bridgeOutput: FileHandle?
     private var parserBuffer = ""
+    private static let ignoreSIGPIPEOnce: Void = {
+        _ = Darwin.signal(SIGPIPE, SIG_IGN)
+    }()
 
     init(sessionID: String) {
+        _ = Self.ignoreSIGPIPEOnce
         self.sessionRef = .local(sessionID)
     }
 
     init(sessionRef: SessionRef) {
+        _ = Self.ignoreSIGPIPEOnce
         self.sessionRef = sessionRef
     }
 
@@ -388,13 +393,12 @@ final class PtySession {
             try? Self.writeAll(line + "\n", to: socketFd)
             return
         }
-        guard let data = (line + "\n").data(using: .utf8),
-              let bridgeInput
+        guard let bridgeInput
         else {
             return
         }
         do {
-            try bridgeInput.write(contentsOf: data)
+            try Self.writeAll(line + "\n", to: bridgeInput.fileDescriptor)
         } catch {
             DispatchQueue.main.async { [weak self] in
                 self?.onExit?(-1)
@@ -436,7 +440,7 @@ final class PtySession {
             process.standardOutput = Pipe()
             process.standardError = Pipe()
             try process.run()
-            try inputPipe.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8))
+            try writeAll(command + "\n", to: inputPipe.fileHandleForWriting.fileDescriptor)
             try inputPipe.fileHandleForWriting.close()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
                 if process.isRunning {
@@ -451,7 +455,7 @@ final class PtySession {
         let inputPipe = Pipe()
         process.standardInput = inputPipe
         let output = try runProcess(process)
-        try inputPipe.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8))
+        try writeAll(command + "\n", to: inputPipe.fileHandleForWriting.fileDescriptor)
         try inputPipe.fileHandleForWriting.close()
         return try output()
     }
@@ -498,6 +502,7 @@ final class PtySession {
     }
 
     private static func writeAll(_ string: String, to fd: Int32) throws {
+        _ = ignoreSIGPIPEOnce
         guard let data = string.data(using: .utf8) else { return }
         try data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }

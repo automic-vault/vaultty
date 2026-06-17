@@ -352,12 +352,14 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
 
     if let Some(encoded_session_id) = line.trim_end().strip_prefix("KILL ") {
         let session_id = decode_string(encoded_session_id)?;
-        if let Some(session) = state
-            .sessions
-            .lock()
-            .expect("sessions lock poisoned")
-            .remove(&session_id)
-        {
+        let session = {
+            state
+                .sessions
+                .lock()
+                .expect("sessions lock poisoned")
+                .remove(&session_id)
+        };
+        if let Some(session) = session {
             session.kill();
         }
         writeln!(stream, "OK")?;
@@ -370,7 +372,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
     }
 
     let request = parse_attach(line.trim_end())?;
-    let (session, created) = {
+    let existing_session = {
         let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
         if sessions
             .get(&request.session_id)
@@ -378,12 +380,30 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
         {
             sessions.remove(&request.session_id);
         }
-        if let Some(session) = sessions.get(&request.session_id) {
-            (session.clone(), false)
+        sessions.get(&request.session_id).cloned()
+    };
+    let (session, created) = if let Some(session) = existing_session {
+        (session, false)
+    } else {
+        let new_session = Session::new(&request, Arc::downgrade(&state))?;
+        let replaced_session = {
+            let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
+            if let Some(existing) = sessions
+                .get(&request.session_id)
+                .filter(|session| !session.exited.load(Ordering::SeqCst))
+                .cloned()
+            {
+                Some(existing)
+            } else {
+                sessions.insert(request.session_id.clone(), new_session.clone());
+                None
+            }
+        };
+        if let Some(existing) = replaced_session {
+            new_session.kill();
+            (existing, false)
         } else {
-            let session = Session::new(&request, Arc::downgrade(&state))?;
-            sessions.insert(request.session_id.clone(), session.clone());
-            (session, true)
+            (new_session, true)
         }
     };
 
@@ -454,15 +474,19 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
 }
 
 fn write_session_list(stream: &mut UnixStream, state: &DaemonState) -> io::Result<()> {
-    let sessions: Vec<SessionMetadata> = state
+    let sessions = state
         .sessions
         .lock()
         .expect("sessions lock poisoned")
         .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let metadata: Vec<SessionMetadata> = sessions
+        .iter()
         .filter(|session| !session.exited.load(Ordering::SeqCst))
         .map(|session| session.metadata_snapshot())
         .collect();
-    let json = serde_json::to_vec(&sessions).map_err(invalid_data)?;
+    let json = serde_json::to_vec(&metadata).map_err(invalid_data)?;
     writeln!(stream, "SESSIONS {}", BASE64.encode(json))
 }
 

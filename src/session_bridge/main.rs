@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -77,17 +77,17 @@ fn tolerate_broken_pipe(result: io::Result<()>) -> io::Result<()> {
 }
 
 fn ensure_daemon_is_running() -> io::Result<()> {
-    if let Ok(stream) = connect_to_daemon() {
-        drop(stream);
+    let socket_path = socket_path()?;
+    if daemon_supports_inventory() {
         return Ok(());
     }
 
     let daemon = sessiond_path()?;
-    let socket_path = socket_path()?;
     if let Some(parent) = socket_path.parent() {
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
+    let _ = fs::remove_file(&socket_path);
 
     Command::new(daemon)
         .arg("serve")
@@ -100,12 +100,14 @@ fn ensure_daemon_is_running() -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut last_error = None;
     while Instant::now() < deadline {
-        match connect_to_daemon() {
-            Ok(stream) => {
-                drop(stream);
+        match daemon_supports_inventory() {
+            true => {
                 return Ok(());
             }
-            Err(error) => {
+            false => {
+                let error = connect_to_daemon()
+                    .err()
+                    .unwrap_or_else(|| io::Error::other("vaultty-sessiond did not answer LIST"));
                 last_error = Some(error);
                 thread::sleep(Duration::from_millis(50));
             }
@@ -113,6 +115,24 @@ fn ensure_daemon_is_running() -> io::Result<()> {
     }
 
     Err(last_error.unwrap_or_else(|| io::Error::other("could not connect to vaultty-sessiond")))
+}
+
+fn daemon_supports_inventory() -> bool {
+    let Ok(mut stream) = connect_to_daemon() else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream.write_all(b"LIST\n").is_err() || stream.flush().is_err() {
+        return false;
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map(|count| count > 0 && line.starts_with("SESSIONS "))
+        .unwrap_or(false)
 }
 
 fn connect_to_daemon() -> io::Result<UnixStream> {
