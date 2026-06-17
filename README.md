@@ -65,6 +65,32 @@ Closed sessions sit in the closed-tab stack:
 - Visible tabs in other Vaultty windows are not shown in the picker for the
   current window.
 
+## Remote Sessions
+
+Vaultty can also list and attach to sessions owned by your Unix account on
+configured SSH hosts. The app does not open a LAN terminal listener and does not
+store SSH passwords or private keys; SSH host keys, agent keys, and account
+authorization remain the trust boundary.
+
+Use `Window > Manage SSH Hosts...` to add a host. Enrollment verifies:
+
+```sh
+ssh -o BatchMode=yes -T user@host 'vaultty-session-bridge --version'
+```
+
+If the bridge is missing, Vaultty saves the host as unenrolled and shows an
+install command. The remote side needs both helpers in the same directory:
+
+```sh
+vaultty-session-bridge
+vaultty-sessiond
+```
+
+Once enrolled, remote sessions appear in the new-tab session picker alongside
+local sessions. Attaching is a full terminal attach over `ssh -T`; the remote
+`vaultty-session-bridge` proxies the existing Vaultty line protocol to the
+remote user's private `vaultty-sessiond` Unix socket.
+
 ## Build
 
 ```sh
