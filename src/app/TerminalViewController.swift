@@ -2279,7 +2279,7 @@ private final class SessionCandidateButton: NSButton {
         didSet { updateAppearance() }
     }
 
-    init(sessionID: String, title: String, detail: String, metadata: String) {
+    init(sessionID: String, title: String, subtitle: String?, metadata: String) {
         self.sessionID = sessionID
         super.init(frame: .zero)
         self.title = ""
@@ -2311,11 +2311,12 @@ private final class SessionCandidateButton: NSButton {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        detailLabel.stringValue = detail
+        detailLabel.stringValue = subtitle ?? ""
         detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingMiddle
         detailLabel.maximumNumberOfLines = 1
+        detailLabel.isHidden = subtitle?.isEmpty != false
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(detailLabel)
 
@@ -2327,17 +2328,21 @@ private final class SessionCandidateButton: NSButton {
         metaLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(metaLabel)
 
+        let metaTopConstraint = subtitle?.isEmpty == false
+            ? metaLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 3)
+            : metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6)
+
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 72),
+            heightAnchor.constraint(equalToConstant: 82),
 
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.topAnchor.constraint(equalTo: titleLabel.topAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
             iconView.heightAnchor.constraint(equalToConstant: 24),
 
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 11),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12),
 
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
@@ -2345,12 +2350,17 @@ private final class SessionCandidateButton: NSButton {
 
             metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            metaLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 3)
+            metaTopConstraint
         ])
 
         setAccessibilityLabel(title)
         setAccessibilityValue(metadata)
-        toolTip = "\(title)\n\(detail)\n\(metadata)"
+        toolTip = [title, subtitle, metadata]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: "\n")
         updateAppearance()
     }
 
@@ -2653,6 +2663,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var windowID: String?
         var createdAt: Date?
         var commandCount: Int?
+        var runningCommand: String?
     }
 
     private struct StoredSessions: Codable {
@@ -2669,6 +2680,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var isClosedSession: Bool
         var createdAt: Date?
         var commandCount: Int
+        var runningCommand: String?
     }
 
     private struct TerminalGridSize {
@@ -3350,7 +3362,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             cwd: tab.currentCwd,
             windowID: windowID,
             createdAt: tab.createdAt,
-            commandCount: tab.commandCount
+            commandCount: tab.commandCount,
+            runningCommand: runningCommand(in: tab)
         )
     }
 
@@ -3365,6 +3378,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return loadSessionState().visibleTabs.contains { stored in
             stored.sessionID == tab.sessionID && stored.windowID != nil && stored.windowID != windowID
         }
+    }
+
+    private func runningCommand(in tab: TerminalTab) -> String? {
+        let runningBlockIDs = [tab.activeBlockID, tab.pendingBlockID].compactMap(\.self)
+        for blockID in runningBlockIDs {
+            if let block = tab.blocks.first(where: { $0.id == blockID }),
+               !block.command.isEmpty {
+                return block.command
+            }
+        }
+        return tab.blocks.first { block in
+            if case .running = block.state {
+                return !block.command.isEmpty
+            }
+            return false
+        }?.command
     }
 
     private func sessionStateURL() -> URL {
@@ -3422,24 +3451,45 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let title = NSTextField(labelWithString: "Join existing session")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.textColor = .secondaryLabelColor
+        title.lineBreakMode = .byClipping
+        title.maximumNumberOfLines = 1
         title.translatesAutoresizingMaskIntoConstraints = false
         tab.sessionPickerStack.addArrangedSubview(title)
+        title.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
-        for candidate in candidates.prefix(3) {
-            let button = SessionCandidateButton(
-                sessionID: candidate.sessionID,
-                title: sessionCandidateTitle(candidate),
-                detail: displaySessionCwd(candidate.cwd),
-                metadata: sessionCandidateMetadata(candidate)
-            )
-            button.target = self
-            button.action = #selector(attachSessionFromPicker(_:))
-            tab.sessionPickerStack.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalTo: tab.sessionPickerStack.widthAnchor).isActive = true
+        let visibleCandidates = Array(candidates.prefix(8))
+        for rowCandidates in visibleCandidates.chunked(into: 4) {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.spacing = 10
+            row.alignment = .top
+            row.distribution = .fillEqually
+            row.translatesAutoresizingMaskIntoConstraints = false
+            tab.sessionPickerStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: tab.sessionPickerStack.widthAnchor).isActive = true
+
+            for candidate in rowCandidates {
+                let button = SessionCandidateButton(
+                    sessionID: candidate.sessionID,
+                    title: sessionCandidateTitle(candidate),
+                    subtitle: sessionCandidateSubtitle(candidate),
+                    metadata: sessionCandidateMetadata(candidate)
+                )
+                button.target = self
+                button.action = #selector(attachSessionFromPicker(_:))
+                row.addArrangedSubview(button)
+            }
+
+            for _ in rowCandidates.count..<4 {
+                let spacer = NSView()
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                row.addArrangedSubview(spacer)
+            }
         }
 
         tab.sessionPickerView.isHidden = false
-        tab.sessionPickerHeightConstraint?.constant = CGFloat(30 + min(candidates.count, 3) * 82)
+        let rowCount = Int(ceil(Double(visibleCandidates.count) / 4.0))
+        tab.sessionPickerHeightConstraint?.constant = CGFloat(38 + rowCount * 92)
         tab.rootView.needsLayout = true
     }
 
@@ -3470,7 +3520,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 cwd: visible.cwd,
                 isClosedSession: false,
                 createdAt: visible.createdAt,
-                commandCount: visible.commandCount ?? 0
+                commandCount: visible.commandCount ?? 0,
+                runningCommand: visible.runningCommand
             ))
         }
 
@@ -3482,7 +3533,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 cwd: closed.cwd,
                 isClosedSession: true,
                 createdAt: closed.createdAt,
-                commandCount: closed.commandCount ?? 0
+                commandCount: closed.commandCount ?? 0,
+                runningCommand: closed.runningCommand
             ))
         }
 
@@ -3490,14 +3542,27 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func sessionCandidateTitle(_ candidate: LocalSessionCandidate) -> String {
-        let prefix = candidate.isClosedSession ? "Closed" : "Open"
-        return "\(prefix): \(candidate.title)"
+        if let runningCommand = candidate.runningCommand,
+           !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return titleForCommand(runningCommand)
+        }
+        return displaySessionCwd(candidate.cwd)
+    }
+
+    private func sessionCandidateSubtitle(_ candidate: LocalSessionCandidate) -> String? {
+        if let runningCommand = candidate.runningCommand,
+           !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return displaySessionCwd(candidate.cwd)
+        }
+        return nil
     }
 
     private func sessionCandidateMetadata(_ candidate: LocalSessionCandidate) -> String {
-        let createdText = candidate.createdAt.map { relativeSessionTime(from: $0) } ?? "created earlier"
-        let commandText = commandCountText(candidate.commandCount)
-        return "\(createdText) · \(commandText)"
+        let createdText = candidate.createdAt.map { relativeSessionTime(from: $0) } ?? "earlier"
+        guard candidate.commandCount > 0 else {
+            return createdText
+        }
+        return "\(createdText) · \(commandCountText(candidate.commandCount))"
     }
 
     private func displaySessionCwd(_ cwd: String) -> String {
@@ -3515,7 +3580,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         formatter.dateTimeStyle = .named
-        return "created \(formatter.localizedString(for: date, relativeTo: Date()))"
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func commandCountText(_ count: Int) -> String {
@@ -5090,5 +5155,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        var chunks: [[Element]] = []
+        var index = startIndex
+        while index < endIndex {
+            let end = Swift.min(index + size, endIndex)
+            chunks.append(Array(self[index..<end]))
+            index = end
+        }
+        return chunks
     }
 }
