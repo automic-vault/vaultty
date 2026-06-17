@@ -100,6 +100,27 @@ private final class NonHitTestingVisualEffectView: NSVisualEffectView {
     }
 }
 
+private final class SessionPickerView: NSView {
+    weak var sessionPickerStack: NSStackView?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0.01 else { return nil }
+
+        if let sessionPickerStack {
+            for row in sessionPickerStack.arrangedSubviews.reversed() {
+                let rowPoint = row.convert(point, from: self)
+                if let hit = row.hitTest(rowPoint) {
+                    return hit
+                }
+            }
+        }
+
+        return nil
+    }
+}
+
 private final class CommandInputTextView: NSTextView {
     private struct MutedCompletionPreview {
         let text: String
@@ -2515,7 +2536,7 @@ private final class TerminalTab {
     let rootView = NSView()
     let scrollView = NSScrollView()
     let stackView = NSStackView()
-    let sessionPickerView = NSView()
+    let sessionPickerView = SessionPickerView()
     let sessionPickerStack = NSStackView()
     let inputView = CommandInputTextView(frame: .zero)
     let statusLineStack = NSStackView()
@@ -2588,6 +2609,7 @@ private final class TerminalTab {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         sessionPickerView.isHidden = true
+        sessionPickerView.sessionPickerStack = sessionPickerStack
         sessionPickerView.translatesAutoresizingMaskIntoConstraints = false
 
         sessionPickerStack.orientation = .vertical
