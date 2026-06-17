@@ -765,6 +765,27 @@ private final class SelectableBlockTextField: NSTextField {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
+
+    @objc func copy(_ sender: Any?) {
+        guard let selectedText = selectedTextForCopy() else {
+            NSSound.beep()
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(selectedText, forType: .string)
+    }
+
+    fileprivate func selectedTextForCopy() -> String? {
+        guard let editor = currentEditor() else { return nil }
+        let selectedRange = editor.selectedRange
+        guard selectedRange.length > 0,
+              let range = Range(selectedRange, in: editor.string)
+        else {
+            return nil
+        }
+        return String(editor.string[range])
+    }
 }
 
 private final class BlockOutputTextView: NSTextView {
@@ -772,6 +793,16 @@ private final class BlockOutputTextView: NSTextView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    fileprivate func selectedTextForCopy() -> String? {
+        let selectedRange = selectedRange()
+        guard selectedRange.length > 0,
+              let range = Range(selectedRange, in: string)
+        else {
+            return nil
+        }
+        return String(string[range])
     }
 }
 
@@ -1090,6 +1121,23 @@ private final class BlockView: NSView {
     @objc private func copyOutput() { onCopyOutput?() }
 
     @objc private func copyMarkdown() { onCopyMarkdown?() }
+
+    fileprivate func selectedTextForCopy(firstResponder: NSResponder) -> String? {
+        if let text = firstResponder as? NSText {
+            if commandLabel.currentEditor() === text {
+                return commandLabel.selectedTextForCopy()
+            }
+            if metaLabel.currentEditor() === text {
+                return metaLabel.selectedTextForCopy()
+            }
+        }
+
+        if firstResponder === outputView {
+            return outputView.selectedTextForCopy()
+        }
+
+        return nil
+    }
 
     private func updateOutputHeight() {
         guard let textContainer = outputView.textContainer,
@@ -3592,13 +3640,21 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             switch event.type {
             case .keyDown:
+                if self.shouldCopyTranscriptSelection(for: event) {
+                    return nil
+                }
                 if self.shouldRedirectKeyEventToCommandInput(event) {
                     self.restoreCommandFocusIfNeeded()
                 }
             case .leftMouseUp, .rightMouseUp:
                 if self.shouldRestoreCommandFocus(afterMouseEvent: event) {
                     DispatchQueue.main.async { [weak self] in
-                        self?.restoreCommandFocusIfNeeded()
+                        guard let self,
+                              !self.hasSelectedTranscriptText()
+                        else {
+                            return
+                        }
+                        self.restoreCommandFocusIfNeeded()
                     }
                 }
             default:
@@ -3607,6 +3663,21 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             return event
         }
+    }
+
+    private func shouldCopyTranscriptSelection(for event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              event.charactersIgnoringModifiers?.lowercased() == "c",
+              let selectedText = selectedTranscriptText()
+        else {
+            return false
+        }
+
+        copy(selectedText)
+        return true
     }
 
     private func shouldRedirectKeyEventToCommandInput(_ event: NSEvent) -> Bool {
@@ -3632,6 +3703,24 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         return true
+    }
+
+    private func hasSelectedTranscriptText() -> Bool {
+        selectedTranscriptText() != nil
+    }
+
+    private func selectedTranscriptText() -> String? {
+        guard let tab = activeTab,
+              let firstResponder = view.window?.firstResponder
+        else {
+            return nil
+        }
+        for block in tab.blocks {
+            if let selectedText = tab.blockViews[block.id]?.selectedTextForCopy(firstResponder: firstResponder) {
+                return selectedText
+            }
+        }
+        return nil
     }
 
     private var shouldRestoreCommandFocus: Bool {
