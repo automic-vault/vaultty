@@ -2488,12 +2488,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var sessionID: String
         var title: String
         var cwd: String
+        var windowID: String?
     }
 
     private struct StoredSessions: Codable {
         var visibleTabs: [StoredTab]
         var closedTabs: [StoredTab]
         var activeSessionID: String?
+        var activeSessionIDs: [String: String]?
     }
 
     private struct LocalSessionCandidate {
@@ -2509,6 +2511,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private let selfTestCommand: String?
+    private var windowID: String
+    private let restoresPersistedWindow: Bool
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
     private var closedTabs: [StoredTab] = []
@@ -2545,13 +2549,21 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case close(UUID)
     }
 
-    init(selfTestCommand: String? = nil) {
+    init(
+        selfTestCommand: String? = nil,
+        windowID: String = UUID().uuidString,
+        restoresPersistedWindow: Bool = true
+    ) {
         self.selfTestCommand = selfTestCommand
+        self.windowID = windowID
+        self.restoresPersistedWindow = restoresPersistedWindow
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) {
         self.selfTestCommand = nil
+        self.windowID = UUID().uuidString
+        self.restoresPersistedWindow = true
         super.init(coder: coder)
     }
 
@@ -2992,8 +3004,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         var remaining: [StoredTab] = []
         var failures: [String] = []
+        let visibleSessionIDs = Set(loadSessionState().visibleTabs.map(\.sessionID))
         for stored in closedTabs {
-            guard !tabs.contains(where: { $0.sessionID == stored.sessionID }) else {
+            guard !visibleSessionIDs.contains(stored.sessionID) else {
                 remaining.append(stored)
                 continue
             }
@@ -3051,7 +3064,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
         let tab = tabs[index]
-        if !tabs.contains(where: { $0.id != tab.id && $0.sessionID == tab.sessionID }) {
+        if !isSessionVisibleOutsideTab(tab) {
             closedTabs.append(storedTab(from: tab))
         }
         stopRunningElapsedUpdates(for: tab)
@@ -3093,12 +3106,20 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let stored = loadSessionState()
         closedTabs = stored.closedTabs
 
-        if stored.visibleTabs.isEmpty {
+        if restoresPersistedWindow,
+           let restoredWindowID = stored.visibleTabs.compactMap(\.windowID).first,
+           !stored.visibleTabs.contains(where: { $0.windowID == windowID }) {
+            windowID = restoredWindowID
+        }
+
+        let tabsToRestore = stored.visibleTabs.filter { storedTabBelongsToCurrentWindow($0) }
+
+        if tabsToRestore.isEmpty {
             createTab()
             return
         }
 
-        for tab in stored.visibleTabs {
+        for tab in tabsToRestore {
             createTab(
                 workingDirectory: URL(fileURLWithPath: tab.cwd),
                 sessionID: tab.sessionID,
@@ -3107,7 +3128,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             )
         }
 
-        if let activeSessionID = stored.activeSessionID,
+        let activeSessionID = stored.activeSessionIDs?[windowID] ?? stored.activeSessionID
+        if let activeSessionID,
            let tab = tabs.first(where: { $0.sessionID == activeSessionID }) {
             activateTab(tab.id)
         }
@@ -3119,16 +3141,24 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard let data = try? Data(contentsOf: url),
               let stored = try? JSONDecoder().decode(StoredSessions.self, from: data)
         else {
-            return StoredSessions(visibleTabs: [], closedTabs: [], activeSessionID: nil)
+            return StoredSessions(visibleTabs: [], closedTabs: [], activeSessionID: nil, activeSessionIDs: nil)
         }
         return stored
     }
 
     private func persistSessionState() {
+        let existing = loadSessionState()
+        let otherWindowTabs = existing.visibleTabs.filter { storedTab in
+            guard let storedWindowID = storedTab.windowID else { return false }
+            return storedWindowID != windowID
+        }
+        var activeSessionIDs = existing.activeSessionIDs ?? [:]
+        activeSessionIDs[windowID] = activeTab?.sessionID
         let stored = StoredSessions(
-            visibleTabs: tabs.map(storedTab(from:)),
+            visibleTabs: otherWindowTabs + tabs.map(storedTab(from:)),
             closedTabs: closedTabs,
-            activeSessionID: activeTab?.sessionID
+            activeSessionID: activeTab?.sessionID,
+            activeSessionIDs: activeSessionIDs
         )
         do {
             let url = sessionStateURL()
@@ -3144,7 +3174,20 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func storedTab(from tab: TerminalTab) -> StoredTab {
-        StoredTab(sessionID: tab.sessionID, title: tab.title, cwd: tab.currentCwd)
+        StoredTab(sessionID: tab.sessionID, title: tab.title, cwd: tab.currentCwd, windowID: windowID)
+    }
+
+    private func storedTabBelongsToCurrentWindow(_ tab: StoredTab) -> Bool {
+        tab.windowID == nil || tab.windowID == windowID
+    }
+
+    private func isSessionVisibleOutsideTab(_ tab: TerminalTab) -> Bool {
+        if tabs.contains(where: { $0.id != tab.id && $0.sessionID == tab.sessionID }) {
+            return true
+        }
+        return loadSessionState().visibleTabs.contains { stored in
+            stored.sessionID == tab.sessionID && stored.windowID != nil && stored.windowID != windowID
+        }
     }
 
     private func sessionStateURL() -> URL {
@@ -3234,15 +3277,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func localSessionCandidates(excluding tab: TerminalTab) -> [LocalSessionCandidate] {
-        var seen = Set<String>([tab.sessionID])
+        var seen = Set(tabs.map(\.sessionID))
         var candidates: [LocalSessionCandidate] = []
 
-        for existing in tabs where existing.id != tab.id {
-            guard seen.insert(existing.sessionID).inserted else { continue }
+        let stored = loadSessionState()
+        for visible in stored.visibleTabs {
+            guard visible.windowID != nil,
+                  visible.windowID != windowID,
+                  seen.insert(visible.sessionID).inserted
+            else { continue }
             candidates.append(LocalSessionCandidate(
-                sessionID: existing.sessionID,
-                title: existing.title,
-                cwd: existing.currentCwd,
+                sessionID: visible.sessionID,
+                title: visible.title,
+                cwd: visible.cwd,
                 isClosedSession: false
             ))
         }
