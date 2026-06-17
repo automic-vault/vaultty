@@ -3001,9 +3001,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     func stopAllSessions() {
         for tab in tabs {
+            let shouldKillUnpersistedSession = !shouldPersistSession(tab) && !isSessionVisibleOutsideTab(tab)
             stopRunningElapsedUpdates(for: tab)
             stopTtyModePolling(for: tab)
             tab.session.stop()
+            if shouldKillUnpersistedSession {
+                try? PtySession.killDetachedSession(sessionID: tab.sessionID)
+            }
         }
     }
 
@@ -3373,12 +3377,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
         let tab = tabs[index]
-        if !isSessionVisibleOutsideTab(tab) {
+        let isVisibleOutsideTab = isSessionVisibleOutsideTab(tab)
+        let shouldPersistTab = shouldPersistSession(tab)
+        if shouldPersistTab && !isVisibleOutsideTab {
             closedTabs.append(storedTab(from: tab))
         }
         stopRunningElapsedUpdates(for: tab)
         stopTtyModePolling(for: tab)
         tab.session.stop()
+        if !shouldPersistTab && !isVisibleOutsideTab {
+            try? PtySession.killDetachedSession(sessionID: tab.sessionID)
+        }
         let wasActive = activeTabID == tab.id
         tab.rootView.removeFromSuperview()
         titleTabStack.removeArrangedSubview(button)
@@ -3413,15 +3422,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func restoreSessionState() {
         let stored = loadSessionState()
-        closedTabs = stored.closedTabs
+        let persistedVisibleTabs = stored.visibleTabs.filter(shouldPersistStoredSession)
+        closedTabs = stored.closedTabs.filter(shouldPersistStoredSession)
 
         if restoresPersistedWindow,
-           let restoredWindowID = stored.visibleTabs.compactMap(\.windowID).first,
-           !stored.visibleTabs.contains(where: { $0.windowID == windowID }) {
+           let restoredWindowID = persistedVisibleTabs.compactMap(\.windowID).first,
+           !persistedVisibleTabs.contains(where: { $0.windowID == windowID }) {
             windowID = restoredWindowID
         }
 
-        let tabsToRestore = stored.visibleTabs.filter { storedTabBelongsToCurrentWindow($0) }
+        let tabsToRestore = persistedVisibleTabs.filter { storedTabBelongsToCurrentWindow($0) }
 
         if tabsToRestore.isEmpty {
             createTab()
@@ -3461,14 +3471,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let existing = loadSessionState()
         let otherWindowTabs = existing.visibleTabs.filter { storedTab in
             guard let storedWindowID = storedTab.windowID else { return false }
-            return storedWindowID != windowID
+            return storedWindowID != windowID && shouldPersistStoredSession(storedTab)
         }
         var activeSessionIDs = existing.activeSessionIDs ?? [:]
-        activeSessionIDs[windowID] = activeTab?.sessionID
+        if let activeTab, shouldPersistSession(activeTab) {
+            activeSessionIDs[windowID] = activeTab.sessionID
+        } else {
+            activeSessionIDs.removeValue(forKey: windowID)
+        }
+        let visibleTabs = tabs
+            .filter(shouldPersistSession)
+            .map(storedTab(from:))
+        let persistedClosedTabs = closedTabs.filter(shouldPersistStoredSession)
         let stored = StoredSessions(
-            visibleTabs: otherWindowTabs + tabs.map(storedTab(from:)),
-            closedTabs: closedTabs,
-            activeSessionID: activeTab?.sessionID,
+            visibleTabs: otherWindowTabs + visibleTabs,
+            closedTabs: persistedClosedTabs,
+            activeSessionID: activeTab.flatMap { shouldPersistSession($0) ? $0.sessionID : nil },
             activeSessionIDs: activeSessionIDs
         )
         do {
@@ -3482,6 +3500,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         } catch {
             NSLog("Failed to persist Vaultty session state: \(error.localizedDescription)")
         }
+    }
+
+    private func shouldPersistSession(_ tab: TerminalTab) -> Bool {
+        tab.commandCount > 0
+    }
+
+    private func shouldPersistStoredSession(_ tab: StoredTab) -> Bool {
+        (tab.commandCount ?? 0) > 0
     }
 
     private func storedTab(from tab: TerminalTab) -> StoredTab {
@@ -3628,7 +3654,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         let stored = loadSessionState()
         for visible in stored.visibleTabs {
-            guard visible.windowID != nil,
+            guard shouldPersistStoredSession(visible),
+                  visible.windowID != nil,
                   visible.windowID != windowID,
                   seen.insert(visible.sessionID).inserted
             else { continue }
@@ -3644,7 +3671,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         for closed in closedTabs.reversed() {
-            guard seen.insert(closed.sessionID).inserted else { continue }
+            guard shouldPersistStoredSession(closed),
+                  seen.insert(closed.sessionID).inserted
+            else { continue }
             candidates.append(LocalSessionCandidate(
                 sessionID: closed.sessionID,
                 title: closed.title,
@@ -4556,6 +4585,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         )
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
+        persistSessionState()
         tab.outputProcessor.resetForCommand(
             blockID: block.id,
             usesPagerKeyBindings: usesPagerKeyBindings
