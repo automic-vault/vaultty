@@ -2501,10 +2501,14 @@ private final class SessionCandidateRowView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, alphaValue > 0.01 else { return nil }
 
+        return candidateButton(at: point)
+    }
+
+    func candidateButton(at point: NSPoint) -> SessionCandidateButton? {
         for button in buttons.reversed() {
             let buttonPoint = button.convert(point, from: self)
-            if let hit = button.hitTest(buttonPoint) {
-                return hit
+            if button.bounds.contains(buttonPoint) {
+                return button
             }
         }
 
@@ -3792,9 +3796,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func installTabMouseDownMonitor() {
         tabMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self,
-                  event.window === self.view.window,
-                  let clickedTarget = self.tabClickTarget(atWindowPoint: event.locationInWindow)
+                  event.window === self.view.window
             else {
+                return event
+            }
+
+            if let sessionCandidateButton = self.sessionCandidateButton(atWindowPoint: event.locationInWindow) {
+                self.attachSessionFromPicker(sessionCandidateButton)
+                return nil
+            }
+
+            guard let clickedTarget = self.tabClickTarget(atWindowPoint: event.locationInWindow) else {
                 return event
             }
 
@@ -3938,6 +3950,25 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return button.containsCloseButton(at: point) ? .close(id) : .select(id)
             }
         }
+        return nil
+    }
+
+    private func sessionCandidateButton(atWindowPoint windowPoint: NSPoint) -> SessionCandidateButton? {
+        guard let tab = activeTab,
+              tab.canReplaceFreshSession,
+              !tab.sessionPickerView.isHidden
+        else {
+            return nil
+        }
+
+        for view in tab.sessionPickerStack.arrangedSubviews.reversed() {
+            guard let row = view as? SessionCandidateRowView else { continue }
+            let point = row.convert(windowPoint, from: nil)
+            if let button = row.candidateButton(at: point) {
+                return button
+            }
+        }
+
         return nil
     }
 
