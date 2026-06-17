@@ -28,6 +28,11 @@ final class GitDirectoryStateProvider {
         self.cacheTTL = cacheTTL
     }
 
+    func repositoryRoot(forDirectory url: URL) -> String? {
+        let path = url.standardizedFileURL.path
+        return repositoryLocation(containing: path)?.worktreePath
+    }
+
     func summary(forDirectory url: URL, forceRefresh: Bool = false) -> Summary? {
         let path = url.standardizedFileURL.path
         guard let location = repositoryLocation(containing: path) else { return nil }

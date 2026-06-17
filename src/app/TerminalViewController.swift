@@ -4875,6 +4875,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func titleForDirectory(_ cwd: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let path = (cwd as NSString).standardizingPath
+        if let gitRoot = gitStateProvider.repositoryRoot(
+            forDirectory: URL(fileURLWithPath: path, isDirectory: true)
+        ) {
+            return titleForGitDirectory(path, repositoryRoot: gitRoot)
+        }
         if path == home {
             return "~"
         }
@@ -4884,6 +4889,34 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         let name = (path as NSString).lastPathComponent
         return name.isEmpty ? path : name
+    }
+
+    private func titleForGitDirectory(_ cwd: String, repositoryRoot: String) -> String {
+        let rootPath = (repositoryRoot as NSString).standardizingPath
+        let rootName = (rootPath as NSString).lastPathComponent
+        guard !rootName.isEmpty else { return titleForNonGitDirectory(cwd) }
+
+        if cwd == rootPath {
+            return rootName
+        }
+        if cwd.hasPrefix(rootPath + "/") {
+            let relativePath = String(cwd.dropFirst(rootPath.count + 1))
+            return relativePath.isEmpty ? rootName : "\(rootName)/\(relativePath)"
+        }
+        return titleForNonGitDirectory(cwd)
+    }
+
+    private func titleForNonGitDirectory(_ cwd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if cwd == home {
+            return "~"
+        }
+        if cwd == "/" {
+            return "/"
+        }
+
+        let name = (cwd as NSString).lastPathComponent
+        return name.isEmpty ? cwd : name
     }
 
     private func detailForDirectory(_ cwd: String) -> String {
