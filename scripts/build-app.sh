@@ -8,6 +8,7 @@ APP_NAME="Vaultty"
 APP_BUNDLE_ID="com.automicvault.vaultty"
 ENV_HELPER_ID="com.automicvault.vaultty.env"
 SESSIOND_HELPER_ID="com.automicvault.vaultty.sessiond"
+SESSION_BRIDGE_ID="com.automicvault.vaultty.session-bridge"
 ENV_HELPER_APP_NAME="VaulttyEnv"
 GHOSTTY_PROBE_ID="com.automicvault.vaultty.ghostty-probe"
 DOTENV_KEYCHAIN_ACCESS_GROUP="${VAULTTY_DOTENV_KEYCHAIN_ACCESS_GROUP:-${AV_DOTENV_KEYCHAIN_ACCESS_GROUP:-ZU76A67LGU.com.automicvault.dotenv}}"
@@ -26,6 +27,7 @@ ENV_HELPER_APP_MACOS_DIR="$ENV_HELPER_APP_CONTENTS_DIR/MacOS"
 ENV_HELPER_APP_RESOURCES_DIR="$ENV_HELPER_APP_CONTENTS_DIR/Resources"
 ENV_HELPER="$ENV_HELPER_APP_MACOS_DIR/vaultty-env"
 SESSIOND_HELPER="$HELPERS_DIR/vaultty-sessiond"
+SESSION_BRIDGE_HELPER="$HELPERS_DIR/vaultty-session-bridge"
 ENV_HELPER_ENTITLEMENTS="$BUILD_DIR/vaultty-env.entitlements"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
@@ -89,6 +91,7 @@ ENV_HELPER_APP_MACOS_DIR="$ENV_HELPER_APP_CONTENTS_DIR/MacOS"
 ENV_HELPER_APP_RESOURCES_DIR="$ENV_HELPER_APP_CONTENTS_DIR/Resources"
 ENV_HELPER="$ENV_HELPER_APP_MACOS_DIR/vaultty-env"
 SESSIOND_HELPER="$HELPERS_DIR/vaultty-sessiond"
+SESSION_BRIDGE_HELPER="$HELPERS_DIR/vaultty-session-bridge"
 ENV_HELPER_ENTITLEMENTS="$BUILD_DIR/vaultty-env.entitlements"
 GHOSTTY_PROBE="$HELPERS_DIR/vaultty-ghostty-probe"
 GHOSTTY_DYLIB="$FRAMEWORKS_DIR/libghostty-vt.dylib"
@@ -517,7 +520,7 @@ esac
 
 echo "Building Rust helpers"
 export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS_VERSION"
-cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env --bin vaultty-sessiond
+cargo build "${CARGO_FLAGS[@]}" --bin vaultty-env --bin vaultty-sessiond --bin vaultty-session-bridge
 
 echo "Building Swift package dependencies"
 swift build \
@@ -555,6 +558,7 @@ render_info_plist
 write_env_helper_info_plist
 cp "$RUST_BIN_DIR/vaultty-env" "$ENV_HELPER"
 cp "$RUST_BIN_DIR/vaultty-sessiond" "$SESSIOND_HELPER"
+cp "$RUST_BIN_DIR/vaultty-session-bridge" "$SESSION_BRIDGE_HELPER"
 if [[ -n "$ENV_HELPER_PROVISIONING_PROFILE" ]]; then
   cp "$ENV_HELPER_PROVISIONING_PROFILE" "$ENV_HELPER_APP_CONTENTS_DIR/embedded.provisionprofile"
 fi
@@ -644,6 +648,10 @@ codesign_runtime \
   --identifier "$SESSIOND_HELPER_ID" \
   "$SESSIOND_HELPER"
 verify_signature "$SESSIOND_HELPER"
+codesign_runtime \
+  --identifier "$SESSION_BRIDGE_ID" \
+  "$SESSION_BRIDGE_HELPER"
+verify_signature "$SESSION_BRIDGE_HELPER"
 if [[ -x "$GHOSTTY_PROBE" ]]; then
   codesign_runtime \
     --identifier "$GHOSTTY_PROBE_ID" \
