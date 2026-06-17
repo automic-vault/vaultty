@@ -3775,17 +3775,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func remoteSessionCandidates(excluding seen: Set<SessionRef>) -> [LocalSessionCandidate] {
         let hosts = PtySession.loadSSHHosts().hosts.filter(\.enrolled)
         var candidates: [LocalSessionCandidate] = []
+        var seenSessionRefs = seen
         for host in hosts {
             let location = SessionLocation.sshHost(host.id)
-            let sessions: [SessionMetadata]
-            do {
-                sessions = try PtySession.listSessions(location: location)
-            } catch {
-                sessions = (try? PtySession.remoteStoredSessionMetadata(host: host)) ?? []
-            }
+            let liveSessions = (try? PtySession.listSessions(location: location)) ?? []
+            let storedSessions = (try? PtySession.remoteStoredSessionMetadata(host: host)) ?? []
+            let sessions = liveSessions + storedSessions
             for session in sessions {
                 let sessionRef = SessionRef(location: location, sessionID: session.sessionID)
-                guard !seen.contains(sessionRef) else { continue }
+                guard !seenSessionRefs.contains(sessionRef) else { continue }
+                seenSessionRefs.insert(sessionRef)
                 candidates.append(LocalSessionCandidate(
                     sessionRef: sessionRef,
                     sessionID: session.sessionID,
