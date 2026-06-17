@@ -2583,13 +2583,15 @@ private final class TerminalTab {
         delegate: NSTextViewDelegate,
         sessionID: String = UUID().uuidString,
         createdAt: Date = Date(),
-        commandCount: Int = 0
+        commandCount: Int = 0,
+        commandHistory: [String] = []
     ) {
         self.sessionID = sessionID
         self.session = PtySession(sessionID: sessionID)
         self.title = title
         self.createdAt = createdAt
         self.commandCount = commandCount
+        self.commandHistory = commandHistory
         buildView(delegate: delegate)
     }
 
@@ -2794,6 +2796,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var createdAt: Date?
         var commandCount: Int?
         var runningCommand: String?
+        var commandHistory: [String]?
     }
 
     private struct StoredSessions: Codable {
@@ -2811,6 +2814,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var createdAt: Date?
         var commandCount: Int
         var runningCommand: String?
+        var commandHistory: [String]
     }
 
     private struct TerminalGridSize {
@@ -3298,6 +3302,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             title: stored.title,
             createdAt: stored.createdAt ?? Date(),
             commandCount: stored.commandCount ?? 0,
+            commandHistory: stored.commandHistory ?? [],
             showsSessionPicker: false
         )
         persistSessionState()
@@ -3447,6 +3452,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 title: tab.title,
                 createdAt: tab.createdAt ?? Date(),
                 commandCount: tab.commandCount ?? 0,
+                commandHistory: tab.commandHistory ?? [],
                 showsSessionPicker: false
             )
         }
@@ -3522,7 +3528,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             windowID: windowID,
             createdAt: tab.createdAt,
             commandCount: tab.commandCount,
-            runningCommand: runningCommand(in: tab)
+            runningCommand: runningCommand(in: tab),
+            commandHistory: tab.commandHistory
         )
     }
 
@@ -3569,6 +3576,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         title: String? = nil,
         createdAt: Date = Date(),
         commandCount: Int = 0,
+        commandHistory: [String] = [],
         showsSessionPicker: Bool = true
     ) {
         let directoryURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
@@ -3578,7 +3586,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             delegate: self,
             sessionID: sessionID,
             createdAt: createdAt,
-            commandCount: commandCount
+            commandCount: commandCount,
+            commandHistory: commandHistory
         )
         tab.currentCwd = directoryPath
         tabs.append(tab)
@@ -3670,7 +3679,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 isClosedSession: false,
                 createdAt: visible.createdAt,
                 commandCount: visible.commandCount ?? 0,
-                runningCommand: visible.runningCommand
+                runningCommand: visible.runningCommand,
+                commandHistory: visible.commandHistory ?? []
             ))
         }
 
@@ -3685,7 +3695,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 isClosedSession: true,
                 createdAt: closed.createdAt,
                 commandCount: closed.commandCount ?? 0,
-                runningCommand: closed.runningCommand
+                runningCommand: closed.runningCommand,
+                commandHistory: closed.commandHistory ?? []
             ))
         }
 
@@ -3771,6 +3782,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.title = candidate.title
         tab.createdAt = candidate.createdAt ?? Date()
         tab.commandCount = candidate.commandCount
+        tab.commandHistory = candidate.commandHistory
+        tab.commandHistoryIndex = nil
+        tab.commandHistoryDraft = ""
         tab.hasExited = false
         tab.statusLabel.stringValue = "Rejoining session..."
         tab.isShellReady = false
