@@ -2318,6 +2318,7 @@ private final class TerminalOutputProcessor {
 }
 
 private final class SessionCandidateButton: NSControl {
+    let sessionRef: SessionRef
     let sessionID: String
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -2328,8 +2329,9 @@ private final class SessionCandidateButton: NSControl {
         didSet { updateAppearance() }
     }
 
-    init(sessionID: String, title: String, subtitle: String?, metadata: String) {
-        self.sessionID = sessionID
+    init(sessionRef: SessionRef, title: String, subtitle: String?, metadata: String) {
+        self.sessionRef = sessionRef
+        self.sessionID = sessionRef.sessionID
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -2534,7 +2536,11 @@ private final class SessionCandidateRowView: NSView {
 
 private final class TerminalTab {
     let id = UUID()
-    var sessionID: String
+    var sessionRef: SessionRef
+    var sessionID: String {
+        get { sessionRef.sessionID }
+        set { sessionRef.sessionID = newValue }
+    }
     var session: PtySession
     let outputProcessor = TerminalOutputProcessor()
     let rootView = NSView()
@@ -2581,13 +2587,13 @@ private final class TerminalTab {
     init(
         title: String,
         delegate: NSTextViewDelegate,
-        sessionID: String = UUID().uuidString,
+        sessionRef: SessionRef = .local(UUID().uuidString),
         createdAt: Date = Date(),
         commandCount: Int = 0,
         commandHistory: [String] = []
     ) {
-        self.sessionID = sessionID
-        self.session = PtySession(sessionID: sessionID)
+        self.sessionRef = sessionRef
+        self.session = PtySession(sessionRef: sessionRef)
         self.title = title
         self.createdAt = createdAt
         self.commandCount = commandCount
@@ -2789,6 +2795,7 @@ private final class TerminalTab {
 
 final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private struct StoredTab: Codable {
+        var sessionRef: SessionRef?
         var sessionID: String
         var title: String
         var cwd: String
@@ -2807,7 +2814,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private struct LocalSessionCandidate {
+        var sessionRef: SessionRef
         var sessionID: String
+        var hostAlias: String?
         var title: String
         var cwd: String
         var isClosedSession: Bool
@@ -2829,6 +2838,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var tabs: [TerminalTab] = []
     private var closedTabs: [StoredTab] = []
     private var exitedSessionIDs = Set<String>()
+    private var exitedSessionRefs = Set<SessionRef>()
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
     var onInstallStagedUpdate: (() -> Void)?
@@ -3012,7 +3022,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             stopTtyModePolling(for: tab)
             tab.session.stop()
             if shouldKillUnpersistedSession {
-                try? PtySession.killDetachedSession(sessionID: tab.sessionID)
+                try? PtySession.killDetachedSession(sessionRef: tab.sessionRef)
             }
         }
     }
@@ -3298,7 +3308,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         createTab(
             workingDirectory: URL(fileURLWithPath: stored.cwd),
-            sessionID: stored.sessionID,
+            sessionRef: sessionRef(from: stored),
             title: stored.title,
             createdAt: stored.createdAt ?? Date(),
             commandCount: stored.commandCount ?? 0,
@@ -3324,14 +3334,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         var remaining: [StoredTab] = []
         var failures: [String] = []
-        let visibleSessionIDs = Set(loadSessionState().visibleTabs.map(\.sessionID))
+        let visibleSessionRefs = Set(loadSessionState().visibleTabs.map(sessionRef(from:)))
         for stored in closedTabs {
-            guard !visibleSessionIDs.contains(stored.sessionID) else {
+            let storedRef = sessionRef(from: stored)
+            guard !visibleSessionRefs.contains(storedRef) else {
                 remaining.append(stored)
                 continue
             }
             do {
-                try PtySession.killDetachedSession(sessionID: stored.sessionID)
+                try PtySession.killDetachedSession(sessionRef: storedRef)
             } catch {
                 remaining.append(stored)
                 failures.append("\(stored.title): \(error.localizedDescription)")
@@ -3393,7 +3404,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         stopTtyModePolling(for: tab)
         tab.session.stop()
         if !shouldPersistTab && !isVisibleOutsideTab {
-            try? PtySession.killDetachedSession(sessionID: tab.sessionID)
+            try? PtySession.killDetachedSession(sessionRef: tab.sessionRef)
         }
         let wasActive = activeTabID == tab.id
         tab.rootView.removeFromSuperview()
@@ -3448,7 +3459,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         for tab in tabsToRestore {
             createTab(
                 workingDirectory: URL(fileURLWithPath: tab.cwd),
-                sessionID: tab.sessionID,
+                sessionRef: sessionRef(from: tab),
                 title: tab.title,
                 createdAt: tab.createdAt ?? Date(),
                 commandCount: tab.commandCount ?? 0,
@@ -3507,21 +3518,36 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             )
             let data = try JSONEncoder().encode(stored)
             try data.write(to: url, options: .atomic)
+            publishVisibleSessionState()
         } catch {
             NSLog("Failed to persist Vaultty session state: \(error.localizedDescription)")
         }
     }
 
     private func shouldPersistSession(_ tab: TerminalTab) -> Bool {
-        tab.commandCount > 0 && !tab.hasExited && !exitedSessionIDs.contains(tab.sessionID)
+        tab.commandCount > 0 && !tab.hasExited && !exitedSessionRefs.contains(tab.sessionRef)
     }
 
     private func shouldPersistStoredSession(_ tab: StoredTab) -> Bool {
-        (tab.commandCount ?? 0) > 0 && !exitedSessionIDs.contains(tab.sessionID)
+        (tab.commandCount ?? 0) > 0 && !exitedSessionRefs.contains(sessionRef(from: tab))
+    }
+
+    private func publishVisibleSessionState() {
+        for tab in tabs where shouldPersistSession(tab) {
+            tab.session.updateState(
+                title: tab.title,
+                cwd: tab.currentCwd,
+                createdAt: tab.createdAt,
+                commandCount: tab.commandCount,
+                runningCommand: runningCommand(in: tab),
+                commandHistory: tab.commandHistory
+            )
+        }
     }
 
     private func storedTab(from tab: TerminalTab) -> StoredTab {
         StoredTab(
+            sessionRef: tab.sessionRef,
             sessionID: tab.sessionID,
             title: tab.title,
             cwd: tab.currentCwd,
@@ -3537,12 +3563,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.windowID == nil || tab.windowID == windowID
     }
 
+    private func sessionRef(from tab: StoredTab) -> SessionRef {
+        tab.sessionRef ?? .local(tab.sessionID)
+    }
+
     private func isSessionVisibleOutsideTab(_ tab: TerminalTab) -> Bool {
-        if tabs.contains(where: { $0.id != tab.id && $0.sessionID == tab.sessionID }) {
+        if tabs.contains(where: { $0.id != tab.id && $0.sessionRef == tab.sessionRef }) {
             return true
         }
         return loadSessionState().visibleTabs.contains { stored in
-            stored.sessionID == tab.sessionID && stored.windowID != nil && stored.windowID != windowID
+            sessionRef(from: stored) == tab.sessionRef && stored.windowID != nil && stored.windowID != windowID
         }
     }
 
@@ -3572,7 +3602,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func createTab(
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        sessionID: String = UUID().uuidString,
+        sessionRef: SessionRef = .local(UUID().uuidString),
         title: String? = nil,
         createdAt: Date = Date(),
         commandCount: Int = 0,
@@ -3584,7 +3614,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let tab = TerminalTab(
             title: title ?? titleForDirectory(directoryPath),
             delegate: self,
-            sessionID: sessionID,
+            sessionRef: sessionRef,
             createdAt: createdAt,
             commandCount: commandCount,
             commandHistory: commandHistory
@@ -3604,7 +3634,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func configureSessionPicker(for tab: TerminalTab) {
-        let candidates = localSessionCandidates(excluding: tab)
+        let candidates = sessionCandidates(excluding: tab)
         guard !candidates.isEmpty else {
             hideSessionPicker(for: tab)
             return
@@ -3628,7 +3658,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         for rowCandidates in candidateRows {
             let buttons = rowCandidates.map { candidate in
                 let button = SessionCandidateButton(
-                    sessionID: candidate.sessionID,
+                    sessionRef: candidate.sessionRef,
                     title: sessionCandidateTitle(candidate),
                     subtitle: sessionCandidateSubtitle(candidate),
                     metadata: sessionCandidateMetadata(candidate)
@@ -3661,19 +3691,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.rootView.needsLayout = true
     }
 
-    private func localSessionCandidates(excluding tab: TerminalTab) -> [LocalSessionCandidate] {
-        var seen = Set(tabs.map(\.sessionID))
+    private func sessionCandidates(excluding tab: TerminalTab) -> [LocalSessionCandidate] {
+        var seen = Set(tabs.map(\.sessionRef))
         var candidates: [LocalSessionCandidate] = []
 
         let stored = loadSessionState()
         for visible in stored.visibleTabs {
+            let visibleRef = sessionRef(from: visible)
             guard shouldPersistStoredSession(visible),
                   visible.windowID != nil,
                   visible.windowID != windowID,
-                  seen.insert(visible.sessionID).inserted
+                  seen.insert(visibleRef).inserted
             else { continue }
             candidates.append(LocalSessionCandidate(
+                sessionRef: visibleRef,
                 sessionID: visible.sessionID,
+                hostAlias: hostAlias(for: visibleRef.location),
                 title: visible.title,
                 cwd: visible.cwd,
                 isClosedSession: false,
@@ -3685,11 +3718,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         for closed in closedTabs.reversed() {
+            let closedRef = sessionRef(from: closed)
             guard shouldPersistStoredSession(closed),
-                  seen.insert(closed.sessionID).inserted
+                  seen.insert(closedRef).inserted
             else { continue }
             candidates.append(LocalSessionCandidate(
+                sessionRef: closedRef,
                 sessionID: closed.sessionID,
+                hostAlias: hostAlias(for: closedRef.location),
                 title: closed.title,
                 cwd: closed.cwd,
                 isClosedSession: true,
@@ -3700,7 +3736,44 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             ))
         }
 
+        for candidate in remoteSessionCandidates(excluding: seen) {
+            candidates.append(candidate)
+        }
+
         return candidates
+    }
+
+    private func remoteSessionCandidates(excluding seen: Set<SessionRef>) -> [LocalSessionCandidate] {
+        let hosts = PtySession.loadSSHHosts().hosts.filter(\.enrolled)
+        var candidates: [LocalSessionCandidate] = []
+        for host in hosts {
+            let location = SessionLocation.sshHost(host.id)
+            guard let sessions = try? PtySession.listSessions(location: location) else {
+                continue
+            }
+            for session in sessions {
+                let sessionRef = SessionRef(location: location, sessionID: session.sessionID)
+                guard !seen.contains(sessionRef) else { continue }
+                candidates.append(LocalSessionCandidate(
+                    sessionRef: sessionRef,
+                    sessionID: session.sessionID,
+                    hostAlias: host.alias,
+                    title: session.title,
+                    cwd: session.cwd,
+                    isClosedSession: false,
+                    createdAt: session.createdAt,
+                    commandCount: session.commandCount,
+                    runningCommand: session.runningCommand,
+                    commandHistory: session.commandHistory
+                ))
+            }
+        }
+        return candidates
+    }
+
+    private func hostAlias(for location: SessionLocation) -> String? {
+        guard case .sshHost(let hostID) = location else { return nil }
+        return PtySession.loadSSHHosts().hosts.first(where: { $0.id == hostID })?.alias
     }
 
     private func sessionCandidateTitle(_ candidate: LocalSessionCandidate) -> String {
@@ -3708,12 +3781,18 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
            !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return titleForCommand(runningCommand)
         }
+        if let hostAlias = candidate.hostAlias {
+            return "\(hostAlias): \(displaySessionCwd(candidate.cwd))"
+        }
         return displaySessionCwd(candidate.cwd)
     }
 
     private func sessionCandidateSubtitle(_ candidate: LocalSessionCandidate) -> String? {
         if let runningCommand = candidate.runningCommand,
            !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let hostAlias = candidate.hostAlias {
+                return "\(hostAlias): \(displaySessionCwd(candidate.cwd))"
+            }
             return displaySessionCwd(candidate.cwd)
         }
         return nil
@@ -3759,8 +3838,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return
         }
 
-        guard let candidate = localSessionCandidates(excluding: tab)
-            .first(where: { $0.sessionID == sender.sessionID })
+        guard let candidate = sessionCandidates(excluding: tab)
+            .first(where: { $0.sessionRef == sender.sessionRef })
         else {
             NSSound.beep()
             return
@@ -3770,14 +3849,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func replaceFreshSession(in tab: TerminalTab, with candidate: LocalSessionCandidate) {
-        let oldSessionID = tab.sessionID
+        let oldSessionRef = tab.sessionRef
         tab.session.stop()
-        try? PtySession.killDetachedSession(sessionID: oldSessionID)
+        try? PtySession.killDetachedSession(sessionRef: oldSessionRef)
 
         hideSessionPicker(for: tab)
         resetTranscript(for: tab)
-        tab.sessionID = candidate.sessionID
-        tab.session = PtySession(sessionID: candidate.sessionID)
+        tab.sessionRef = candidate.sessionRef
+        tab.session = PtySession(sessionRef: candidate.sessionRef)
         tab.currentCwd = candidate.cwd
         tab.title = candidate.title
         tab.createdAt = candidate.createdAt ?? Date()
@@ -3796,7 +3875,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         configureSession(for: tab)
         configureInterruptHandling(for: tab)
         updateTabTitle(candidate.title, detail: candidate.cwd, in: tab)
-        removeClosedSession(candidate.sessionID)
+        removeClosedSession(candidate.sessionRef)
         startShell(for: tab, workingDirectory: URL(fileURLWithPath: candidate.cwd))
         persistSessionState()
     }
@@ -3812,13 +3891,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func removeClosedSession(_ sessionID: String) {
-        closedTabs.removeAll { $0.sessionID == sessionID }
+    private func removeClosedSession(_ sessionRef: SessionRef) {
+        closedTabs.removeAll { self.sessionRef(from: $0) == sessionRef }
     }
 
-    private func removeExitedSessionFromPersistentHistory(_ sessionID: String) {
-        exitedSessionIDs.insert(sessionID)
-        closedTabs.removeAll { $0.sessionID == sessionID }
+    private func removeExitedSessionFromPersistentHistory(_ sessionRef: SessionRef) {
+        exitedSessionIDs.insert(sessionRef.sessionID)
+        exitedSessionRefs.insert(sessionRef)
+        closedTabs.removeAll { self.sessionRef(from: $0) == sessionRef }
         persistSessionState()
     }
 
@@ -4093,7 +4173,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func configureSession(for tab: TerminalTab) {
-        let configuredSessionID = tab.sessionID
+        let configuredSessionRef = tab.sessionRef
         tab.outputProcessor.onEvent = { [weak self, weak tab] event in
             guard let self, let tab else { return }
             self.handleOutputProcessorEvent(event, in: tab)
@@ -4103,12 +4183,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         tab.session.onExit = { [weak self, weak tab] status in
             guard let self, let tab else { return }
-            guard tab.sessionID == configuredSessionID else { return }
+            guard tab.sessionRef == configuredSessionRef else { return }
             tab.hasExited = true
-            self.removeExitedSessionFromPersistentHistory(configuredSessionID)
+            self.removeExitedSessionFromPersistentHistory(configuredSessionRef)
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
                 guard let self, let tab else { return }
-                guard tab.sessionID == configuredSessionID else { return }
+                guard tab.sessionRef == configuredSessionRef else { return }
                 tab.statusLabel.stringValue = "Shell exited with status \(status)"
                 self.finishRunningBlocks(in: tab, status: status)
                 self.updateTabTitleForDirectory(tab)
@@ -4129,14 +4209,23 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func startShell(for tab: TerminalTab, workingDirectory: URL) {
-        let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap {
-            FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil
-        } ?? "/bin/zsh"
+        let isRemoteSession: Bool
+        if case .sshHost = tab.sessionRef.location {
+            isRemoteSession = true
+        } else {
+            isRemoteSession = false
+        }
+
+        let shell = isRemoteSession
+            ? "/bin/bash"
+            : (ProcessInfo.processInfo.environment["SHELL"].flatMap {
+                FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil
+            } ?? "/bin/zsh")
 
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["VAULTTY"] = "1"
-        env["VAULTTY_ENV"] = bundledExecutablePath(named: "vaultty-env")
+        env["VAULTTY_ENV"] = isRemoteSession ? "" : bundledExecutablePath(named: "vaultty-env")
         env["PROMPT"] = ""
         env["RPROMPT"] = ""
 

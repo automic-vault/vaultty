@@ -8,20 +8,6 @@ private enum AppWindowMetrics {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
-    private struct StoredSSHHost: Codable {
-        var id: String
-        var alias: String
-        var hostname: String
-        var user: String
-        var port: Int
-        var remoteHelperPath: String
-        var enrolled: Bool
-    }
-
-    private struct StoredSSHHosts: Codable {
-        var hosts: [StoredSSHHost]
-    }
-
     private let updater = AppUpdater(owner: "automic-vault", repo: "vaultty")
     private var window: NSWindow?
     private var controller: TerminalViewController?
@@ -258,8 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         let user = form.userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let helperPath = form.helperField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let port = Int(form.portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
-        var updated = stored
-        updated.hosts.append(StoredSSHHost(
+        var host = SSHHostRecord(
             id: UUID().uuidString,
             alias: alias.isEmpty ? hostname : alias,
             hostname: hostname,
@@ -269,8 +254,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
                 ? "~/Library/Application Support/Vaultty/vaultty-session-bridge"
                 : helperPath,
             enrolled: false
-        ))
+        )
+        host.enrolled = verifySSHBridge(host)
+
+        var updated = stored
+        updated.hosts.append(host)
         saveSSHHosts(updated)
+
+        if !host.enrolled {
+            presentSSHEnrollmentHelp(for: host)
+        }
     }
 
     private struct SSHHostPanelForm {
@@ -282,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         var helperField: NSTextField
     }
 
-    private func makeSSHHostPanel(hosts: [StoredSSHHost]) -> SSHHostPanelForm {
+    private func makeSSHHostPanel(hosts: [SSHHostRecord]) -> SSHHostPanelForm {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
             styleMask: [.titled],
@@ -332,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .fill
 
-        let bridgeNote = NSTextField(labelWithString: "Hosts stay unenrolled until the forced-command bridge installer is implemented.")
+        let bridgeNote = NSTextField(labelWithString: "Enrollment uses SSH BatchMode and the configured bridge path. Vaultty stores no SSH passwords or private keys.")
         bridgeNote.font = .systemFont(ofSize: 12)
         bridgeNote.textColor = .tertiaryLabelColor
         bridgeNote.lineBreakMode = .byWordWrapping
@@ -429,9 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         NSApp.stopModal(withCode: .cancel)
     }
 
-    private func sshHostSummary(_ hosts: [StoredSSHHost]) -> String {
+    private func sshHostSummary(_ hosts: [SSHHostRecord]) -> String {
         guard !hosts.isEmpty else {
-            return "No SSH hosts are configured. Added hosts are stored but remain unenrolled until a forced-command bridge installer is implemented."
+            return "No SSH hosts are configured. Add a host that can run vaultty-session-bridge over SSH."
         }
         let lines = hosts.map { host in
             let status = host.enrolled ? "enrolled" : "not enrolled"
@@ -440,38 +433,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         return lines.joined(separator: "\n")
     }
 
-    private func loadSSHHosts() -> StoredSSHHosts {
-        let url = sshHostsURL()
-        guard let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode(StoredSSHHosts.self, from: data)
-        else {
-            return StoredSSHHosts(hosts: [])
+    private func verifySSHBridge(_ host: SSHHostRecord) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        var arguments = [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=3",
+            "-T"
+        ]
+        if host.port != 22 {
+            arguments += ["-p", String(host.port)]
         }
-        return stored
+        arguments.append("\(host.user)@\(host.hostname)")
+        arguments.append("exec \(PtySession.shellPathExpression(host.remoteHelperPath)) --version")
+        process.arguments = arguments
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func presentSSHEnrollmentHelp(for host: SSHHostRecord) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "SSH bridge was not verified"
+        alert.informativeText = """
+        \(host.alias) was saved but is not enrolled. Install vaultty-session-bridge and vaultty-sessiond on the remote host, then add or edit the host again.
+
+        \(sshInstallCommand(for: host))
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func sshInstallCommand(for host: SSHHostRecord) -> String {
+        let remoteTarget = "\(host.user)@\(host.hostname)"
+        let remoteDirectory = (host.remoteHelperPath as NSString).deletingLastPathComponent
+        let bridge = bundledHelperPath(named: "vaultty-session-bridge") ?? "target/debug/vaultty-session-bridge"
+        let sessiond = bundledHelperPath(named: "vaultty-sessiond") ?? "target/debug/vaultty-sessiond"
+        let scpTarget = remoteTarget + ":" + remoteDirectory + "/"
+        return "ssh \(shellQuote(remoteTarget)) 'mkdir -p \(PtySession.shellPathExpression(remoteDirectory))' && scp -P \(host.port) \(shellQuote(bridge)) \(shellQuote(sessiond)) \(shellQuote(scpTarget))"
+    }
+
+    private func bundledHelperPath(named name: String) -> String? {
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: false)
+            .path
+        if FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        for candidate in [
+            "target/debug/\(name)",
+            "target/release/\(name)"
+        ] {
+            let path = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(candidate)
+                .path
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func loadSSHHosts() -> StoredSSHHosts {
+        PtySession.loadSSHHosts()
     }
 
     private func saveSSHHosts(_ hosts: StoredSSHHosts) {
         do {
-            let url = sshHostsURL()
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try JSONEncoder().encode(hosts)
-            try data.write(to: url, options: .atomic)
+            try PtySession.saveSSHHosts(hosts)
         } catch {
             let alert = NSAlert(error: error)
             alert.messageText = "Could not save SSH hosts"
             alert.runModal()
         }
-    }
-
-    private func sshHostsURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("Vaultty", isDirectory: true)
-            .appendingPathComponent("hosts.json", isDirectory: false)
     }
 
     @objc private func selectPreviousTab(_ sender: Any?) {
