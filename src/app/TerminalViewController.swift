@@ -2296,7 +2296,7 @@ private final class TerminalOutputProcessor {
     }
 }
 
-private final class SessionCandidateButton: NSButton {
+private final class SessionCandidateButton: NSControl {
     let sessionID: String
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -2307,23 +2307,12 @@ private final class SessionCandidateButton: NSButton {
         didSet { updateAppearance() }
     }
 
-    override var isHighlighted: Bool {
-        didSet { updateAppearance() }
-    }
-
     init(sessionID: String, title: String, subtitle: String?, metadata: String) {
         self.sessionID = sessionID
         super.init(frame: .zero)
-        self.title = ""
-        isBordered = false
-        bezelStyle = .regularSquare
-        imagePosition = .noImage
-        lineBreakMode = .byTruncatingTail
-        setButtonType(.momentaryPushIn)
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.backgroundColor = NSColor.clear.cgColor
-        translatesAutoresizingMaskIntoConstraints = false
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         iconView.image = NSImage(
@@ -2393,6 +2382,11 @@ private final class SessionCandidateButton: NSButton {
                 return value
             }
             .joined(separator: "\n")
+
+        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
+        clickGesture.buttonMask = 0x1
+        addGestureRecognizer(clickGesture)
+
         updateAppearance()
     }
 
@@ -2422,41 +2416,79 @@ private final class SessionCandidateButton: NSButton {
         isHovering = false
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-
-        isHighlighted = true
-        defer { isHighlighted = false }
-
-        while let nextEvent = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            let point = convert(nextEvent.locationInWindow, from: nil)
-            isHighlighted = bounds.contains(point)
-            guard nextEvent.type == .leftMouseUp else { continue }
-            guard isHighlighted,
-                  let action
-            else {
-                return
-            }
-            NSApp.sendAction(action, to: target, from: self)
-            return
-        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         bounds.contains(point) ? self : nil
     }
 
+    @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
+        guard recognizer.state == .ended,
+              isEnabled,
+              let action
+        else {
+            return
+        }
+
+        sendAction(action, to: target)
+    }
+
     private func updateAppearance() {
-        layer?.backgroundColor = (isHovering || isHighlighted)
+        layer?.backgroundColor = isHovering
             ? TahoeGlassPalette.titleSegmentHoverFill.cgColor
             : NSColor.clear.cgColor
-        iconView.contentTintColor = (isHovering || isHighlighted)
+        iconView.contentTintColor = isHovering
             ? NSColor.labelColor
             : TahoeGlassPalette.titleTextActive
+    }
+}
+
+private final class SessionCandidateRowView: NSView {
+    private enum Metrics {
+        static let columnCount = 4
+        static let spacing: CGFloat = 10
+        static let height: CGFloat = 82
+    }
+
+    private let buttons: [SessionCandidateButton]
+
+    init(buttons: [SessionCandidateButton]) {
+        self.buttons = buttons
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        for button in buttons {
+            button.translatesAutoresizingMaskIntoConstraints = true
+            addSubview(button)
+        }
+        heightAnchor.constraint(equalToConstant: Metrics.height).isActive = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: Metrics.height)
+    }
+
+    override func layout() {
+        super.layout()
+        let availableWidth = max(0, bounds.width - Metrics.spacing * CGFloat(Metrics.columnCount - 1))
+        let columnWidth = floor(availableWidth / CGFloat(Metrics.columnCount))
+
+        for (index, button) in buttons.enumerated() {
+            let x = CGFloat(index) * (columnWidth + Metrics.spacing)
+            button.frame = NSRect(
+                x: x,
+                y: 0,
+                width: columnWidth,
+                height: Metrics.height
+            )
+        }
     }
 }
 
@@ -3515,16 +3547,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         let visibleCandidates = Array(candidates.prefix(8))
         for rowCandidates in visibleCandidates.chunked(into: 4) {
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.spacing = 10
-            row.alignment = .top
-            row.distribution = .fillEqually
-            row.translatesAutoresizingMaskIntoConstraints = false
-            tab.sessionPickerStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: tab.sessionPickerStack.widthAnchor).isActive = true
-
-            for candidate in rowCandidates {
+            let buttons = rowCandidates.map { candidate in
                 let button = SessionCandidateButton(
                     sessionID: candidate.sessionID,
                     title: sessionCandidateTitle(candidate),
@@ -3533,14 +3556,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 )
                 button.target = self
                 button.action = #selector(attachSessionFromPicker(_:))
-                row.addArrangedSubview(button)
+                return button
             }
 
-            for _ in rowCandidates.count..<4 {
-                let spacer = NSView()
-                spacer.translatesAutoresizingMaskIntoConstraints = false
-                row.addArrangedSubview(spacer)
-            }
+            let row = SessionCandidateRowView(buttons: buttons)
+            tab.sessionPickerStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: tab.sessionPickerStack.widthAnchor).isActive = true
         }
 
         tab.sessionPickerView.isHidden = false
