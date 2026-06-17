@@ -3798,9 +3798,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             switch event.type {
             case .keyDown:
-                if self.shouldCopyTranscriptSelection(for: event) {
-                    return nil
-                }
                 if self.shouldRedirectKeyEventToCommandInput(event) {
                     self.restoreCommandFocusIfNeeded()
                 }
@@ -3821,21 +3818,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             return event
         }
-    }
-
-    private func shouldCopyTranscriptSelection(for event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command),
-              !flags.contains(.control),
-              !flags.contains(.option),
-              event.charactersIgnoringModifiers?.lowercased() == "c",
-              let selectedText = selectedTranscriptText()
-        else {
-            return false
-        }
-
-        copy(selectedText)
-        return true
     }
 
     private func shouldRedirectKeyEventToCommandInput(_ event: NSEvent) -> Bool {
