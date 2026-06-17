@@ -56,14 +56,23 @@ fn proxy_stdio(stream: UnixStream) -> io::Result<()> {
         result.map(|_| ())
     });
 
-    join_io_thread(input_thread)?;
-    join_io_thread(output_thread)
+    let input_result = join_io_thread(input_thread);
+    let output_result = join_io_thread(output_thread);
+    tolerate_broken_pipe(input_result)?;
+    output_result
 }
 
 fn join_io_thread(thread: thread::JoinHandle<io::Result<()>>) -> io::Result<()> {
     match thread.join() {
         Ok(result) => result,
         Err(_) => Err(io::Error::other("bridge proxy thread panicked")),
+    }
+}
+
+fn tolerate_broken_pipe(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
     }
 }
 

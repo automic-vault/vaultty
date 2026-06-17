@@ -3748,8 +3748,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var candidates: [LocalSessionCandidate] = []
         for host in hosts {
             let location = SessionLocation.sshHost(host.id)
-            guard let sessions = try? PtySession.listSessions(location: location) else {
-                continue
+            let sessions: [SessionMetadata]
+            do {
+                sessions = try PtySession.listSessions(location: location)
+            } catch {
+                sessions = (try? PtySession.remoteStoredSessionMetadata(host: host)) ?? []
             }
             for session in sessions {
                 let sessionRef = SessionRef(location: location, sessionID: session.sessionID)

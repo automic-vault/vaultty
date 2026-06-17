@@ -71,6 +71,26 @@ struct SessionMetadata: Decodable {
     var commandHistory: [String]
     var attachedClientCount: Int
 
+    init(
+        sessionID: String,
+        title: String,
+        cwd: String,
+        createdAt: Date,
+        commandCount: Int,
+        runningCommand: String?,
+        commandHistory: [String],
+        attachedClientCount: Int = 0
+    ) {
+        self.sessionID = sessionID
+        self.title = title
+        self.cwd = cwd
+        self.createdAt = createdAt
+        self.commandCount = commandCount
+        self.runningCommand = runningCommand
+        self.commandHistory = commandHistory
+        self.attachedClientCount = attachedClientCount
+    }
+
     private enum CodingKeys: String, CodingKey {
         case sessionID
         case title
@@ -215,6 +235,29 @@ final class PtySession {
         return try JSONDecoder().decode([SessionMetadata].self, from: data)
     }
 
+    static func remoteStoredSessionMetadata(host: SSHHostRecord) throws -> [SessionMetadata] {
+        let data = try runSSHCommand(
+            host: host,
+            command: "cat \"$HOME/Library/Application Support/Vaultty/sessions.json\" 2>/dev/null || true",
+            batchMode: true
+        )
+        guard !data.isEmpty else { return [] }
+        let stored = try JSONDecoder().decode(RemoteStoredSessions.self, from: data)
+        return (stored.visibleTabs + stored.closedTabs)
+            .filter { ($0.commandCount ?? 0) > 0 }
+            .map { tab in
+                SessionMetadata(
+                    sessionID: tab.sessionID,
+                    title: tab.title,
+                    cwd: tab.cwd,
+                    createdAt: tab.createdAt ?? Date.distantPast,
+                    commandCount: tab.commandCount ?? 0,
+                    runningCommand: tab.runningCommand,
+                    commandHistory: tab.commandHistory ?? []
+                )
+            }
+    }
+
     private struct SessionStatePayload: Encodable {
         var title: String
         var cwd: String
@@ -222,6 +265,21 @@ final class PtySession {
         var commandCount: Int
         var runningCommand: String?
         var commandHistory: [String]
+    }
+
+    private struct RemoteStoredSessions: Decodable {
+        var visibleTabs: [RemoteStoredTab]
+        var closedTabs: [RemoteStoredTab]
+    }
+
+    private struct RemoteStoredTab: Decodable {
+        var sessionID: String
+        var title: String
+        var cwd: String
+        var createdAt: Date?
+        var commandCount: Int?
+        var runningCommand: String?
+        var commandHistory: [String]?
     }
 
     private func connect() throws {
@@ -355,16 +413,37 @@ final class PtySession {
             return try readLine(from: fd)
         case .sshHost(let hostID):
             let host = try sshHostRecord(id: hostID)
-            let process = makeSSHBridgeProcess(host: host, batchMode: true)
-            let inputPipe = Pipe()
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardInput = inputPipe
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-            try process.run()
-            try inputPipe.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8))
-            try inputPipe.fileHandleForWriting.close()
+            let output = try runSSHBridgeCommand(host: host, command: command)
+            return String(decoding: output, as: UTF8.self)
+                .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+                .first
+                .map(String.init) ?? ""
+        }
+    }
+
+    private static func runSSHBridgeCommand(host: SSHHostRecord, command: String) throws -> Data {
+        let process = makeSSHBridgeProcess(host: host, batchMode: true)
+        let inputPipe = Pipe()
+        process.standardInput = inputPipe
+        let output = try runProcess(process)
+        try inputPipe.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8))
+        try inputPipe.fileHandleForWriting.close()
+        return try output()
+    }
+
+    private static func runSSHCommand(host: SSHHostRecord, command: String, batchMode: Bool) throws -> Data {
+        let process = makeSSHProcess(host: host, command: command, batchMode: batchMode)
+        let output = try runProcess(process)
+        return try output()
+    }
+
+    private static func runProcess(_ process: Process) throws -> () throws -> Data {
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        return {
             let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             if process.terminationStatus != 0 {
@@ -372,13 +451,10 @@ final class PtySession {
                 throw NSError(
                     domain: NSPOSIXErrorDomain,
                     code: Int(process.terminationStatus),
-                    userInfo: [NSLocalizedDescriptionKey: errorText.isEmpty ? "SSH bridge failed" : errorText]
+                    userInfo: [NSLocalizedDescriptionKey: errorText.isEmpty ? "SSH command failed" : errorText]
                 )
             }
-            return String(decoding: output, as: UTF8.self)
-                .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
-                .first
-                .map(String.init) ?? ""
+            return output
         }
     }
 
@@ -570,6 +646,10 @@ final class PtySession {
     }
 
     private static func makeSSHBridgeProcess(host: SSHHostRecord, batchMode: Bool = false) -> Process {
+        makeSSHProcess(host: host, command: shellCommand(execPath: host.remoteHelperPath), batchMode: batchMode)
+    }
+
+    private static func makeSSHProcess(host: SSHHostRecord, command: String, batchMode: Bool = false) -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         var arguments = ["-T"]
@@ -583,7 +663,7 @@ final class PtySession {
             arguments += ["-p", String(host.port)]
         }
         arguments.append("\(host.user)@\(host.hostname)")
-        arguments.append(shellCommand(execPath: host.remoteHelperPath))
+        arguments.append(command)
         process.arguments = arguments
         return process
     }
