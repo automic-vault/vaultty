@@ -218,7 +218,7 @@ final class PtySession {
     }
 
     static func killDetachedSession(sessionRef: SessionRef) throws {
-        try sendSingleResponseCommand("KILL \(base64(sessionRef.sessionID))", location: sessionRef.location)
+        try sendCommandNoResponse("KILL \(base64(sessionRef.sessionID))", location: sessionRef.location)
     }
 
     static func listSessions(location: SessionLocation = .local) throws -> [SessionMetadata] {
@@ -418,6 +418,31 @@ final class PtySession {
                 .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
                 .first
                 .map(String.init) ?? ""
+        }
+    }
+
+    private static func sendCommandNoResponse(_ command: String, location: SessionLocation) throws {
+        switch location {
+        case .local:
+            try ensureDaemonIsRunning()
+            let fd = try connectToDaemon()
+            defer { close(fd) }
+            try writeAll(command + "\n", to: fd)
+        case .sshHost(let hostID):
+            let host = try sshHostRecord(id: hostID)
+            let process = makeSSHBridgeProcess(host: host, batchMode: true)
+            let inputPipe = Pipe()
+            process.standardInput = inputPipe
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            try process.run()
+            try inputPipe.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8))
+            try inputPipe.fileHandleForWriting.close()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
         }
     }
 

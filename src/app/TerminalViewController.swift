@@ -2855,6 +2855,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let gitStateProvider = GitDirectoryStateProvider()
     private let gitStateQueue = DispatchQueue(label: "com.automicvault.vaultty.git-state", qos: .utility)
     private let remoteSessionQueue = DispatchQueue(label: "com.automicvault.vaultty.remote-sessions", qos: .utility)
+    private let sessionCleanupQueue = DispatchQueue(label: "com.automicvault.vaultty.session-cleanup", qos: .utility)
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var activeCompletionRange: NSRange?
@@ -3024,7 +3025,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             stopTtyModePolling(for: tab)
             tab.session.stop()
             if shouldKillUnpersistedSession {
-                try? PtySession.killDetachedSession(sessionRef: tab.sessionRef)
+                scheduleKillDetachedSession(tab.sessionRef)
             }
         }
     }
@@ -3406,7 +3407,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         stopTtyModePolling(for: tab)
         tab.session.stop()
         if !shouldPersistTab && !isVisibleOutsideTab {
-            try? PtySession.killDetachedSession(sessionRef: tab.sessionRef)
+            scheduleKillDetachedSession(tab.sessionRef)
         }
         let wasActive = activeTabID == tab.id
         tab.rootView.removeFromSuperview()
@@ -3881,7 +3882,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func replaceFreshSession(in tab: TerminalTab, with candidate: LocalSessionCandidate) {
         let oldSessionRef = tab.sessionRef
         tab.session.stop()
-        try? PtySession.killDetachedSession(sessionRef: oldSessionRef)
+        scheduleKillDetachedSession(oldSessionRef)
 
         hideSessionPicker(for: tab)
         resetTranscript(for: tab)
@@ -3923,6 +3924,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func removeClosedSession(_ sessionRef: SessionRef) {
         closedTabs.removeAll { self.sessionRef(from: $0) == sessionRef }
+    }
+
+    private func scheduleKillDetachedSession(_ sessionRef: SessionRef) {
+        sessionCleanupQueue.async {
+            try? PtySession.killDetachedSession(sessionRef: sessionRef)
+        }
     }
 
     private func removeExitedSessionFromPersistentHistory(_ sessionRef: SessionRef) {
