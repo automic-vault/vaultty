@@ -3545,7 +3545,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.sessionPickerStack.addArrangedSubview(title)
         title.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
-        let visibleCandidates = Array(candidates.prefix(8))
+        let visibleCandidates = candidates
         for rowCandidates in visibleCandidates.chunked(into: 4) {
             let buttons = rowCandidates.map { candidate in
                 let button = SessionCandidateButton(
