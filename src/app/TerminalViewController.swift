@@ -2222,21 +2222,127 @@ private final class TerminalOutputProcessor {
 
 private final class SessionCandidateButton: NSButton {
     let sessionID: String
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false {
+        didSet { updateAppearance() }
+    }
 
-    init(sessionID: String, title: String) {
+    init(sessionID: String, title: String, detail: String, metadata: String) {
         self.sessionID = sessionID
         super.init(frame: .zero)
-        self.title = title
-        bezelStyle = .rounded
-        controlSize = .small
+        self.title = ""
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .noImage
         lineBreakMode = .byTruncatingTail
         setButtonType(.momentaryPushIn)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.backgroundColor = NSColor.clear.cgColor
         translatesAutoresizingMaskIntoConstraints = false
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        iconView.image = NSImage(
+            systemSymbolName: "terminal",
+            accessibilityDescription: "Session"
+        )
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
+        iconView.contentTintColor = TahoeGlassPalette.titleTextActive
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconView)
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        detailLabel.stringValue = detail
+        detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.maximumNumberOfLines = 1
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(detailLabel)
+
+        metaLabel.stringValue = metadata
+        metaLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        metaLabel.textColor = .tertiaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.maximumNumberOfLines = 1
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(metaLabel)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 72),
+
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 24),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 11),
+
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+
+            metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            metaLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 3)
+        ])
+
+        setAccessibilityLabel(title)
+        setAccessibilityValue(metadata)
+        toolTip = "\(title)\n\(detail)\n\(metadata)"
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    private func updateAppearance() {
+        layer?.backgroundColor = isHovering
+            ? TahoeGlassPalette.titleSegmentHoverFill.cgColor
+            : NSColor.clear.cgColor
+        iconView.contentTintColor = isHovering
+            ? NSColor.labelColor
+            : TahoeGlassPalette.titleTextActive
     }
 }
 
@@ -2282,11 +2388,21 @@ private final class TerminalTab {
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
     var canReplaceFreshSession = false
+    var createdAt: Date
+    var commandCount: Int
 
-    init(title: String, delegate: NSTextViewDelegate, sessionID: String = UUID().uuidString) {
+    init(
+        title: String,
+        delegate: NSTextViewDelegate,
+        sessionID: String = UUID().uuidString,
+        createdAt: Date = Date(),
+        commandCount: Int = 0
+    ) {
         self.sessionID = sessionID
         self.session = PtySession(sessionID: sessionID)
         self.title = title
+        self.createdAt = createdAt
+        self.commandCount = commandCount
         buildView(delegate: delegate)
     }
 
@@ -2310,13 +2426,11 @@ private final class TerminalTab {
         scrollView.contentView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        sessionPickerView.wantsLayer = true
-        sessionPickerView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
         sessionPickerView.isHidden = true
         sessionPickerView.translatesAutoresizingMaskIntoConstraints = false
 
         sessionPickerStack.orientation = .vertical
-        sessionPickerStack.spacing = 6
+        sessionPickerStack.spacing = 10
         sessionPickerStack.alignment = .leading
         sessionPickerStack.distribution = .fill
         sessionPickerStack.translatesAutoresizingMaskIntoConstraints = false
@@ -2415,7 +2529,7 @@ private final class TerminalTab {
 
             sessionPickerStack.leadingAnchor.constraint(equalTo: sessionPickerView.leadingAnchor, constant: 12),
             sessionPickerStack.trailingAnchor.constraint(
-                lessThanOrEqualTo: sessionPickerView.trailingAnchor,
+                equalTo: sessionPickerView.trailingAnchor,
                 constant: -12
             ),
             sessionPickerStack.topAnchor.constraint(equalTo: sessionPickerView.topAnchor, constant: 8),
@@ -2489,6 +2603,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var title: String
         var cwd: String
         var windowID: String?
+        var createdAt: Date?
+        var commandCount: Int?
     }
 
     private struct StoredSessions: Codable {
@@ -2503,6 +2619,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         var title: String
         var cwd: String
         var isClosedSession: Bool
+        var createdAt: Date?
+        var commandCount: Int
     }
 
     private struct TerminalGridSize {
@@ -2983,6 +3101,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             workingDirectory: URL(fileURLWithPath: stored.cwd),
             sessionID: stored.sessionID,
             title: stored.title,
+            createdAt: stored.createdAt ?? Date(),
+            commandCount: stored.commandCount ?? 0,
             showsSessionPicker: false
         )
         persistSessionState()
@@ -3124,6 +3244,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 workingDirectory: URL(fileURLWithPath: tab.cwd),
                 sessionID: tab.sessionID,
                 title: tab.title,
+                createdAt: tab.createdAt ?? Date(),
+                commandCount: tab.commandCount ?? 0,
                 showsSessionPicker: false
             )
         }
@@ -3174,7 +3296,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func storedTab(from tab: TerminalTab) -> StoredTab {
-        StoredTab(sessionID: tab.sessionID, title: tab.title, cwd: tab.currentCwd, windowID: windowID)
+        StoredTab(
+            sessionID: tab.sessionID,
+            title: tab.title,
+            cwd: tab.currentCwd,
+            windowID: windowID,
+            createdAt: tab.createdAt,
+            commandCount: tab.commandCount
+        )
     }
 
     private func storedTabBelongsToCurrentWindow(_ tab: StoredTab) -> Bool {
@@ -3202,11 +3331,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         sessionID: String = UUID().uuidString,
         title: String? = nil,
+        createdAt: Date = Date(),
+        commandCount: Int = 0,
         showsSessionPicker: Bool = true
     ) {
         let directoryURL = workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
         let directoryPath = directoryURL.path
-        let tab = TerminalTab(title: title ?? titleForDirectory(directoryPath), delegate: self, sessionID: sessionID)
+        let tab = TerminalTab(
+            title: title ?? titleForDirectory(directoryPath),
+            delegate: self,
+            sessionID: sessionID,
+            createdAt: createdAt,
+            commandCount: commandCount
+        )
         tab.currentCwd = directoryPath
         tabs.append(tab)
         configureSession(for: tab)
@@ -3235,33 +3372,26 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         let title = NSTextField(labelWithString: "Join existing session")
-        title.font = .systemFont(ofSize: 11, weight: .semibold)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.textColor = .secondaryLabelColor
         title.translatesAutoresizingMaskIntoConstraints = false
         tab.sessionPickerStack.addArrangedSubview(title)
 
-        let buttonRow = NSStackView()
-        buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
-        buttonRow.alignment = .centerY
-        buttonRow.distribution = .gravityAreas
-        buttonRow.translatesAutoresizingMaskIntoConstraints = false
-        tab.sessionPickerStack.addArrangedSubview(buttonRow)
-
-        for candidate in candidates.prefix(6) {
+        for candidate in candidates.prefix(3) {
             let button = SessionCandidateButton(
                 sessionID: candidate.sessionID,
-                title: sessionCandidateTitle(candidate)
+                title: sessionCandidateTitle(candidate),
+                detail: displaySessionCwd(candidate.cwd),
+                metadata: sessionCandidateMetadata(candidate)
             )
-            button.toolTip = sessionCandidateDetail(candidate)
             button.target = self
             button.action = #selector(attachSessionFromPicker(_:))
-            buttonRow.addArrangedSubview(button)
-            button.widthAnchor.constraint(lessThanOrEqualToConstant: 220).isActive = true
+            tab.sessionPickerStack.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: tab.sessionPickerStack.widthAnchor).isActive = true
         }
 
         tab.sessionPickerView.isHidden = false
-        tab.sessionPickerHeightConstraint?.constant = 62
+        tab.sessionPickerHeightConstraint?.constant = CGFloat(30 + min(candidates.count, 3) * 82)
         tab.rootView.needsLayout = true
     }
 
@@ -3290,7 +3420,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 sessionID: visible.sessionID,
                 title: visible.title,
                 cwd: visible.cwd,
-                isClosedSession: false
+                isClosedSession: false,
+                createdAt: visible.createdAt,
+                commandCount: visible.commandCount ?? 0
             ))
         }
 
@@ -3300,7 +3432,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 sessionID: closed.sessionID,
                 title: closed.title,
                 cwd: closed.cwd,
-                isClosedSession: true
+                isClosedSession: true,
+                createdAt: closed.createdAt,
+                commandCount: closed.commandCount ?? 0
             ))
         }
 
@@ -3312,8 +3446,32 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return "\(prefix): \(candidate.title)"
     }
 
-    private func sessionCandidateDetail(_ candidate: LocalSessionCandidate) -> String {
-        "\(candidate.title)\n\(candidate.cwd)"
+    private func sessionCandidateMetadata(_ candidate: LocalSessionCandidate) -> String {
+        let createdText = candidate.createdAt.map { relativeSessionTime(from: $0) } ?? "created earlier"
+        let commandText = commandCountText(candidate.commandCount)
+        return "\(createdText) · \(commandText)"
+    }
+
+    private func displaySessionCwd(_ cwd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if cwd == home {
+            return "~"
+        }
+        if cwd.hasPrefix(home + "/") {
+            return "~" + String(cwd.dropFirst(home.count))
+        }
+        return cwd
+    }
+
+    private func relativeSessionTime(from date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        formatter.dateTimeStyle = .named
+        return "created \(formatter.localizedString(for: date, relativeTo: Date()))"
+    }
+
+    private func commandCountText(_ count: Int) -> String {
+        count == 1 ? "1 command" : "\(count) commands"
     }
 
     @objc private func attachSessionFromPicker(_ sender: SessionCandidateButton) {
@@ -3347,6 +3505,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session = PtySession(sessionID: candidate.sessionID)
         tab.currentCwd = candidate.cwd
         tab.title = candidate.title
+        tab.createdAt = candidate.createdAt ?? Date()
+        tab.commandCount = candidate.commandCount
         tab.statusLabel.stringValue = "Rejoining session..."
         tab.isShellReady = false
         tab.isTerminalControlActive = false
@@ -4089,6 +4249,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let previousIndex = tab.commandHistory.firstIndex(of: command) {
             tab.commandHistory.remove(at: previousIndex)
         }
+        tab.commandCount += 1
         tab.commandHistory.append(command)
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
@@ -4249,6 +4410,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             state: .running
         )
         tab.blocks.append(block)
+        if !command.isEmpty {
+            tab.commandCount = max(tab.commandCount, tab.blocks.filter { !$0.command.isEmpty }.count)
+        }
         tab.activeBlockID = blockID
         tab.pendingBlockID = nil
         addBlockView(block, to: tab)
