@@ -3807,6 +3807,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return PtySession.loadSSHHosts().hosts.first(where: { $0.id == hostID })?.alias
     }
 
+    private func hostname(for location: SessionLocation) -> String? {
+        guard case .sshHost(let hostID) = location,
+              let host = PtySession.loadSSHHosts().hosts.first(where: { $0.id == hostID })
+        else {
+            return nil
+        }
+        return host.hostname.isEmpty ? host.alias : host.hostname
+    }
+
     private func sessionCandidateTitle(_ candidate: LocalSessionCandidate) -> String {
         if let runningCommand = candidate.runningCommand,
            !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3949,8 +3958,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func installTabButton(_ tab: TerminalTab) {
-        let button = TitleTabButton(tabID: tab.id, title: tab.title)
-        button.updateTitle(tab.title, detail: detailForDirectory(tab.currentCwd))
+        let button = TitleTabButton(tabID: tab.id, title: displayTabTitle(tab.title, in: tab))
+        button.updateTitle(displayTabTitle(tab.title, in: tab), detail: detailForDirectory(tab.currentCwd))
         button.target = self
         button.action = #selector(selectTab(_:))
         button.configureClose(target: self, action: #selector(closeTab(_:)))
@@ -4977,10 +4986,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let displayTitle = normalizedTitle.isEmpty ? fallback : normalizedTitle
         tab.title = displayTitle
         if let button = tabButtons[tab.id] {
-            button.updateTitle(displayTitle, detail: detail)
+            button.updateTitle(displayTabTitle(displayTitle, in: tab), detail: detail)
             layoutTabStripBeforeMeasuringSelection()
             updateActiveTabCutoutFrame()
         }
+    }
+
+    private func displayTabTitle(_ title: String, in tab: TerminalTab) -> String {
+        guard let hostname = hostname(for: tab.sessionRef.location) else {
+            return title
+        }
+        return "\(hostname):\(title)"
     }
 
     private func updateDotenvShield(_ isVisible: Bool, in tab: TerminalTab) {
