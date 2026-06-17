@@ -1,6 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use libc::{TIOCGPGRP, TIOCSWINSZ, c_int, c_void, pid_t, winsize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::CString;
@@ -12,12 +13,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct AttachRequest {
     session_id: String,
     cwd: PathBuf,
@@ -25,12 +27,38 @@ struct AttachRequest {
     environment: Vec<(String, String)>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionMetadata {
+    session_id: String,
+    title: String,
+    cwd: String,
+    created_at: f64,
+    command_count: u32,
+    running_command: Option<String>,
+    command_history: Vec<String>,
+    attached_client_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionStateUpdate {
+    title: Option<String>,
+    cwd: Option<String>,
+    created_at: Option<f64>,
+    command_count: Option<u32>,
+    running_command: Option<String>,
+    command_history: Option<Vec<String>>,
+}
+
 struct Session {
     session_id: String,
     master_fd: RawFd,
     child_pid: pid_t,
     exited: AtomicBool,
+    attached_client_count: AtomicUsize,
     history: Mutex<Vec<u8>>,
+    metadata: Mutex<SessionMetadata>,
     clients: Mutex<Vec<Sender<Vec<u8>>>>,
     state: Weak<DaemonState>,
 }
@@ -86,7 +114,9 @@ impl Session {
             master_fd,
             child_pid: pid,
             exited: AtomicBool::new(false),
+            attached_client_count: AtomicUsize::new(0),
             history: Mutex::new(Vec::new()),
+            metadata: Mutex::new(SessionMetadata::new(request)),
             clients: Mutex::new(Vec::new()),
             state,
         });
@@ -103,6 +133,48 @@ impl Session {
 
     fn history(&self) -> Vec<u8> {
         self.history.lock().expect("history lock poisoned").clone()
+    }
+
+    fn increment_attached_client_count(&self) {
+        self.attached_client_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn decrement_attached_client_count(&self) {
+        self.attached_client_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .ok();
+    }
+
+    fn metadata_snapshot(&self) -> SessionMetadata {
+        let mut metadata = self
+            .metadata
+            .lock()
+            .expect("metadata lock poisoned")
+            .clone();
+        metadata.attached_client_count = self.attached_client_count.load(Ordering::SeqCst);
+        metadata
+    }
+
+    fn update_metadata(&self, update: SessionStateUpdate) {
+        let mut metadata = self.metadata.lock().expect("metadata lock poisoned");
+        if let Some(title) = update.title {
+            metadata.title = title;
+        }
+        if let Some(cwd) = update.cwd {
+            metadata.cwd = cwd;
+        }
+        if let Some(created_at) = update.created_at {
+            metadata.created_at = created_at;
+        }
+        if let Some(command_count) = update.command_count {
+            metadata.command_count = command_count;
+        }
+        metadata.running_command = update.running_command;
+        if let Some(command_history) = update.command_history {
+            metadata.command_history = command_history;
+        }
     }
 
     fn write_input(&self, bytes: &[u8]) {
@@ -205,6 +277,22 @@ impl Session {
     }
 }
 
+impl SessionMetadata {
+    fn new(request: &AttachRequest) -> Self {
+        let cwd = request.cwd.to_string_lossy().to_string();
+        Self {
+            session_id: request.session_id.clone(),
+            title: default_title_for_cwd(&request.cwd),
+            cwd,
+            created_at: unix_timestamp_now(),
+            command_count: 0,
+            running_command: None,
+            command_history: Vec::new(),
+            attached_client_count: 0,
+        }
+    }
+}
+
 struct DaemonState {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
 }
@@ -276,6 +364,11 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
         return Ok(());
     }
 
+    if line.trim_end() == "LIST" {
+        write_session_list(&mut stream, &state)?;
+        return Ok(());
+    }
+
     let request = parse_attach(line.trim_end())?;
     let (session, created) = {
         let mut sessions = state.sessions.lock().expect("sessions lock poisoned");
@@ -296,6 +389,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     session.add_client(tx);
+    session.increment_attached_client_count();
     writeln!(stream, "READY {}", if created { 1 } else { 0 })?;
 
     let history = session.history();
@@ -340,6 +434,9 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
             }
         } else if command == "INTERRUPT" {
             session.interrupt();
+        } else if let Some(encoded) = command.strip_prefix("STATE ") {
+            let update = decode_state_update(encoded)?;
+            session.update_metadata(update);
         } else if command == "KILL" {
             session.kill();
             state
@@ -352,7 +449,21 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
         line.clear();
     }
 
+    session.decrement_attached_client_count();
     Ok(())
+}
+
+fn write_session_list(stream: &mut UnixStream, state: &DaemonState) -> io::Result<()> {
+    let sessions: Vec<SessionMetadata> = state
+        .sessions
+        .lock()
+        .expect("sessions lock poisoned")
+        .values()
+        .filter(|session| !session.exited.load(Ordering::SeqCst))
+        .map(|session| session.metadata_snapshot())
+        .collect();
+    let json = serde_json::to_vec(&sessions).map_err(invalid_data)?;
+    writeln!(stream, "SESSIONS {}", BASE64.encode(json))
 }
 
 fn parse_attach(line: &str) -> io::Result<AttachRequest> {
@@ -392,6 +503,36 @@ fn decode_string(value: &str) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid base64"))?;
     String::from_utf8(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid utf8"))
+}
+
+fn decode_state_update(value: &str) -> io::Result<SessionStateUpdate> {
+    let json = if value.trim_start().starts_with('{') {
+        value.as_bytes().to_vec()
+    } else {
+        BASE64
+            .decode(value)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid state base64"))?
+    };
+    serde_json::from_slice(&json).map_err(invalid_data)
+}
+
+fn invalid_data(error: impl std::error::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+fn unix_timestamp_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn default_title_for_cwd(cwd: &Path) -> String {
+    cwd.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("~")
+        .to_owned()
 }
 
 fn socket_path() -> io::Result<PathBuf> {
@@ -445,6 +586,7 @@ fn validate_peer_signature(stream: &UnixStream) -> io::Result<()> {
     let path_text = String::from_utf8_lossy(path.as_os_str().as_bytes());
     let looks_like_vaultty = path_text.ends_with("/Contents/MacOS/Vaultty")
         || path_text.ends_with("/Vaultty")
+        || path_text.ends_with("/vaultty-session-bridge")
         || env::var_os("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT").is_some();
     let signed_by_expected_team =
         text.contains("TeamIdentifier=") && !text.contains("TeamIdentifier=not set");
@@ -511,5 +653,72 @@ fn reap_child(pid: pid_t) -> i32 {
         (status >> 8) & 0xff
     } else {
         128 + (status & 0x7f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encoded(value: &str) -> String {
+        BASE64.encode(value)
+    }
+
+    #[test]
+    fn parse_attach_accepts_expected_wire_shape() {
+        let line = format!(
+            "ATTACH {} {} {} {}",
+            encoded("session-1"),
+            encoded("/tmp"),
+            encoded("/bin/sh"),
+            encoded("TERM=xterm-256color\0VAULTTY=1")
+        );
+
+        let request = parse_attach(&line).expect("attach request should parse");
+
+        assert_eq!(request.session_id, "session-1");
+        assert_eq!(request.cwd, PathBuf::from("/tmp"));
+        assert_eq!(request.shell, "/bin/sh");
+        assert_eq!(
+            request.environment,
+            vec![
+                ("TERM".to_owned(), "xterm-256color".to_owned()),
+                ("VAULTTY".to_owned(), "1".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_attach_rejects_malformed_input() {
+        let error = parse_attach("ATTACH too few fields").expect_err("input should fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn state_update_accepts_json_or_base64_json() {
+        let json = r#"{"title":"build","cwd":"/repo","commandCount":3,"runningCommand":"cargo test","commandHistory":["cargo test"]}"#;
+        let direct = decode_state_update(json).expect("direct JSON should parse");
+        let base64 = decode_state_update(&encoded(json)).expect("base64 JSON should parse");
+
+        assert_eq!(direct.title.as_deref(), Some("build"));
+        assert_eq!(base64.cwd.as_deref(), Some("/repo"));
+        assert_eq!(base64.command_count, Some(3));
+        assert_eq!(base64.command_history, Some(vec!["cargo test".to_owned()]));
+    }
+
+    #[test]
+    fn metadata_update_preserves_unspecified_fields() {
+        let request = AttachRequest {
+            session_id: "session-1".to_owned(),
+            cwd: PathBuf::from("/tmp/project"),
+            shell: "/bin/sh".to_owned(),
+            environment: Vec::new(),
+        };
+        let metadata = SessionMetadata::new(&request);
+
+        assert_eq!(metadata.session_id, "session-1");
+        assert_eq!(metadata.title, "project");
+        assert_eq!(metadata.cwd, "/tmp/project");
+        assert_eq!(metadata.command_count, 0);
     }
 }
