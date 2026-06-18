@@ -531,7 +531,7 @@ fn tolerate_broken_pipe(result: io::Result<()>) -> io::Result<()> {
 
 fn ensure_daemon_is_running() -> io::Result<()> {
     let socket_path = socket_path()?;
-    if daemon_supports_inventory() {
+    if daemon_supports_inventory().is_ok() {
         return Ok(());
     }
 
@@ -542,29 +542,22 @@ fn ensure_daemon_is_running() -> io::Result<()> {
     }
     let _ = fs::remove_file(&socket_path);
 
-    let mut command = Command::new(daemon);
-    command
+    Command::new(daemon)
         .arg("serve")
         .env("VAULTTY_SESSIOND_SOCKET", &socket_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if cfg!(debug_assertions) {
-        command.env("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT", "1");
-    }
-    command.spawn()?;
+        .stderr(Stdio::null())
+        .spawn()?;
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut last_error = None;
     while Instant::now() < deadline {
         match daemon_supports_inventory() {
-            true => {
+            Ok(()) => {
                 return Ok(());
             }
-            false => {
-                let error = connect_to_daemon()
-                    .err()
-                    .unwrap_or_else(|| io::Error::other("vaultty-sessiond did not answer LIST"));
+            Err(error) => {
                 last_error = Some(error);
                 thread::sleep(Duration::from_millis(50));
             }
@@ -574,22 +567,58 @@ fn ensure_daemon_is_running() -> io::Result<()> {
     Err(last_error.unwrap_or_else(|| io::Error::other("could not connect to vaultty-sessiond")))
 }
 
-fn daemon_supports_inventory() -> bool {
-    let Ok(mut stream) = connect_to_daemon() else {
-        return false;
-    };
+fn daemon_supports_inventory() -> io::Result<()> {
+    let mut stream = connect_to_daemon()?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream.write_all(b"LIST\n").is_err() || stream.flush().is_err() {
-        return false;
-    }
+    stream.write_all(b"LIST\n")?;
+    stream.flush()?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map(|count| count > 0 && line.starts_with("SESSIONS "))
-        .unwrap_or(false)
+    let count = reader.read_line(&mut line)?;
+    if count > 0 && line.starts_with("SESSIONS ") {
+        return Ok(());
+    }
+
+    Err(daemon_inventory_error())
+}
+
+fn daemon_inventory_error() -> io::Error {
+    let base = "vaultty-sessiond accepted a connection but did not answer LIST";
+    #[cfg(target_os = "macos")]
+    if let Some(diagnostic) = bridge_signature_diagnostic() {
+        return io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{base}. {diagnostic}"),
+        );
+    }
+    io::Error::other(base)
+}
+
+#[cfg(target_os = "macos")]
+fn bridge_signature_diagnostic() -> Option<String> {
+    let path = env::current_exe().ok()?;
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(&path)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success()
+        || text.contains("Signature=adhoc")
+        || text.contains("TeamIdentifier=not set")
+    {
+        return Some(format!(
+            "The remote bridge at {} is not Developer ID signed, so the daemon rejected it. Reinstall or re-enroll the signed Vaultty helpers on this host, then verify with: codesign -dv --verbose=4 {}",
+            path.display(),
+            path.display()
+        ));
+    }
+    Some(format!(
+        "This usually means the daemon rejected the bridge during peer validation. Verify the remote bridge and daemon are signed Vaultty helpers: codesign -dv --verbose=4 {}",
+        path.display()
+    ))
 }
 
 fn connect_to_daemon() -> io::Result<UnixStream> {

@@ -610,16 +610,11 @@ fn validate_peer_signature(stream: &UnixStream) -> io::Result<()> {
     let path_text = String::from_utf8_lossy(path.as_os_str().as_bytes());
     let looks_like_vaultty = path_text.ends_with("/Contents/MacOS/Vaultty")
         || path_text.ends_with("/Vaultty")
-        || path_text.ends_with("/vaultty-session-bridge")
-        || env::var_os("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT").is_some();
+        || path_text.ends_with("/vaultty-session-bridge");
     let signed_by_expected_team =
         text.contains("TeamIdentifier=") && !text.contains("TeamIdentifier=not set");
 
     if output.status.success() && looks_like_vaultty && signed_by_expected_team {
-        return Ok(());
-    }
-
-    if env::var_os("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT").is_some() && looks_like_vaultty {
         return Ok(());
     }
 
