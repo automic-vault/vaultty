@@ -4423,7 +4423,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         completionRequestSerial += 1
         let serial = completionRequestSerial
-        var environment = ProcessInfo.processInfo.environment
+        var environment: [String: String]
+        switch tab.sessionRef.location {
+        case .local:
+            environment = ProcessInfo.processInfo.environment
+        case .sshHost:
+            environment = [:]
+        }
         environment["PWD"] = tab.currentCwd
         environment["SHELL"] = environment["SHELL"] ?? "/bin/zsh"
         let request = CompletionRequest(
@@ -4432,6 +4438,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             cwd: tab.currentCwd,
             shellPath: environment["SHELL"] ?? "/bin/zsh",
             environment: environment,
+            location: tab.sessionRef.location,
             limit: 14
         )
 

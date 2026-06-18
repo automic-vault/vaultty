@@ -445,14 +445,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             arguments += ["-p", String(host.port)]
         }
         arguments.append("\(host.user)@\(host.hostname)")
-        arguments.append("exec \(PtySession.shellPathExpression(host.remoteHelperPath)) --version")
+        arguments.append("exec \(PtySession.shellPathExpression(host.remoteHelperPath)) --capabilities")
         process.arguments = arguments
-        process.standardOutput = Pipe()
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
         process.standardError = Pipe()
         do {
             try process.run()
             process.waitUntilExit()
-            return process.terminationStatus == 0
+            let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return process.terminationStatus == 0 && output.contains("completion-v1")
         } catch {
             return false
         }
@@ -463,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         alert.alertStyle = .warning
         alert.messageText = "SSH bridge was not verified"
         alert.informativeText = """
-        \(host.alias) was saved but is not enrolled. Install vaultty-session-bridge and vaultty-sessiond on the remote host, then add or edit the host again.
+        \(host.alias) was saved but is not enrolled. Install or update vaultty-session-bridge and vaultty-sessiond on the remote host, then add or edit the host again.
 
         \(sshInstallCommand(for: host))
         """

@@ -460,6 +460,22 @@ final class PtySession {
         return try output()
     }
 
+    static func runSSHBridgeSubcommand(
+        hostID: String,
+        arguments: [String],
+        input: Data,
+        timeout: TimeInterval = 5
+    ) throws -> Data {
+        let host = try sshHostRecord(id: hostID)
+        let process = makeSSHBridgeProcess(host: host, batchMode: true, arguments: arguments)
+        let inputPipe = Pipe()
+        process.standardInput = inputPipe
+        let output = try runProcess(process, timeout: timeout)
+        try writeAll(input, to: inputPipe.fileHandleForWriting.fileDescriptor)
+        try inputPipe.fileHandleForWriting.close()
+        return try output()
+    }
+
     private static func runSSHCommand(host: SSHHostRecord, command: String, batchMode: Bool) throws -> Data {
         let process = makeSSHProcess(host: host, command: command, batchMode: batchMode)
         let output = try runProcess(process)
@@ -504,6 +520,11 @@ final class PtySession {
     private static func writeAll(_ string: String, to fd: Int32) throws {
         _ = ignoreSIGPIPEOnce
         guard let data = string.data(using: .utf8) else { return }
+        try writeAll(data, to: fd)
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        _ = ignoreSIGPIPEOnce
         try data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
             var offset = 0
@@ -689,8 +710,16 @@ final class PtySession {
         try data.write(to: url, options: .atomic)
     }
 
-    private static func makeSSHBridgeProcess(host: SSHHostRecord, batchMode: Bool = false) -> Process {
-        makeSSHProcess(host: host, command: shellCommand(execPath: host.remoteHelperPath), batchMode: batchMode)
+    private static func makeSSHBridgeProcess(
+        host: SSHHostRecord,
+        batchMode: Bool = false,
+        arguments: [String] = []
+    ) -> Process {
+        makeSSHProcess(
+            host: host,
+            command: shellCommand(execPath: host.remoteHelperPath, arguments: arguments),
+            batchMode: batchMode
+        )
     }
 
     private static func makeSSHProcess(host: SSHHostRecord, command: String, batchMode: Bool = false) -> Process {
@@ -712,8 +741,12 @@ final class PtySession {
         return process
     }
 
-    private static func shellCommand(execPath: String) -> String {
-        "exec \(shellPathExpression(execPath))"
+    private static func shellCommand(execPath: String, arguments: [String] = []) -> String {
+        let argumentText = arguments.map(shellQuote).joined(separator: " ")
+        if argumentText.isEmpty {
+            return "exec \(shellPathExpression(execPath))"
+        }
+        return "exec \(shellPathExpression(execPath)) \(argumentText)"
     }
 
     private static func shellQuote(_ value: String) -> String {

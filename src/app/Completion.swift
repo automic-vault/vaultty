@@ -9,6 +9,7 @@ struct CompletionRequest {
     let cwd: String
     let shellPath: String
     let environment: [String: String]
+    let location: SessionLocation
     let limit: Int
 }
 
@@ -35,6 +36,49 @@ struct CompletionSuggestion {
     let kind: Kind
     let priority: Int
     let source: String
+}
+
+private struct BridgePathCompletionRequest: Encodable {
+    let cwd: String
+    let prefix: String
+    let foldersOnly: Bool
+}
+
+private struct BridgeCommandCompletionRequest: Encodable {
+    let prefix: String
+}
+
+private struct BridgeGeneratorRequest: Encodable {
+    struct EnvironmentPair: Encodable {
+        let key: String
+        let value: String
+    }
+
+    let commandLine: String
+    let cwd: String
+    let environment: [EnvironmentPair]
+    let timeoutMs: Int
+    let outputLimit: Int
+}
+
+private struct BridgeCompletionResponse: Decodable {
+    let suggestions: [BridgeCompletionSuggestion]
+}
+
+private struct BridgeCompletionSuggestion: Decodable {
+    let displayText: String
+    let insertText: String
+    let description: String?
+    let kind: String
+    let priority: Int
+    let source: String
+    let isExecutable: Bool
+}
+
+private struct BridgeGeneratorOutput: Decodable {
+    let stdout: String
+    let stderr: String
+    let status: Int32
 }
 
 final class CompletionPopupController: NSObject, NSPopoverDelegate {
@@ -543,7 +587,7 @@ final class VaulttyCompletionEngine {
         if useNativePathCompletion {
             let nativeSuggestions = rankedSuggestions(pathSuggestions(
                 prefix: currentPrefix,
-                cwd: request.cwd,
+                request: request,
                 foldersOnly: commandName == "cd"
             ), prefix: currentPrefix, limit: request.limit)
             return CompletionResult(
@@ -567,7 +611,7 @@ final class VaulttyCompletionEngine {
         if suggestions.isEmpty && shouldAddPathFallback(commandName: commandName, currentPrefix: currentPrefix) {
             suggestions.append(contentsOf: pathSuggestions(
                 prefix: currentPrefix,
-                cwd: request.cwd,
+                request: request,
                 foldersOnly: commandName == "cd"
             ))
         }
@@ -687,9 +731,9 @@ final class VaulttyCompletionEngine {
 
         for template in arg.templates {
             if template == "folders" {
-                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: true))
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, request: request, foldersOnly: true))
             } else if template == "filepaths" {
-                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: false))
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, request: request, foldersOnly: false))
             }
         }
 
@@ -720,9 +764,9 @@ final class VaulttyCompletionEngine {
         var suggestions: [CompletionSuggestion] = []
         for template in generator.templates {
             if template == "folders" {
-                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: true))
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, request: request, foldersOnly: true))
             } else if template == "filepaths" {
-                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, cwd: request.cwd, foldersOnly: false))
+                suggestions.append(contentsOf: pathSuggestions(prefix: currentPrefix, request: request, foldersOnly: false))
             }
         }
 
@@ -772,7 +816,8 @@ final class VaulttyCompletionEngine {
             cwd: script.cwd ?? request.cwd,
             environment: request.environment,
             timeout: timeout(for: generator),
-            outputLimit: 64 * 1024
+            outputLimit: 64 * 1024,
+            location: request.location
         ) else {
             return []
         }
@@ -818,7 +863,8 @@ final class VaulttyCompletionEngine {
                     cwd: cwd,
                     environment: request.environment,
                     timeout: commandTimeout,
-                    outputLimit: 64 * 1024
+                    outputLimit: 64 * 1024,
+                    location: request.location
                   )
             else {
                 return JSValue(object: ["stdout": "", "stderr": "", "status": 1], in: commandValue.context)!
@@ -901,29 +947,20 @@ final class VaulttyCompletionEngine {
     private func commandSuggestions(prefix: String, request: CompletionRequest) -> [CompletionSuggestion] {
         if shouldCompleteCommandAsPath(prefix: prefix) {
             return rankedSuggestions(
-                commandPathSuggestions(prefix: prefix, cwd: request.cwd),
+                commandPathSuggestions(prefix: prefix, request: request),
                 prefix: prefix,
                 limit: request.limit
             )
         }
 
-        let cacheKey = request.environment["PATH"] ?? ""
+        let cacheKey = commandCacheKey(for: request)
         if let cached = commandCache[cacheKey] {
             return rankedSuggestions(cached, prefix: prefix, limit: request.limit)
         }
 
         var names = Set<String>()
         names.formUnion(specLoader.commandNames())
-
-        for directory in cacheKey.split(separator: ":").map(String.init) {
-            guard let contents = try? fileManager.contentsOfDirectory(atPath: directory) else { continue }
-            for name in contents {
-                let path = (directory as NSString).appendingPathComponent(name)
-                if fileManager.isExecutableFile(atPath: path) {
-                    names.insert(name)
-                }
-            }
-        }
+        names.formUnion(executableCommandNames(for: request))
 
         let suggestions = names.map {
             CompletionSuggestion(
@@ -939,26 +976,91 @@ final class VaulttyCompletionEngine {
         return rankedSuggestions(suggestions, prefix: prefix, limit: request.limit)
     }
 
+    private func commandCacheKey(for request: CompletionRequest) -> String {
+        switch request.location {
+        case .local:
+            return "local:\(request.environment["PATH"] ?? "")"
+        case .sshHost(let hostID):
+            return "ssh:\(hostID)"
+        }
+    }
+
+    private func executableCommandNames(for request: CompletionRequest) -> Set<String> {
+        switch request.location {
+        case .local:
+            var names = Set<String>()
+            let path = request.environment["PATH"] ?? ""
+            for directory in path.split(separator: ":").map(String.init) {
+                guard let contents = try? fileManager.contentsOfDirectory(atPath: directory) else { continue }
+                for name in contents {
+                    let path = (directory as NSString).appendingPathComponent(name)
+                    if fileManager.isExecutableFile(atPath: path) {
+                        names.insert(name)
+                    }
+                }
+            }
+            return names
+        case .sshHost(let hostID):
+            let request = BridgeCommandCompletionRequest(prefix: "")
+            guard let response: BridgeCompletionResponse = runBridgeJSON(
+                hostID: hostID,
+                subcommand: "complete-commands",
+                request: request,
+                timeout: 2
+            ) else {
+                return []
+            }
+            return Set(response.suggestions.map(\.displayText))
+        }
+    }
+
     private func shouldCompleteCommandAsPath(prefix: String) -> Bool {
         prefix.contains("/")
     }
 
-    private func commandPathSuggestions(prefix: String, cwd: String) -> [CompletionSuggestion] {
-        pathSuggestions(prefix: prefix, cwd: cwd, foldersOnly: false).filter { suggestion in
-            switch suggestion.kind {
-            case .folder:
-                return true
-            case .file:
-                let executablePath = (suggestion.source as NSString)
-                    .appendingPathComponent(suggestion.displayText)
-                return fileManager.isExecutableFile(atPath: executablePath)
-            default:
-                return false
+    private func commandPathSuggestions(prefix: String, request: CompletionRequest) -> [CompletionSuggestion] {
+        switch request.location {
+        case .local:
+            return pathSuggestions(prefix: prefix, request: request, foldersOnly: false).filter { suggestion in
+                switch suggestion.kind {
+                case .folder:
+                    return true
+                case .file:
+                    let executablePath = (suggestion.source as NSString)
+                        .appendingPathComponent(suggestion.displayText)
+                    return fileManager.isExecutableFile(atPath: executablePath)
+                default:
+                    return false
+                }
             }
+        case .sshHost(let hostID):
+            return remotePathSuggestionPayloads(
+                hostID: hostID,
+                prefix: prefix,
+                cwd: request.cwd,
+                foldersOnly: false
+            )
+            .filter { $0.kind == "folder" || $0.isExecutable }
+            .map(completionSuggestion)
         }
     }
 
-    private func pathSuggestions(prefix: String, cwd: String, foldersOnly: Bool) -> [CompletionSuggestion] {
+    private func pathSuggestions(prefix: String, request: CompletionRequest, foldersOnly: Bool) -> [CompletionSuggestion] {
+        switch request.location {
+        case .local:
+            return localPathSuggestions(prefix: prefix, cwd: request.cwd, foldersOnly: foldersOnly)
+        case .sshHost(let hostID):
+            return remotePathSuggestionPayloads(
+                hostID: hostID,
+                prefix: prefix,
+                cwd: request.cwd,
+                foldersOnly: foldersOnly
+            )
+            .map(completionSuggestion)
+        }
+    }
+
+    private func localPathSuggestions(prefix: String, cwd: String, foldersOnly: Bool) -> [CompletionSuggestion] {
         guard !isRemotePathPrefix(prefix) else {
             return []
         }
@@ -1014,6 +1116,76 @@ final class VaulttyCompletionEngine {
             }
         }
         return suggestions
+    }
+
+    private func remotePathSuggestionPayloads(
+        hostID: String,
+        prefix: String,
+        cwd: String,
+        foldersOnly: Bool
+    ) -> [BridgeCompletionSuggestion] {
+        guard !isRemotePathPrefix(prefix) else {
+            return []
+        }
+
+        let request = BridgePathCompletionRequest(cwd: cwd, prefix: prefix, foldersOnly: foldersOnly)
+        guard let response: BridgeCompletionResponse = runBridgeJSON(
+            hostID: hostID,
+            subcommand: "complete-path",
+            request: request,
+            timeout: 2
+        ) else {
+            return []
+        }
+        return response.suggestions
+    }
+
+    private func completionSuggestion(from bridge: BridgeCompletionSuggestion) -> CompletionSuggestion {
+        CompletionSuggestion(
+            displayText: bridge.displayText,
+            insertText: bridge.insertText,
+            description: bridge.description,
+            kind: completionKind(from: bridge.kind),
+            priority: bridge.priority,
+            source: bridge.source
+        )
+    }
+
+    private func completionKind(from value: String) -> CompletionSuggestion.Kind {
+        switch value {
+        case "command":
+            return .command
+        case "subcommand":
+            return .subcommand
+        case "option":
+            return .option
+        case "folder":
+            return .folder
+        case "file":
+            return .file
+        default:
+            return .argument
+        }
+    }
+
+    private func runBridgeJSON<Request: Encodable, Response: Decodable>(
+        hostID: String,
+        subcommand: String,
+        request: Request,
+        timeout: TimeInterval
+    ) -> Response? {
+        do {
+            let input = try JSONEncoder().encode(request)
+            let output = try PtySession.runSSHBridgeSubcommand(
+                hostID: hostID,
+                arguments: [subcommand],
+                input: input,
+                timeout: timeout
+            )
+            return try JSONDecoder().decode(Response.self, from: output)
+        } catch {
+            return nil
+        }
     }
 
     private func pathInsertValue(prefix: String, suggestionName: String, isDirectory: Bool) -> String {
@@ -1682,6 +1854,35 @@ private enum ShellCommandRunner {
         cwd: String,
         environment: [String: String],
         timeout: TimeInterval,
+        outputLimit: Int,
+        location: SessionLocation
+    ) -> Output? {
+        switch location {
+        case .local:
+            return runLocalShell(
+                commandLine: commandLine,
+                cwd: cwd,
+                environment: environment,
+                timeout: timeout,
+                outputLimit: outputLimit
+            )
+        case .sshHost(let hostID):
+            return runRemoteShell(
+                hostID: hostID,
+                commandLine: commandLine,
+                cwd: cwd,
+                environment: environment,
+                timeout: timeout,
+                outputLimit: outputLimit
+            )
+        }
+    }
+
+    private static func runLocalShell(
+        commandLine: String,
+        cwd: String,
+        environment: [String: String],
+        timeout: TimeInterval,
         outputLimit: Int
     ) -> Output? {
         let process = Process()
@@ -1720,6 +1921,38 @@ private enum ShellCommandRunner {
             stderr: stderrCapture.finish(),
             status: process.terminationStatus
         )
+    }
+
+    private static func runRemoteShell(
+        hostID: String,
+        commandLine: String,
+        cwd: String,
+        environment: [String: String],
+        timeout: TimeInterval,
+        outputLimit: Int
+    ) -> Output? {
+        let request = BridgeGeneratorRequest(
+            commandLine: commandLine,
+            cwd: cwd,
+            environment: environment
+                .sorted { $0.key < $1.key }
+                .map { BridgeGeneratorRequest.EnvironmentPair(key: $0.key, value: $0.value) },
+            timeoutMs: Int((timeout * 1000).rounded()),
+            outputLimit: outputLimit
+        )
+        do {
+            let input = try JSONEncoder().encode(request)
+            let output = try PtySession.runSSHBridgeSubcommand(
+                hostID: hostID,
+                arguments: ["run-generator"],
+                input: input,
+                timeout: min(max(timeout + 1, 2), 16)
+            )
+            let decoded = try JSONDecoder().decode(BridgeGeneratorOutput.self, from: output)
+            return Output(stdout: decoded.stdout, stderr: decoded.stderr, status: decoded.status)
+        } catch {
+            return nil
+        }
     }
 
     private static func shellPrelude(environment: [String: String]) -> String {
