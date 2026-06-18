@@ -129,6 +129,9 @@ final class PtySession {
     private var bridgeInput: FileHandle?
     private var bridgeOutput: FileHandle?
     private var parserBuffer = ""
+    private let lifecycleLock = NSLock()
+    private var isStopped = false
+    private var didReportExit = false
     private static let ignoreSIGPIPEOnce: Void = {
         _ = Darwin.signal(SIGPIPE, SIG_IGN)
     }()
@@ -201,7 +204,35 @@ final class PtySession {
     }
 
     func stop() {
+        markStopped()
         sendLine("DETACH")
+        closeTransport(terminateBridge: true)
+    }
+
+    private func markStopped() {
+        lifecycleLock.lock()
+        isStopped = true
+        didReportExit = true
+        lifecycleLock.unlock()
+    }
+
+    private func markExitReported() -> Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        guard !isStopped, !didReportExit else { return false }
+        didReportExit = true
+        return true
+    }
+
+    private func reportExit(_ status: Int32) {
+        guard markExitReported() else { return }
+        closeTransport(terminateBridge: false)
+        DispatchQueue.main.async { [weak self] in
+            self?.onExit?(status)
+        }
+    }
+
+    private func closeTransport(terminateBridge: Bool) {
         readSource?.cancel()
         readSource = nil
         if socketFd >= 0 {
@@ -213,7 +244,9 @@ final class PtySession {
         try? bridgeOutput?.close()
         bridgeInput = nil
         bridgeOutput = nil
-        bridgeProcess?.terminate()
+        if terminateBridge {
+            bridgeProcess?.terminate()
+        }
         bridgeProcess = nil
         parserBuffer.removeAll(keepingCapacity: false)
     }
@@ -308,9 +341,7 @@ final class PtySession {
             bridgeOutput = outputPipe.fileHandleForReading
             startReading(fileHandle: outputPipe.fileHandleForReading)
             process.terminationHandler = { [weak self] process in
-                DispatchQueue.main.async { [weak self] in
-                    self?.onExit?(process.terminationStatus)
-                }
+                self?.reportExit(process.terminationStatus)
             }
         }
     }
@@ -322,10 +353,7 @@ final class PtySession {
             var buffer = [UInt8](repeating: 0, count: 8192)
             let count = Darwin.read(fd, &buffer, buffer.count)
             guard count > 0 else {
-                source.cancel()
-                DispatchQueue.main.async { [weak self] in
-                    self?.onExit?(0)
-                }
+                self.reportExit(0)
                 return
             }
 
@@ -343,9 +371,7 @@ final class PtySession {
             let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
-                DispatchQueue.main.async { [weak self] in
-                    self?.onExit?(0)
-                }
+                self?.reportExit(0)
                 return
             }
             let text = String(decoding: data, as: UTF8.self)
@@ -382,9 +408,7 @@ final class PtySession {
 
         if let payload = line.removingPrefix("EXIT ") {
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
-            DispatchQueue.main.async { [weak self] in
-                self?.onExit?(status)
-            }
+            reportExit(status)
         }
     }
 
@@ -400,9 +424,7 @@ final class PtySession {
         do {
             try Self.writeAll(line + "\n", to: bridgeInput.fileDescriptor)
         } catch {
-            DispatchQueue.main.async { [weak self] in
-                self?.onExit?(-1)
-            }
+            reportExit(-1)
         }
     }
 

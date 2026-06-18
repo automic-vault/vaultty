@@ -3983,9 +3983,13 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func removeExitedSessionFromPersistentHistory(_ sessionRef: SessionRef) {
-        exitedSessionIDs.insert(sessionRef.sessionID)
-        exitedSessionRefs.insert(sessionRef)
+        let insertedSessionID = exitedSessionIDs.insert(sessionRef.sessionID).inserted
+        let insertedSessionRef = exitedSessionRefs.insert(sessionRef).inserted
+        let closedTabCount = closedTabs.count
         closedTabs.removeAll { self.sessionRef(from: $0) == sessionRef }
+        guard insertedSessionID || insertedSessionRef || closedTabs.count != closedTabCount else {
+            return
+        }
         persistSessionState()
     }
 
@@ -4277,6 +4281,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session.onExit = { [weak self, weak tab] status in
             guard let self, let tab else { return }
             guard tab.sessionRef == configuredSessionRef else { return }
+            guard !tab.hasExited else { return }
             tab.hasExited = true
             self.removeExitedSessionFromPersistentHistory(configuredSessionRef)
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
