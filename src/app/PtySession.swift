@@ -205,7 +205,8 @@ final class PtySession {
 
     func stop() {
         markStopped()
-        sendLine("DETACH")
+        // Closing the transport is enough for sessiond to detach this client.
+        // Sending DETACH synchronously can beachball the UI if the daemon is wedged.
         closeTransport(terminateBridge: true)
     }
 
@@ -256,7 +257,13 @@ final class PtySession {
     }
 
     static func killDetachedSession(sessionRef: SessionRef) throws {
-        try sendCommandNoResponse("KILL \(base64(sessionRef.sessionID))", location: sessionRef.location)
+        let command = "KILL \(base64(sessionRef.sessionID))"
+        switch sessionRef.location {
+        case .local:
+            try sendLocalCommandNoResponse(command, startsDaemon: false)
+        case .sshHost:
+            try sendCommandNoResponse(command, location: sessionRef.location)
+        }
     }
 
     static func listSessions(location: SessionLocation = .local) throws -> [SessionMetadata] {
@@ -450,10 +457,7 @@ final class PtySession {
     private static func sendCommandNoResponse(_ command: String, location: SessionLocation) throws {
         switch location {
         case .local:
-            try ensureDaemonIsRunning()
-            let fd = try connectToDaemon()
-            defer { close(fd) }
-            try writeAll(command + "\n", to: fd)
+            try sendLocalCommandNoResponse(command, startsDaemon: true)
         case .sshHost(let hostID):
             let host = try sshHostRecord(id: hostID)
             let process = makeSSHBridgeProcess(host: host, batchMode: true)
@@ -470,6 +474,31 @@ final class PtySession {
                 }
             }
         }
+    }
+
+    private static func sendLocalCommandNoResponse(_ command: String, startsDaemon: Bool) throws {
+        if startsDaemon {
+            try ensureDaemonIsRunning()
+        }
+
+        let fd: Int32
+        do {
+            fd = try connectToDaemon()
+        } catch {
+            if !startsDaemon, isMissingDaemonConnectionError(error) {
+                return
+            }
+            throw error
+        }
+
+        defer { close(fd) }
+        try writeAll(command + "\n", to: fd)
+    }
+
+    private static func isMissingDaemonConnectionError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSPOSIXErrorDomain else { return false }
+        return nsError.code == Int(ENOENT) || nsError.code == Int(ECONNREFUSED)
     }
 
     private static func runSSHBridgeCommand(host: SSHHostRecord, command: String) throws -> Data {

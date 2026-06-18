@@ -2879,6 +2879,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var didRunSelfTest = false
     private var tabs: [TerminalTab] = []
     private var closedTabs: [StoredTab] = []
+    private var isKillingClosedTabs = false
     private var exitedSessionIDs = Set<String>()
     private var exitedSessionRefs = Set<SessionRef>()
     private var activeTabID: UUID?
@@ -3368,6 +3369,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             NSSound.beep()
             return
         }
+        guard !isKillingClosedTabs else {
+            NSSound.beep()
+            return
+        }
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -3377,31 +3382,53 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        var remaining: [StoredTab] = []
-        var failures: [String] = []
         let visibleSessionRefs = Set(loadSessionState().visibleTabs.map(sessionRef(from:)))
-        for stored in closedTabs {
+        let killTargets: [(stored: StoredTab, sessionRef: SessionRef)] = closedTabs.compactMap { stored in
             let storedRef = sessionRef(from: stored)
-            guard !visibleSessionRefs.contains(storedRef) else {
-                remaining.append(stored)
-                continue
-            }
-            do {
-                try PtySession.killDetachedSession(sessionRef: storedRef)
-            } catch {
-                remaining.append(stored)
-                failures.append("\(stored.title): \(error.localizedDescription)")
-            }
+            guard !visibleSessionRefs.contains(storedRef) else { return nil }
+            return (stored, storedRef)
         }
-        closedTabs = remaining
+        guard !killTargets.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        isKillingClosedTabs = true
+        let targetRefs = Set(killTargets.map { $0.sessionRef })
+        closedTabs.removeAll { targetRefs.contains(sessionRef(from: $0)) }
         persistSessionState()
 
-        if !failures.isEmpty {
-            let failureAlert = NSAlert()
-            failureAlert.alertStyle = .warning
-            failureAlert.messageText = "Some closed tabs could not be killed"
-            failureAlert.informativeText = failures.joined(separator: "\n")
-            failureAlert.runModal()
+        sessionCleanupQueue.async { [weak self] in
+            var failedTargets: [(stored: StoredTab, sessionRef: SessionRef, error: Error)] = []
+            for target in killTargets {
+                do {
+                    try PtySession.killDetachedSession(sessionRef: target.sessionRef)
+                } catch {
+                    failedTargets.append((target.stored, target.sessionRef, error))
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isKillingClosedTabs = false
+
+                if !failedTargets.isEmpty {
+                    let existingRefs = Set(self.closedTabs.map { self.sessionRef(from: $0) })
+                    let restoredTabs = failedTargets
+                        .filter { !existingRefs.contains($0.sessionRef) }
+                        .map { $0.stored }
+                    self.closedTabs.append(contentsOf: restoredTabs)
+                    self.persistSessionState()
+
+                    let failureAlert = NSAlert()
+                    failureAlert.alertStyle = .warning
+                    failureAlert.messageText = "Some closed tabs could not be killed"
+                    failureAlert.informativeText = failedTargets
+                        .map { "\($0.stored.title): \($0.error.localizedDescription)" }
+                        .joined(separator: "\n")
+                    failureAlert.runModal()
+                }
+            }
         }
     }
 
