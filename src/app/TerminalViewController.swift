@@ -76,6 +76,19 @@ private func mutedGitStatusColor(_ color: NSColor) -> NSColor {
         ?? color.withAlphaComponent(0.75)
 }
 
+private func hostPrefixAttributedString(
+    _ hostPrefix: String,
+    color: NSColor
+) -> NSAttributedString {
+    NSAttributedString(
+        string: hostPrefix.uppercased(),
+        attributes: [
+            .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
+            .foregroundColor: color.withAlphaComponent(0.34)
+        ]
+    )
+}
+
 private final class SeparatorView: NSBox {
     init() {
         super.init(frame: .zero)
@@ -1588,11 +1601,7 @@ private final class TitleTabButton: NSButton {
         }
 
         let attributedTitle = NSMutableAttributedString(
-            string: hostPrefix.uppercased(),
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
-                .foregroundColor: currentTitleColor.withAlphaComponent(0.34)
-            ]
+            attributedString: hostPrefixAttributedString(hostPrefix, color: currentTitleColor)
         )
         attributedTitle.append(NSAttributedString(string: "  "))
         attributedTitle.append(NSAttributedString(
@@ -3692,6 +3701,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             commandHistory: commandHistory
         )
         tab.currentCwd = directoryPath
+        setCommandBarStatusText("Starting shell...", in: tab)
         tabs.append(tab)
         configureSession(for: tab)
         configureInterruptHandling(for: tab)
@@ -3973,7 +3983,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
         tab.hasExited = false
-        tab.statusLabel.stringValue = "Rejoining session..."
+        setCommandBarStatusText("Rejoining session...", in: tab)
         tab.isShellReady = false
         tab.isTerminalControlActive = false
         tab.isAlternateScreenActive = false
@@ -4314,7 +4324,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
                 guard let self, let tab else { return }
                 guard tab.sessionRef == configuredSessionRef else { return }
-                tab.statusLabel.stringValue = "Shell exited with status \(status)"
+                self.setCommandBarStatusText("Shell exited with status \(status)", in: tab)
                 self.finishRunningBlocks(in: tab, status: status)
                 self.updateTabTitleForDirectory(tab)
                 self.stopTtyModePolling(for: tab)
@@ -4401,7 +4411,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         do {
             try tab.session.start(shellPath: shell, environment: env, workingDirectory: workingDirectory)
         } catch {
-            tab.statusLabel.stringValue = "Failed to start shell: \(error.localizedDescription)"
+            setCommandBarStatusText("Failed to start shell: \(error.localizedDescription)", in: tab)
         }
     }
 
@@ -5178,7 +5188,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func updateCommandBarDirectoryStatus(for tab: TerminalTab, forceRefresh: Bool = false) {
         let cwd = tab.currentCwd
         let directoryText = detailForDirectory(cwd)
-        tab.statusLabel.stringValue = directoryText
+        setCommandBarStatusText(directoryText, in: tab)
 
         gitStateQueue.async { [weak self, weak tab] in
             guard let self else { return }
@@ -5195,22 +5205,49 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     return
                 }
                 guard let gitSummary else {
-                    tab.statusLabel.stringValue = directoryText
+                    self.setCommandBarStatusText(directoryText, in: tab)
                     return
                 }
                 tab.statusLabel.attributedStringValue = self.commandBarStatusText(
                     directoryText: directoryText,
                     gitSummary: gitSummary,
-                    font: tab.statusLabel.font
+                    font: tab.statusLabel.font,
+                    hostPrefix: self.hostname(for: tab.sessionRef.location)
                 )
             }
         }
     }
 
+    private func setCommandBarStatusText(_ text: String, in tab: TerminalTab) {
+        tab.statusLabel.attributedStringValue = commandBarStatusText(
+            text,
+            font: tab.statusLabel.font,
+            hostPrefix: hostname(for: tab.sessionRef.location)
+        )
+    }
+
+    private func commandBarStatusText(
+        _ text: String,
+        font: NSFont?,
+        hostPrefix: String?
+    ) -> NSAttributedString {
+        let statusFont = font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let output = commandBarStatusPrefix(hostPrefix: hostPrefix)
+        output.append(NSAttributedString(
+            string: text,
+            attributes: [
+                .font: statusFont,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+        ))
+        return output
+    }
+
     private func commandBarStatusText(
         directoryText: String,
         gitSummary: GitDirectoryStateProvider.Summary,
-        font: NSFont?
+        font: NSFont?,
+        hostPrefix: String?
     ) -> NSAttributedString {
         let statusFont = font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
         let directoryAttributes: [NSAttributedString.Key: Any] = [
@@ -5221,10 +5258,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             .font: statusFont,
             .foregroundColor: NSColor.tertiaryLabelColor
         ]
-        let output = NSMutableAttributedString(
+        let output = commandBarStatusPrefix(hostPrefix: hostPrefix)
+        output.append(NSAttributedString(
             string: directoryText,
             attributes: directoryAttributes
-        )
+        ))
         let showsDiffLineStats = gitSummary.insertions > 0 || gitSummary.deletions > 0
         let gitState = if showsDiffLineStats {
             ""
@@ -5253,6 +5291,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 ]
             ))
         }
+        return output
+    }
+
+    private func commandBarStatusPrefix(hostPrefix: String?) -> NSMutableAttributedString {
+        let output = NSMutableAttributedString()
+        guard let hostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !hostPrefix.isEmpty
+        else {
+            return output
+        }
+
+        output.append(hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive))
+        output.append(NSAttributedString(string: "  "))
         return output
     }
 
