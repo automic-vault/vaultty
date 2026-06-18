@@ -128,6 +128,8 @@ final class PtySession {
     private var bridgeProcess: Process?
     private var bridgeInput: FileHandle?
     private var bridgeOutput: FileHandle?
+    private var bridgeError: FileHandle?
+    private var bridgeErrorOutput = Data()
     private var parserBuffer = ""
     private let lifecycleLock = NSLock()
     private var isStopped = false
@@ -241,14 +243,18 @@ final class PtySession {
             socketFd = -1
         }
         bridgeOutput?.readabilityHandler = nil
+        bridgeError?.readabilityHandler = nil
         try? bridgeInput?.close()
         try? bridgeOutput?.close()
+        try? bridgeError?.close()
         bridgeInput = nil
         bridgeOutput = nil
+        bridgeError = nil
         if terminateBridge {
             bridgeProcess?.terminate()
         }
         bridgeProcess = nil
+        bridgeErrorOutput.removeAll(keepingCapacity: false)
         parserBuffer.removeAll(keepingCapacity: false)
     }
 
@@ -339,16 +345,36 @@ final class PtySession {
             let process = Self.makeSSHBridgeProcess(host: host)
             let inputPipe = Pipe()
             let outputPipe = Pipe()
+            let errorPipe = Pipe()
             process.standardInput = inputPipe
             process.standardOutput = outputPipe
-            process.standardError = Pipe()
+            process.standardError = errorPipe
             try process.run()
             bridgeProcess = process
             bridgeInput = inputPipe.fileHandleForWriting
             bridgeOutput = outputPipe.fileHandleForReading
+            bridgeError = errorPipe.fileHandleForReading
             startReading(fileHandle: outputPipe.fileHandleForReading)
+            errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                self?.queue.async {
+                    self?.bridgeErrorOutput.append(data)
+                }
+            }
             process.terminationHandler = { [weak self] process in
-                self?.reportExit(process.terminationStatus)
+                self?.queue.async {
+                    guard let self else { return }
+                    let errorText = String(data: self.bridgeErrorOutput, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if process.terminationStatus != 0, !errorText.isEmpty {
+                        self.onOutput?("\nSSH bridge failed: \(errorText)\n")
+                    }
+                    self.reportExit(process.terminationStatus)
+                }
             }
         }
     }
@@ -378,7 +404,9 @@ final class PtySession {
             let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
-                self?.reportExit(0)
+                if self?.bridgeProcess == nil {
+                    self?.reportExit(0)
+                }
                 return
             }
             let text = String(decoding: data, as: UTF8.self)

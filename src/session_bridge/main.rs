@@ -1,5 +1,5 @@
-use std::env;
 use std::collections::HashSet;
+use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -222,7 +222,10 @@ fn complete_commands_from_path(path: Option<OsString>, prefix: &str) -> Vec<Comp
 
 fn run_generator(request: &GeneratorRequest) -> GeneratorOutput {
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(10_000).clamp(1, 15_000));
-    let output_limit = request.output_limit.unwrap_or(64 * 1024).clamp(1, 128 * 1024);
+    let output_limit = request
+        .output_limit
+        .unwrap_or(64 * 1024)
+        .clamp(1, 128 * 1024);
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
     let command_line = shell_command_line_for(&shell, &request.command_line);
 
@@ -357,7 +360,11 @@ fn path_insert_value(prefix: &str, suggestion_name: &str, is_directory: bool) ->
         }
     };
     let raw = format!("{base_prefix}{suggestion_name}");
-    format!("{}{}", shell_escape_path(&raw), if is_directory { "" } else { " " })
+    format!(
+        "{}{}",
+        shell_escape_path(&raw),
+        if is_directory { "" } else { " " }
+    )
 }
 
 fn shell_escape_path(path: &str) -> String {
@@ -429,9 +436,7 @@ fn path_from_user_shell() -> Option<OsString> {
     if !output.status.success() {
         return None;
     }
-    let path = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_owned();
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if path.is_empty() {
         None
     } else {
@@ -537,13 +542,17 @@ fn ensure_daemon_is_running() -> io::Result<()> {
     }
     let _ = fs::remove_file(&socket_path);
 
-    Command::new(daemon)
+    let mut command = Command::new(daemon);
+    command
         .arg("serve")
         .env("VAULTTY_SESSIOND_SOCKET", &socket_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    if cfg!(debug_assertions) {
+        command.env("VAULTTY_SESSIOND_ALLOW_DEBUG_CLIENT", "1");
+    }
+    command.spawn()?;
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut last_error = None;
