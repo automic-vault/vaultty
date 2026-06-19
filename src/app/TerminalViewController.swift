@@ -2910,6 +2910,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let sessionCleanupQueue = DispatchQueue(label: "com.automicvault.vaultty.session-cleanup", qos: .utility)
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
+    private var pendingCompletionCaretTabID: UUID?
     private var activeCompletionRange: NSRange?
     private var activeCompletionCommonPrefix: String?
     private var isApplyingCompletion = false
@@ -4465,6 +4466,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         completionRequestSerial += 1
         let serial = completionRequestSerial
+        showPendingCompletionCaret(in: tab)
         var environment: [String: String]
         switch tab.sessionRef.location {
         case .local:
@@ -4488,13 +4490,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             guard let self else { return }
             let result = self.completionEngine.completions(for: request)
             DispatchQueue.main.async { [weak self, weak tab] in
-                guard let self,
-                      let tab,
-                      self.activeTabID == tab.id,
-                      serial == self.completionRequestSerial
-                else {
+                guard let self, let tab else { return }
+                guard self.activeTabID == tab.id,
+                      serial == self.completionRequestSerial else {
+                    if serial == self.completionRequestSerial {
+                        self.clearPendingCompletionCaret()
+                    }
                     return
                 }
+                self.clearPendingCompletionCaret()
                 self.handleCompletionResult(result, in: tab, mode: mode)
             }
         }
@@ -4693,11 +4697,24 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tab = activeTab {
             tab.inputView.clearMutedCompletionPreview()
         }
+        clearPendingCompletionCaret()
         activeCompletionRange = nil
         activeCompletionCommonPrefix = nil
         isCompletionInteractionArmed = false
         completionPopup.dismiss()
         completionRequestSerial += 1
+    }
+
+    private func showPendingCompletionCaret(in tab: TerminalTab) {
+        clearPendingCompletionCaret()
+        pendingCompletionCaretTabID = tab.id
+        tab.inputView.insertionPointColor = .systemOrange
+    }
+
+    private func clearPendingCompletionCaret() {
+        guard let tabID = pendingCompletionCaretTabID else { return }
+        tabs.first { $0.id == tabID }?.inputView.insertionPointColor = .labelColor
+        pendingCompletionCaretTabID = nil
     }
 
     private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
