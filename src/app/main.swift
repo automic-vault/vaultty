@@ -573,6 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     private func makeMainMenu() -> NSMenu {
         let menu = NSMenu(title: "Main Menu")
         menu.addItem(makeAppMenuItem())
+        menu.addItem(makeSessionsMenuItem())
         menu.addItem(makeEditMenuItem())
         menu.addItem(makeWindowMenuItem())
         return menu
@@ -614,6 +615,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
         appItem.submenu = appMenu
         return appItem
+    }
+
+    private func makeSessionsMenuItem() -> NSMenuItem {
+        let sessionsItem = NSMenuItem()
+        let sessionsMenu = NSMenu(title: "Sessions")
+
+        let manageHostsItem = sessionsMenu.addItem(
+            withTitle: "Manage SSH Hosts...",
+            action: #selector(manageSSHHosts(_:)),
+            keyEquivalent: ""
+        )
+        manageHostsItem.target = self
+
+        let killClosedTabsItem = sessionsMenu.addItem(
+            withTitle: "Kill Closed Tabs...",
+            action: #selector(killClosedTabs(_:)),
+            keyEquivalent: ""
+        )
+        killClosedTabsItem.target = self
+
+        sessionsItem.submenu = sessionsMenu
+        return sessionsItem
     }
 
     private func makeEditMenuItem() -> NSMenuItem {
@@ -681,12 +704,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         )
         reopenClosedTabItem.keyEquivalentModifierMask = [.command, .shift]
         reopenClosedTabItem.target = self
-        let manageHostsItem = windowMenu.addItem(
-            withTitle: "Manage SSH Hosts...",
-            action: #selector(manageSSHHosts(_:)),
-            keyEquivalent: ""
-        )
-        manageHostsItem.target = self
         windowMenu.addItem(.separator())
 
         let previousTabItem = windowMenu.addItem(
@@ -712,12 +729,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             keyEquivalent: "w"
         )
         closeItem.target = self
-        let killClosedTabsItem = windowMenu.addItem(
-            withTitle: "Kill Closed Tabs...",
-            action: #selector(killClosedTabs(_:)),
-            keyEquivalent: ""
-        )
-        killClosedTabsItem.target = self
         windowMenu.addItem(.separator())
         windowMenu.addItem(
             withTitle: "Minimize",

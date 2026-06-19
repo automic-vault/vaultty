@@ -61,7 +61,7 @@ fresh shell created for that new tab is discarded.
 Closed sessions sit in the closed-tab stack:
 
 - `Cmd-Shift-T` rejoins the most recently closed session.
-- `Window > Kill Closed Tabs...` kills only sessions in that closed-tab stack.
+- `Sessions > Kill Closed Tabs...` kills only sessions in that closed-tab stack.
 - Visible tabs in other Vaultty windows are not shown in the picker for the
   current window.
 
@@ -72,7 +72,7 @@ configured SSH hosts. The app does not open a LAN terminal listener and does not
 store SSH passwords or private keys; SSH host keys, agent keys, and account
 authorization remain the trust boundary.
 
-Use `Window > Manage SSH Hosts...` to add a host. Enrollment verifies:
+Use `Sessions > Manage SSH Hosts...` to add a host. Enrollment verifies:
 
 ```sh
 ssh -o BatchMode=yes -T user@host 'vaultty-session-bridge --version'
