@@ -5260,7 +5260,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         hostPrefix: String?
     ) -> NSAttributedString {
         let statusFont = font ?? .monospacedSystemFont(ofSize: 11, weight: .regular)
-        let output = commandBarStatusPrefix(hostPrefix: hostPrefix)
+        let output = NSMutableAttributedString()
         output.append(NSAttributedString(
             string: text,
             attributes: [
@@ -5268,6 +5268,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
         ))
+        appendCommandBarStatusHostSuffix(to: output, hostPrefix: hostPrefix)
         return output
     }
 
@@ -5286,11 +5287,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             .font: statusFont,
             .foregroundColor: NSColor.tertiaryLabelColor
         ]
-        let output = commandBarStatusPrefix(hostPrefix: hostPrefix)
-        output.append(NSAttributedString(
+        let output = NSMutableAttributedString(
             string: directoryText,
             attributes: directoryAttributes
-        ))
+        )
         let showsDiffLineStats = gitSummary.insertions > 0 || gitSummary.deletions > 0
         let gitState = if showsDiffLineStats {
             ""
@@ -5319,20 +5319,22 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 ]
             ))
         }
+        appendCommandBarStatusHostSuffix(to: output, hostPrefix: hostPrefix)
         return output
     }
 
-    private func commandBarStatusPrefix(hostPrefix: String?) -> NSMutableAttributedString {
-        let output = NSMutableAttributedString()
+    private func appendCommandBarStatusHostSuffix(
+        to output: NSMutableAttributedString,
+        hostPrefix: String?
+    ) {
         guard let hostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines),
               !hostPrefix.isEmpty
         else {
-            return output
+            return
         }
 
-        output.append(hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive))
         output.append(NSAttributedString(string: "  "))
-        return output
+        output.append(hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive))
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
