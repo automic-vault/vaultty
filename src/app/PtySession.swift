@@ -805,6 +805,19 @@ final class PtySession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         var arguments = ["-T"]
+        try? FileManager.default.createDirectory(
+            at: sshControlDirectory(),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: sshControlDirectory().path
+        )
+        arguments += [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=30s",
+            "-o", "ControlPath=\(sshControlPath(for: host).path)"
+        ]
         if batchMode {
             arguments += [
                 "-o", "BatchMode=yes",
@@ -818,6 +831,21 @@ final class PtySession {
         arguments.append(command)
         process.arguments = arguments
         return process
+    }
+
+    private static func sshControlDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultty", isDirectory: true)
+            .appendingPathComponent("ssh", isDirectory: true)
+    }
+
+    private static func sshControlPath(for host: SSHHostRecord) -> URL {
+        let name = host.id
+            .unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) ? Character($0) : "-" }
+            .map(String.init)
+            .joined()
+        return sshControlDirectory().appendingPathComponent(name, isDirectory: false)
     }
 
     private static func shellCommand(execPath: String, arguments: [String] = []) -> String {
