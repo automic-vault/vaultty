@@ -2605,6 +2605,7 @@ private final class TerminalTab {
     let dotenvStatusShieldImageView = NSImageView()
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
+    let completionPendingLine = NSView()
     let ptyPassthroughView = PtyPassthroughView(frame: .zero)
     var title: String
 
@@ -2741,6 +2742,10 @@ private final class TerminalTab {
         commandBarView.wantsLayer = true
         commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
         commandBarView.translatesAutoresizingMaskIntoConstraints = false
+        completionPendingLine.wantsLayer = true
+        completionPendingLine.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.75).cgColor
+        completionPendingLine.isHidden = true
+        completionPendingLine.translatesAutoresizingMaskIntoConstraints = false
         ptyPassthroughView.translatesAutoresizingMaskIntoConstraints = false
         ptyPassthroughView.isHidden = true
         ptyPassthroughView.onInput = { [weak self] sequence in
@@ -2751,6 +2756,7 @@ private final class TerminalTab {
         }
         commandBarView.addSubview(statusLineStack)
         commandBarView.addSubview(inputScroll)
+        commandBarView.addSubview(completionPendingLine)
 
         rootView.addSubview(scrollView)
         rootView.addSubview(sessionPickerView)
@@ -2822,6 +2828,11 @@ private final class TerminalTab {
             inputScroll.topAnchor.constraint(equalTo: statusLineStack.bottomAnchor, constant: 4),
             inputScroll.bottomAnchor.constraint(equalTo: commandBarView.bottomAnchor),
             inputScroll.heightAnchor.constraint(equalToConstant: 64),
+
+            completionPendingLine.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor),
+            completionPendingLine.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor),
+            completionPendingLine.bottomAnchor.constraint(equalTo: commandBarView.bottomAnchor),
+            completionPendingLine.heightAnchor.constraint(equalToConstant: 2),
 
             ptyPassthroughView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
             ptyPassthroughView.topAnchor.constraint(equalTo: rootView.topAnchor),
@@ -2910,7 +2921,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let sessionCleanupQueue = DispatchQueue(label: "com.automicvault.vaultty.session-cleanup", qos: .utility)
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
-    private var pendingCompletionCaretTabID: UUID?
+    private var pendingCompletionIndicatorTabID: UUID?
     private var activeCompletionRange: NSRange?
     private var activeCompletionCommonPrefix: String?
     private var isApplyingCompletion = false
@@ -4466,7 +4477,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         completionRequestSerial += 1
         let serial = completionRequestSerial
-        showPendingCompletionCaret(in: tab)
+        showPendingCompletionIndicator(in: tab)
         var environment: [String: String]
         switch tab.sessionRef.location {
         case .local:
@@ -4494,11 +4505,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 guard self.activeTabID == tab.id,
                       serial == self.completionRequestSerial else {
                     if serial == self.completionRequestSerial {
-                        self.clearPendingCompletionCaret()
+                        self.clearPendingCompletionIndicator()
                     }
                     return
                 }
-                self.clearPendingCompletionCaret()
+                self.clearPendingCompletionIndicator()
                 self.handleCompletionResult(result, in: tab, mode: mode)
             }
         }
@@ -4697,7 +4708,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if let tab = activeTab {
             tab.inputView.clearMutedCompletionPreview()
         }
-        clearPendingCompletionCaret()
+        clearPendingCompletionIndicator()
         activeCompletionRange = nil
         activeCompletionCommonPrefix = nil
         isCompletionInteractionArmed = false
@@ -4705,16 +4716,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         completionRequestSerial += 1
     }
 
-    private func showPendingCompletionCaret(in tab: TerminalTab) {
-        clearPendingCompletionCaret()
-        pendingCompletionCaretTabID = tab.id
-        tab.inputView.insertionPointColor = .systemOrange
+    private func showPendingCompletionIndicator(in tab: TerminalTab) {
+        clearPendingCompletionIndicator()
+        pendingCompletionIndicatorTabID = tab.id
+        tab.completionPendingLine.isHidden = false
     }
 
-    private func clearPendingCompletionCaret() {
-        guard let tabID = pendingCompletionCaretTabID else { return }
-        tabs.first { $0.id == tabID }?.inputView.insertionPointColor = .labelColor
-        pendingCompletionCaretTabID = nil
+    private func clearPendingCompletionIndicator() {
+        guard let tabID = pendingCompletionIndicatorTabID else { return }
+        tabs.first { $0.id == tabID }?.completionPendingLine.isHidden = true
+        pendingCompletionIndicatorTabID = nil
     }
 
     private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
