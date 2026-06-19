@@ -834,9 +834,8 @@ final class PtySession {
     }
 
     private static func sshControlDirectory() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("vaultty", isDirectory: true)
-            .appendingPathComponent("ssh", isDirectory: true)
+        URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("vaultty-\(getuid())", isDirectory: true)
     }
 
     private static func sshControlPath(for host: SSHHostRecord) -> URL {
