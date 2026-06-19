@@ -3793,7 +3793,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       let tab = self.tabs.first(where: { $0.id == tabID }),
-                      tab.blocks.isEmpty,
+                      tab.commandCount == 0,
                       tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 else {
                     return
