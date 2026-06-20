@@ -5250,7 +5250,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func openRemoteCode(payload: String, in tab: TerminalTab) {
         let parts = payload.split(separator: ";", maxSplits: 1).map(String.init)
         guard parts.count == 2,
-              let remotePath = decodeBase64(parts[1]),
+              let remotePath = decodeBase64(parts[1]).map(cleanRemoteCodePath),
               let host = sshHost(for: tab.sessionRef.location),
               let uri = vscodeRemoteURI(kind: parts[0], host: host, path: remotePath)
         else {
@@ -5263,6 +5263,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let arguments = [parts[0] == "file" ? "--file-uri" : "--folder-uri", uri]
         process.arguments = codePath == "/usr/bin/env" ? ["code"] + arguments : arguments
         try? process.run()
+    }
+
+    private func cleanRemoteCodePath(_ path: String) -> String {
+        var path = path
+        while path.hasPrefix("\u{1B}]133;"),
+              let end = path.firstIndex(of: "\u{7}") {
+            path.removeSubrange(...end)
+        }
+        return path
     }
 
     private func sshHost(for location: SessionLocation) -> SSHHostRecord? {
