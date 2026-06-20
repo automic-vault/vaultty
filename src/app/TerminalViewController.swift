@@ -3793,8 +3793,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       let tab = self.tabs.first(where: { $0.id == tabID }),
-                      tab.commandCount == 0,
-                      tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      tab.commandCount == 0
                 else {
                     return
                 }
@@ -3962,8 +3961,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     @objc private func attachSessionFromPicker(_ sender: SessionCandidateButton) {
         guard let tab = activeTab,
               tab.canReplaceFreshSession,
-              tab.blocks.isEmpty,
-              tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              tab.blocks.isEmpty
         else {
             NSSound.beep()
             return
@@ -3984,6 +3982,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         scheduleKillDetachedSession(oldSessionRef)
 
         hideSessionPicker(for: tab)
+        clearCommandInput(in: tab)
         resetTranscript(for: tab)
         tab.sessionRef = candidate.sessionRef
         tab.session = PtySession(sessionRef: candidate.sessionRef)
