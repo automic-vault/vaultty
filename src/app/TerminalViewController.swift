@@ -2462,10 +2462,6 @@ private final class SessionCandidateButton: NSControl {
         applyTitle(title, hostPrefix: subtitleText.isEmpty ? normalizedHostPrefix : nil)
         applyDetail(subtitleText, hostPrefix: subtitleText.isEmpty ? nil : normalizedHostPrefix)
 
-        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
-        clickGesture.buttonMask = 0x1
-        addGestureRecognizer(clickGesture)
-
         updateAppearance()
     }
 
@@ -2505,15 +2501,19 @@ private final class SessionCandidateButton: NSControl {
         bounds.contains(point) ? self : nil
     }
 
-    @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-        guard recognizer.state == .ended,
-              isEnabled,
-              let action
-        else {
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        if event.modifierFlags.contains(.control), let menu {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
-
+        guard let action else { return }
         sendAction(action, to: target)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu else { return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
     private func updateAppearance() {
