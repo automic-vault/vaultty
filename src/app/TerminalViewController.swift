@@ -119,18 +119,20 @@ private final class SessionPickerView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, alphaValue > 0.01 else { return nil }
+        guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
+        return candidateButton(at: point)
+    }
 
-        if let sessionPickerStack {
-            for row in sessionPickerStack.arrangedSubviews.reversed() {
-                let rowPoint = row.convert(point, from: self)
-                guard row.bounds.contains(rowPoint) else { continue }
-                if let hit = row.hitTest(rowPoint) {
-                    return hit
+    func candidateButton(at point: NSPoint) -> SessionCandidateButton? {
+        sessionPickerStack?.layoutSubtreeIfNeeded()
+        for row in sessionPickerStack?.arrangedSubviews.reversed() ?? [] {
+            for case let button as SessionCandidateButton in row.subviews.reversed() {
+                let buttonPoint = button.convert(point, from: self)
+                if button.bounds.contains(buttonPoint) {
+                    return button
                 }
             }
         }
-
         return nil
     }
 }
@@ -2604,19 +2606,8 @@ private final class SessionCandidateRowView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
-
-        return candidateButton(at: point)
-    }
-
-    func candidateButton(at point: NSPoint) -> SessionCandidateButton? {
-        for button in buttons.reversed() {
-            let buttonPoint = button.convert(point, from: self)
-            if button.bounds.contains(buttonPoint) {
-                return button
-            }
-        }
-
-        return nil
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
     }
 
     override func layout() {
@@ -2979,6 +2970,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var isCompletionInteractionArmed = false
     private var isShowingResizeTooltip = false
     private var tabMouseDownMonitor: Any?
+    private var sessionPickerMouseDownMonitor: Any?
     private var commandFocusMonitor: Any?
     private var updateButtonWidthConstraint: NSLayoutConstraint?
     private let blockViewRenderDelay: TimeInterval = 1.0 / 12.0
@@ -3105,12 +3097,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         restoreSessionState()
         installTabMouseDownMonitor()
+        installSessionPickerMouseDownMonitor()
         installCommandFocusMonitor()
     }
 
     deinit {
         if let tabMouseDownMonitor {
             NSEvent.removeMonitor(tabMouseDownMonitor)
+        }
+        if let sessionPickerMouseDownMonitor {
+            NSEvent.removeMonitor(sessionPickerMouseDownMonitor)
         }
         if let commandFocusMonitor {
             NSEvent.removeMonitor(commandFocusMonitor)
@@ -4214,6 +4210,27 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private func installSessionPickerMouseDownMonitor() {
+        sessionPickerMouseDownMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            guard let self,
+                  event.window === self.view.window,
+                  let button = self.sessionPickerButton(atWindowPoint: event.locationInWindow)
+            else {
+                return event
+            }
+
+            if event.type == .rightMouseDown || event.modifierFlags.contains(.control) {
+                guard let menu = button.menu else { return event }
+                NSMenu.popUpContextMenu(menu, with: event, for: button)
+            } else {
+                self.attachSessionFromPicker(button)
+            }
+            return nil
+        }
+    }
+
     private func installCommandFocusMonitor() {
         commandFocusMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .leftMouseUp, .rightMouseUp]
@@ -4319,6 +4336,17 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         guard let contentView = event.window?.contentView else { return nil }
         let point = contentView.convert(event.locationInWindow, from: nil)
         return contentView.hitTest(point)
+    }
+
+    private func sessionPickerButton(atWindowPoint point: NSPoint) -> SessionCandidateButton? {
+        guard let tab = activeTab,
+              !tab.sessionPickerView.isHidden
+        else {
+            return nil
+        }
+
+        let pickerPoint = tab.sessionPickerView.convert(point, from: nil)
+        return tab.sessionPickerView.candidateButton(at: pickerPoint)
     }
 
     private func isCommandInputView(_ view: NSView, in tab: TerminalTab) -> Bool {
