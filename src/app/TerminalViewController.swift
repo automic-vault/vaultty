@@ -2380,7 +2380,7 @@ private final class SessionCandidateButton: NSControl {
         didSet { updateAppearance() }
     }
 
-    init(sessionRef: SessionRef, title: String, subtitle: String?, metadata: String) {
+    init(sessionRef: SessionRef, title: String, subtitle: String?, metadata: String, hostPrefix: String?) {
         self.sessionRef = sessionRef
         self.sessionID = sessionRef.sessionID
         super.init(frame: .zero)
@@ -2398,7 +2398,6 @@ private final class SessionCandidateButton: NSControl {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(iconView)
 
-        titleLabel.stringValue = title
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -2448,14 +2447,18 @@ private final class SessionCandidateButton: NSControl {
             metaTopConstraint
         ])
 
-        setAccessibilityLabel(title)
         setAccessibilityValue(metadata)
-        toolTip = [title, subtitle, metadata]
+        let normalizedHostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullTitle = normalizedHostPrefix.map { $0.isEmpty ? title : "\($0):\(title)" } ?? title
+        setAccessibilityLabel(fullTitle)
+        toolTip = [fullTitle, subtitle, metadata]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }
             .joined(separator: "\n")
+
+        applyTitle(title, hostPrefix: normalizedHostPrefix)
 
         let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
         clickGesture.buttonMask = 0x1
@@ -2518,6 +2521,26 @@ private final class SessionCandidateButton: NSControl {
         iconView.contentTintColor = isHovering
             ? NSColor.labelColor
             : TahoeGlassPalette.titleTextActive
+    }
+
+    private func applyTitle(_ title: String, hostPrefix: String?) {
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleLabel.font ?? NSFont.systemFont(ofSize: 14, weight: .semibold),
+            .foregroundColor: NSColor.labelColor
+        ]
+        guard let hostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !hostPrefix.isEmpty
+        else {
+            titleLabel.attributedStringValue = NSAttributedString(string: title, attributes: titleAttributes)
+            return
+        }
+
+        let attributedTitle = NSMutableAttributedString(
+            attributedString: hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive)
+        )
+        attributedTitle.append(NSAttributedString(string: "  "))
+        attributedTitle.append(NSAttributedString(string: title, attributes: titleAttributes))
+        titleLabel.attributedStringValue = attributedTitle
     }
 }
 
@@ -2878,7 +2901,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private struct LocalSessionCandidate {
         var sessionRef: SessionRef
         var sessionID: String
-        var hostAlias: String?
+        var hostPrefix: String?
         var title: String
         var cwd: String
         var isClosedSession: Bool
@@ -3761,7 +3784,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                     sessionRef: candidate.sessionRef,
                     title: sessionCandidateTitle(candidate),
                     subtitle: sessionCandidateSubtitle(candidate),
-                    metadata: sessionCandidateMetadata(candidate)
+                    metadata: sessionCandidateMetadata(candidate),
+                    hostPrefix: candidate.hostPrefix
                 )
                 button.target = self
                 button.action = #selector(attachSessionFromPicker(_:))
@@ -3829,7 +3853,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             candidates.append(LocalSessionCandidate(
                 sessionRef: visibleRef,
                 sessionID: visible.sessionID,
-                hostAlias: hostAlias(for: visibleRef.location),
+                hostPrefix: hostname(for: visibleRef.location),
                 title: visible.title,
                 cwd: visible.cwd,
                 isClosedSession: false,
@@ -3848,7 +3872,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             candidates.append(LocalSessionCandidate(
                 sessionRef: closedRef,
                 sessionID: closed.sessionID,
-                hostAlias: hostAlias(for: closedRef.location),
+                hostPrefix: hostname(for: closedRef.location),
                 title: closed.title,
                 cwd: closed.cwd,
                 isClosedSession: true,
@@ -3878,7 +3902,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 candidates.append(LocalSessionCandidate(
                     sessionRef: sessionRef,
                     sessionID: session.sessionID,
-                    hostAlias: host.alias,
+                    hostPrefix: host.hostname.isEmpty ? host.alias : host.hostname,
                     title: session.title,
                     cwd: session.cwd,
                     isClosedSession: false,
@@ -3890,11 +3914,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
         }
         return candidates
-    }
-
-    private func hostAlias(for location: SessionLocation) -> String? {
-        guard case .sshHost(let hostID) = location else { return nil }
-        return PtySession.loadSSHHosts().hosts.first(where: { $0.id == hostID })?.alias
     }
 
     private func hostname(for location: SessionLocation) -> String? {
@@ -3911,18 +3930,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
            !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return titleForCommand(runningCommand)
         }
-        if let hostAlias = candidate.hostAlias {
-            return "\(hostAlias): \(displaySessionCwd(candidate.cwd))"
-        }
         return displaySessionCwd(candidate.cwd)
     }
 
     private func sessionCandidateSubtitle(_ candidate: LocalSessionCandidate) -> String? {
         if let runningCommand = candidate.runningCommand,
            !runningCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let hostAlias = candidate.hostAlias {
-                return "\(hostAlias): \(displaySessionCwd(candidate.cwd))"
-            }
             return displaySessionCwd(candidate.cwd)
         }
         return nil
