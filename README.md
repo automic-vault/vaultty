@@ -5,23 +5,24 @@
 The app owns command input and renders command output as blocks. It uses a
 persistent shell process, private OSC lifecycle markers, and a bundled
 `vaultty-env` helper that reads Automic Vault dotenv keys directly from Keychain.
-It does not call `av dotenv export`.
 
-![Vaultty screenshot](assets/screenshot.webp)
+![Vaultty screenshot](assets/screenshot1.webp)
+
+![Vaultty screenshot](assets/screenshot2.webp)
 
 ## Features
 
 - The macOS Tahoe appearance you’ve been waiting for.
   Proper (occluding) blur, vibrancy, and translucency.
 - [Warp](https://warp.dev) style blocks
-- [Fig](https://fig.io) autocompletions
-- Automically loads Automic Vault encrypted `.env` secrets without approval
+- [Fig](https://fig.io) autocompletions †
+- Automically loads Automic Vault encrypted `.env` secrets without approval ‡
 - [libghostty](https://github.com/mitchellh/ghostty) as the tty layer
 - Persistent shell sessions that survive closed tabs and app quits
 
 > [!WARNING]
 >
-> Vaultty currently executes bundled Fig completion generator commands through
+> † Vaultty currently executes bundled Fig completion generator commands through
 > `/bin/zsh -lc` for compatibility with specs that rely on shell quoting, pipes,
 > redirects, and command syntax. Completion specs and custom generators can
 > therefore execute shell code. This is a known security hole; the intended fix
@@ -30,20 +31,15 @@ It does not call `av dotenv export`.
 
 > [!IMPORTANT]
 >
-> Yes this means an agent with Computer Use could use Vaultty to exfiltrate
+> ‡ This means an agent with Computer Use could use Vaultty to exfiltrate
 > secrets. But Computer Use also means that the agent could approve in Automic
 > Vault too. If you are not using the AV iPhone app, or transferring approvals
 > to another machine then Vaultty is convenient and as-secure.
 
 ## Sessions Survive Tabs
 
-Vaultty does not treat a tab close as a shell death sentence.
-
-```sh
-$ scripts/build-app.sh --release
-# close the tab
-# reopen it with Cmd-Shift-T, or join it from the session picker in a new tab
-```
+Closed tabs persist until you type `exit`. This means you can unclose tabs with
+⌘⇧T. Even after restarting the app. Even across different machines.
 
 Tabs detach from a Vaultty-owned `vaultty-sessiond` helper. The helper keeps the
 PTY alive, and Vaultty can rejoin it later with terminal history and session
@@ -51,19 +47,6 @@ metadata.
 
 New tabs show existing sessions above the command bar. Pick one to join it; the
 fresh shell created for that new tab is discarded.
-
-> [!NOTE]
->
-> Vaultty only saves sessions after you run at least one command. Open a new tab,
-> type nothing, close it, and it vanishes. This is a feature, not a lifestyle
-> choice.
-
-Closed sessions sit in the closed-tab stack:
-
-- `Cmd-Shift-T` rejoins the most recently closed session.
-- `Sessions > Kill Closed Tabs...` kills only sessions in that closed-tab stack.
-- Visible tabs in other Vaultty windows are not shown in the picker for the
-  current window.
 
 ## Remote Sessions
 
