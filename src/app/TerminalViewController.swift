@@ -4503,7 +4503,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             export VAULTTY=1
             export TERM=xterm-256color
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
-            \(isRemoteSession ? remoteCodeFunctionScript : "")
+            \(remoteCodeFunctionScript)
             cd \(shellQuote(workingDirectory.path))
             __vaultty_dotenv_hook() {
               local __vaultty_dotenv __vaultty_status __vaultty_loaded
