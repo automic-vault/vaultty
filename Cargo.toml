@@ -14,6 +14,12 @@ sha2 = "0.10"
 [build-dependencies]
 cc = "1"
 
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [[bin]]
 name = "vaultty-env"
 path = "src/env/main.rs"
