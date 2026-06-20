@@ -124,6 +124,7 @@ private final class SessionPickerView: NSView {
         if let sessionPickerStack {
             for row in sessionPickerStack.arrangedSubviews.reversed() {
                 let rowPoint = row.convert(point, from: self)
+                guard row.bounds.contains(rowPoint) else { continue }
                 if let hit = row.hitTest(rowPoint) {
                     return hit
                 }
@@ -2602,7 +2603,7 @@ private final class SessionCandidateRowView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, alphaValue > 0.01 else { return nil }
+        guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
 
         return candidateButton(at: point)
     }
