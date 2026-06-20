@@ -74,6 +74,17 @@ local sessions. Attaching is a full terminal attach over `ssh -T`; the remote
 `vaultty-session-bridge` proxies the existing Vaultty line protocol to the
 remote user's private `vaultty-sessiond` Unix socket.
 
+Remote Vaultty shells also get an `rcode` helper:
+
+```sh
+rcode .
+rcode src/app/TerminalViewController.swift
+```
+
+When you run `rcode PATH` in a session attached from another Mac, Vaultty opens
+VS Code on the Mac in front of you with the matching Remote SSH folder or file.
+VS Code's `code` command and Remote SSH extension must be installed locally.
+
 ## Build
 
 ```sh
