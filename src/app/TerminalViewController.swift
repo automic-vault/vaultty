@@ -3816,6 +3816,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 )
                 button.target = self
                 button.action = #selector(attachSessionFromPicker(_:))
+                if candidate.isClosedSession {
+                    button.menu = closedSessionCandidateMenu(for: candidate.sessionRef)
+                }
                 return button
             }
 
@@ -4014,6 +4017,82 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
 
         replaceFreshSession(in: tab, with: candidate)
+    }
+
+    private func closedSessionCandidateMenu(for sessionRef: SessionRef) -> NSMenu {
+        let menu = NSMenu()
+        let connectItem = menu.addItem(
+            withTitle: "Connect",
+            action: #selector(connectClosedSessionCandidate(_:)),
+            keyEquivalent: ""
+        )
+        connectItem.target = self
+        connectItem.representedObject = sessionRef
+        menu.addItem(.separator())
+        let killItem = menu.addItem(
+            withTitle: "Kill",
+            action: #selector(killClosedSessionCandidate(_:)),
+            keyEquivalent: ""
+        )
+        killItem.target = self
+        killItem.representedObject = sessionRef
+        return menu
+    }
+
+    @objc private func connectClosedSessionCandidate(_ sender: NSMenuItem) {
+        guard let sessionRef = sender.representedObject as? SessionRef,
+              let tab = activeTab,
+              tab.canReplaceFreshSession,
+              tab.blocks.isEmpty,
+              let candidate = sessionPickerCandidatesByTab[tab.id]?[sessionRef],
+              candidate.isClosedSession
+        else {
+            NSSound.beep()
+            return
+        }
+
+        replaceFreshSession(in: tab, with: candidate)
+    }
+
+    @objc private func killClosedSessionCandidate(_ sender: NSMenuItem) {
+        guard let sessionRef = sender.representedObject as? SessionRef,
+              let stored = closedTabs.first(where: { self.sessionRef(from: $0) == sessionRef })
+        else {
+            NSSound.beep()
+            return
+        }
+
+        removeClosedSession(sessionRef)
+        persistSessionState()
+        configureSessionPickerIfPossible()
+
+        sessionCleanupQueue.async { [weak self] in
+            do {
+                try PtySession.killDetachedSession(sessionRef: sessionRef)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.closedTabs.append(stored)
+                    self.persistSessionState()
+                    self.configureSessionPickerIfPossible()
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Closed tab could not be killed"
+                    alert.informativeText = "\(stored.title): \(error.localizedDescription)"
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    private func configureSessionPickerIfPossible() {
+        guard let tab = activeTab,
+              tab.canReplaceFreshSession,
+              tab.blocks.isEmpty
+        else {
+            return
+        }
+        configureSessionPicker(for: tab)
     }
 
     private func replaceFreshSession(in tab: TerminalTab, with candidate: LocalSessionCandidate) {
