@@ -2405,7 +2405,6 @@ private final class SessionCandidateButton: NSControl {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        detailLabel.stringValue = subtitle ?? ""
         detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingMiddle
@@ -2448,17 +2447,20 @@ private final class SessionCandidateButton: NSControl {
         ])
 
         setAccessibilityValue(metadata)
+        let subtitleText = subtitle ?? ""
         let normalizedHostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fullTitle = normalizedHostPrefix.map { $0.isEmpty ? title : "\($0):\(title)" } ?? title
-        setAccessibilityLabel(fullTitle)
-        toolTip = [fullTitle, subtitle, metadata]
+        let hostSuffixTitle = subtitleText.isEmpty ? plainTextWithHostSuffix(title, hostPrefix: normalizedHostPrefix) : title
+        let hostSuffixSubtitle = plainTextWithHostSuffix(subtitleText, hostPrefix: normalizedHostPrefix)
+        setAccessibilityLabel(hostSuffixTitle)
+        toolTip = [hostSuffixTitle, subtitleText.isEmpty ? nil : hostSuffixSubtitle, metadata]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }
             .joined(separator: "\n")
 
-        applyTitle(title, hostPrefix: normalizedHostPrefix)
+        applyTitle(title, hostPrefix: subtitleText.isEmpty ? normalizedHostPrefix : nil)
+        applyDetail(subtitleText, hostPrefix: subtitleText.isEmpty ? nil : normalizedHostPrefix)
 
         let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
         clickGesture.buttonMask = 0x1
@@ -2528,19 +2530,44 @@ private final class SessionCandidateButton: NSControl {
             .font: titleLabel.font ?? NSFont.systemFont(ofSize: 14, weight: .semibold),
             .foregroundColor: NSColor.labelColor
         ]
-        guard let hostPrefix = hostPrefix?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !hostPrefix.isEmpty
-        else {
-            titleLabel.attributedStringValue = NSAttributedString(string: title, attributes: titleAttributes)
-            return
-        }
-
-        let attributedTitle = NSMutableAttributedString(
-            attributedString: hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive)
+        titleLabel.attributedStringValue = attributedTextWithHostSuffix(
+            title,
+            attributes: titleAttributes,
+            hostPrefix: hostPrefix
         )
-        attributedTitle.append(NSAttributedString(string: "  "))
-        attributedTitle.append(NSAttributedString(string: title, attributes: titleAttributes))
-        titleLabel.attributedStringValue = attributedTitle
+    }
+
+    private func applyDetail(_ detail: String, hostPrefix: String?) {
+        let detailAttributes: [NSAttributedString.Key: Any] = [
+            .font: detailLabel.font ?? NSFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        detailLabel.attributedStringValue = attributedTextWithHostSuffix(
+            detail,
+            attributes: detailAttributes,
+            hostPrefix: hostPrefix
+        )
+    }
+
+    private func attributedTextWithHostSuffix(
+        _ text: String,
+        attributes: [NSAttributedString.Key: Any],
+        hostPrefix: String?
+    ) -> NSAttributedString {
+        let output = NSMutableAttributedString(string: text, attributes: attributes)
+        guard let hostPrefix = hostPrefix, !hostPrefix.isEmpty else {
+            return output
+        }
+        output.append(NSAttributedString(string: "  "))
+        output.append(hostPrefixAttributedString(hostPrefix, color: TahoeGlassPalette.titleTextActive))
+        return output
+    }
+
+    private func plainTextWithHostSuffix(_ text: String, hostPrefix: String?) -> String {
+        guard let hostPrefix = hostPrefix, !hostPrefix.isEmpty else {
+            return text
+        }
+        return "\(text)  \(hostPrefix)"
     }
 }
 
