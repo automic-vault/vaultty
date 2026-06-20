@@ -5010,8 +5010,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startRunningElapsedUpdates(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let remoteCodePrelude = isRemoteSession(tab) ? remoteCodeFunctionScript : ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; \(remoteCodePrelude) if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>/dev/null; elif [ -x \"$VAULTTY_ENV\" ]; then __vaultty_dotenv=\"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh 2>/dev/null)\"; if [ $? -eq 0 ]; then eval \"$__vaultty_dotenv\"; fi; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; if typeset -f __vaultty_dotenv_hook >/dev/null 2>&1; then __vaultty_dotenv_hook 2>/dev/null; elif [ -x \"$VAULTTY_ENV\" ]; then __vaultty_dotenv=\"$(\"$VAULTTY_ENV\" export --cwd \"$PWD\" --format zsh 2>/dev/null)\"; if [ $? -eq 0 ]; then eval \"$__vaultty_dotenv\"; fi; fi; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script, suppressEcho: true)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
@@ -5246,13 +5245,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
           printf '\\033]133;O;%s;%s\\a' "$__vaultty_kind" "$(printf '%s' "$__vaultty_abs" | base64 | tr -d '\\n')"
         }
         """
-    }
-
-    private func isRemoteSession(_ tab: TerminalTab) -> Bool {
-        if case .sshHost = tab.sessionRef.location {
-            return true
-        }
-        return false
     }
 
     private func openRemoteCode(payload: String, in tab: TerminalTab) {
