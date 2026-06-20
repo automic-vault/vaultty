@@ -19,6 +19,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const COMMAND_STARTED_MARKER: &[u8] = b"\x1b]133;C;";
+const COMMAND_FINISHED_MARKER: &[u8] = b"\x1b]133;D;";
+const SYNTHETIC_COMMAND_FINISHED_MARKER: &[u8] = b"\x1b]133;D;0\x07";
+
 #[derive(Clone, Debug)]
 struct AttachRequest {
     session_id: String,
@@ -132,6 +136,7 @@ impl Session {
     }
 
     fn history(&self) -> Vec<u8> {
+        self.reconcile_idle_command_state();
         self.history.lock().expect("history lock poisoned").clone()
     }
 
@@ -148,6 +153,7 @@ impl Session {
     }
 
     fn metadata_snapshot(&self) -> SessionMetadata {
+        self.reconcile_idle_command_state();
         let mut metadata = self
             .metadata
             .lock()
@@ -175,6 +181,27 @@ impl Session {
         if let Some(command_history) = update.command_history {
             metadata.command_history = command_history;
         }
+    }
+
+    fn clear_running_command(&self) {
+        self.metadata
+            .lock()
+            .expect("metadata lock poisoned")
+            .running_command = None;
+    }
+
+    fn reconcile_idle_command_state(&self) {
+        if !shell_is_foreground(self) {
+            return;
+        }
+
+        let mut history = self.history.lock().expect("history lock poisoned");
+        if history_has_unfinished_command(&history) {
+            // ponytail: exit status is unknown for old incomplete replays; 0 restores input.
+            history.extend_from_slice(SYNTHETIC_COMMAND_FINISHED_MARKER);
+        }
+        drop(history);
+        self.clear_running_command();
     }
 
     fn write_input(&self, bytes: &[u8]) {
@@ -252,6 +279,12 @@ impl Session {
                     .lock()
                     .expect("history lock poisoned")
                     .extend_from_slice(&bytes);
+                if bytes
+                    .windows(COMMAND_FINISHED_MARKER.len())
+                    .any(|window| window == COMMAND_FINISHED_MARKER)
+                {
+                    session.clear_running_command();
+                }
 
                 let mut clients = session.clients.lock().expect("clients lock poisoned");
                 clients.retain(|client| client.send(bytes.clone()).is_ok());
@@ -675,6 +708,26 @@ fn reap_child(pid: pid_t) -> i32 {
     }
 }
 
+fn shell_is_foreground(session: &Session) -> bool {
+    let mut foreground_process_group: pid_t = 0;
+    let shell_process_group = unsafe { libc::getpgid(session.child_pid) };
+    shell_process_group > 0
+        && unsafe { libc::ioctl(session.master_fd, TIOCGPGRP, &mut foreground_process_group) } == 0
+        && foreground_process_group == shell_process_group
+}
+
+fn history_has_unfinished_command(history: &[u8]) -> bool {
+    let last_start = last_marker_offset(history, COMMAND_STARTED_MARKER);
+    let last_finish = last_marker_offset(history, COMMAND_FINISHED_MARKER);
+    last_start.is_some_and(|start| last_finish.is_none_or(|finish| start > finish))
+}
+
+fn last_marker_offset(history: &[u8], marker: &[u8]) -> Option<usize> {
+    history
+        .windows(marker.len())
+        .rposition(|window| window == marker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,5 +792,19 @@ mod tests {
         assert_eq!(metadata.title, "project");
         assert_eq!(metadata.cwd, "/tmp/project");
         assert_eq!(metadata.command_count, 0);
+    }
+
+    #[test]
+    fn history_detects_unfinished_command_replay() {
+        assert!(!history_has_unfinished_command(b"plain output"));
+        assert!(history_has_unfinished_command(
+            b"\x1b]133;C;ZWNobyBoaQo=\x07output"
+        ));
+        assert!(!history_has_unfinished_command(
+            b"\x1b]133;C;ZWNobyBoaQo=\x07output\x1b]133;D;0\x07"
+        ));
+        assert!(history_has_unfinished_command(
+            b"\x1b]133;C;MQ==\x07\x1b]133;D;0\x07\x1b]133;C;Mg==\x07"
+        ));
     }
 }
