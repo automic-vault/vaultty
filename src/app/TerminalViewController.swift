@@ -4120,11 +4120,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return event
             }
 
-            if let sessionCandidateButton = self.sessionCandidateButton(atWindowPoint: event.locationInWindow) {
-                self.attachSessionFromPicker(sessionCandidateButton)
-                return nil
-            }
-
             guard let clickedTarget = self.tabClickTarget(atWindowPoint: event.locationInWindow) else {
                 return event
             }
@@ -4269,25 +4264,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 return button.containsCloseButton(at: point) ? .close(id) : .select(id)
             }
         }
-        return nil
-    }
-
-    private func sessionCandidateButton(atWindowPoint windowPoint: NSPoint) -> SessionCandidateButton? {
-        guard let tab = activeTab,
-              tab.canReplaceFreshSession,
-              !tab.sessionPickerView.isHidden
-        else {
-            return nil
-        }
-
-        for view in tab.sessionPickerStack.arrangedSubviews.reversed() {
-            guard let row = view as? SessionCandidateRowView else { continue }
-            let point = row.convert(windowPoint, from: nil)
-            if let button = row.candidateButton(at: point) {
-                return button
-            }
-        }
-
         return nil
     }
 
