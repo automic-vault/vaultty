@@ -4503,6 +4503,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             export VAULTTY=1
             export TERM=xterm-256color
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
+            \(isRemoteSession ? remoteCodeFunctionScript : "")
             cd \(shellQuote(workingDirectory.path))
             __vaultty_dotenv_hook() {
               local __vaultty_dotenv __vaultty_status __vaultty_loaded
@@ -5193,6 +5194,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             persistSessionState()
         case "V":
             updateDotenvShield(payload.trimmingCharacters(in: .whitespacesAndNewlines) == "1", in: tab)
+        case "O":
+            openRemoteCode(payload: payload, in: tab)
         case "D":
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
             if let activeBlockID = tab.activeBlockID,
@@ -5221,6 +5224,74 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         default:
             break
         }
+    }
+
+    private var remoteCodeFunctionScript: String {
+        """
+        rcode() {
+          local __vaultty_target="${1:-.}" __vaultty_kind __vaultty_dir __vaultty_name __vaultty_abs
+          if [ -d "$__vaultty_target" ]; then
+            __vaultty_kind=folder
+            __vaultty_abs="$(cd "$__vaultty_target" 2>/dev/null && pwd -P)" || return 1
+          else
+            __vaultty_kind=file
+            case "$__vaultty_target" in
+              */*) __vaultty_dir="${__vaultty_target%/*}"; __vaultty_name="${__vaultty_target##*/}" ;;
+              *) __vaultty_dir=.; __vaultty_name="$__vaultty_target" ;;
+            esac
+            [ -n "$__vaultty_dir" ] || __vaultty_dir=/
+            __vaultty_abs="$(cd "$__vaultty_dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$__vaultty_name")" || return 1
+          fi
+          printf '\\033]133;O;%s;%s\\a' "$__vaultty_kind" "$(printf '%s' "$__vaultty_abs" | base64 | tr -d '\\n')"
+        }
+        """
+    }
+
+    private func openRemoteCode(payload: String, in tab: TerminalTab) {
+        let parts = payload.split(separator: ";", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let remotePath = decodeBase64(parts[1]),
+              let host = sshHost(for: tab.sessionRef.location),
+              let uri = vscodeRemoteURI(kind: parts[0], host: host, path: remotePath)
+        else {
+            return
+        }
+
+        let process = Process()
+        let codePath = codeExecutablePath()
+        process.executableURL = URL(fileURLWithPath: codePath)
+        let arguments = [parts[0] == "file" ? "--file-uri" : "--folder-uri", uri]
+        process.arguments = codePath == "/usr/bin/env" ? ["code"] + arguments : arguments
+        try? process.run()
+    }
+
+    private func sshHost(for location: SessionLocation) -> SSHHostRecord? {
+        guard case .sshHost(let hostID) = location else { return nil }
+        return PtySession.loadSSHHosts().hosts.first { $0.id == hostID }
+    }
+
+    private func vscodeRemoteURI(kind: String, host: SSHHostRecord, path: String) -> String? {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "%?#")
+        guard kind == "file" || kind == "folder",
+              let encodedPath = path.addingPercentEncoding(withAllowedCharacters: allowed)
+        else {
+            return nil
+        }
+        let absolutePath = encodedPath.hasPrefix("/") ? encodedPath : "/" + encodedPath
+        let hostname = host.hostname.isEmpty ? host.alias : host.hostname
+        return "vscode-remote://ssh-remote+\(hostname)\(absolutePath)"
+    }
+
+    private func codeExecutablePath() -> String {
+        for path in [
+            "/usr/local/bin/code",
+            "/opt/homebrew/bin/code",
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+        ] where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return "/usr/bin/env"
     }
 
     private func usesPagerKeyBindings(for command: String) -> Bool {
