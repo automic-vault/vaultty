@@ -5011,6 +5011,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         )
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
+        resizePtyToViewport(for: tab)
         scrollToBottomNow(tab)
         startTtyModePolling(for: tab)
         startRunningElapsedUpdates(for: tab)
