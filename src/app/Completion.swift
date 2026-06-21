@@ -608,15 +608,14 @@ final class VaulttyCompletionEngine {
             diagnostics.append("No Fig spec for \(commandName)")
         }
 
-        if suggestions.isEmpty && shouldAddPathFallback(commandName: commandName, currentPrefix: currentPrefix) {
-            suggestions.append(contentsOf: pathSuggestions(
+        var deduped = rankedSuggestions(suggestions, prefix: currentPrefix, limit: request.limit)
+        if deduped.isEmpty && shouldAddPathFallback(commandName: commandName, currentPrefix: currentPrefix) {
+            deduped = rankedSuggestions(pathSuggestions(
                 prefix: currentPrefix,
                 request: request,
                 foldersOnly: commandName == "cd"
-            ))
+            ), prefix: currentPrefix, limit: request.limit)
         }
-
-        let deduped = rankedSuggestions(suggestions, prefix: currentPrefix, limit: request.limit)
 
         return CompletionResult(
             replacementRange: parsed.currentTokenRange,
