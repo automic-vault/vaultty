@@ -574,6 +574,29 @@ private extension CompletionSuggestion {
     }
 }
 
+private final class CommandDescriptionStore {
+    static let shared = CommandDescriptionStore()
+
+    private let descriptions: [String: String]
+
+    private init() {
+        guard let url = Bundle.main.resourceURL?
+            .appendingPathComponent("completions", isDirectory: true)
+            .appendingPathComponent("command-descriptions.json", isDirectory: false),
+            let data = try? Data(contentsOf: url),
+            let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else {
+            descriptions = [:]
+            return
+        }
+        descriptions = decoded
+    }
+
+    func description(for command: String) -> String? {
+        descriptions[command]
+    }
+}
+
 final class VaulttyCompletionEngine {
     private static let maxPathSuggestionCandidates = 512
     private static let maxGeneratorSuggestionCandidates = 512
@@ -581,6 +604,7 @@ final class VaulttyCompletionEngine {
     private static let maxGeneratorTimeout: TimeInterval = 15
 
     private let specLoader = FigSpecLoader()
+    private let commandDescriptions = CommandDescriptionStore.shared
     private let fileManager = FileManager.default
     private var commandCache: [String: [CompletionSuggestion]] = [:]
 
@@ -999,14 +1023,15 @@ final class VaulttyCompletionEngine {
         names.formUnion(specLoader.commandNames())
         names.formUnion(executableCommandNames(for: request))
 
-        let suggestions = names.map {
-            CompletionSuggestion(
-                displayText: $0,
-                insertText: $0 + " ",
-                description: nil,
+        let suggestions = names.map { name in
+            let hasSpec = specLoader.hasSpec(command: name)
+            return CompletionSuggestion(
+                displayText: name,
+                insertText: name + " ",
+                description: commandDescriptions.description(for: name),
                 kind: .command,
-                priority: specLoader.hasSpec(command: $0) ? 70 : 50,
-                source: specLoader.hasSpec(command: $0) ? "Fig" : "PATH"
+                priority: hasSpec ? 70 : 50,
+                source: hasSpec ? "Fig" : "PATH"
             )
         }
         commandCache[cacheKey] = suggestions

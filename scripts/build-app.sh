@@ -36,6 +36,7 @@ ICON_BUNDLE="$ROOT_DIR/assets/AppIcon.icon"
 ICON_SOURCE="$ICON_BUNDLE/Assets/Vaultty.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
 FIG_AUTOCOMPLETE_DIR="$ROOT_DIR/target/vendor/fig-autocomplete/package"
+COMMAND_DESCRIPTIONS_FILE="$ROOT_DIR/src/app/command-descriptions.json"
 
 usage() {
   cat <<'EOF'
@@ -99,6 +100,7 @@ GHOSTTY_BRIDGE_OBJECT="$BUILD_DIR/GhosttyOscBridge.o"
 ICON_BUNDLE="$ROOT_DIR/assets/AppIcon.icon"
 ICON_SOURCE="$ICON_BUNDLE/Assets/Vaultty.png"
 ICONSET_DIR="$BUILD_DIR/$APP_NAME.iconset"
+COMMAND_DESCRIPTIONS_FILE="$ROOT_DIR/src/app/command-descriptions.json"
 SWIFT_DEPS_BUILD_PATH="$ROOT_DIR/target/swift-deps/$CONFIGURATION"
 
 unquote_env_value() {
@@ -490,6 +492,10 @@ bundle_completions() {
   cp "$FIG_AUTOCOMPLETE_DIR/package.json" "$RESOURCES_DIR/completions/fig/package.json"
   cp "$FIG_AUTOCOMPLETE_DIR/LICENSE" "$RESOURCES_DIR/completions/fig/LICENSE"
   cp "$FIG_AUTOCOMPLETE_DIR/README.md" "$RESOURCES_DIR/completions/fig/README.md"
+  if [[ ! -f "$COMMAND_DESCRIPTIONS_FILE" ]]; then
+    "$ROOT_DIR/scripts/fetch-command-descriptions.sh" >/dev/null
+  fi
+  cp "$COMMAND_DESCRIPTIONS_FILE" "$RESOURCES_DIR/completions/command-descriptions.json"
 }
 
 IDENTITY="$(codesign_identity)"
