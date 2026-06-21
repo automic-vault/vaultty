@@ -2144,7 +2144,7 @@ private final class TerminalOutputProcessor {
 
     enum Event {
         case snapshot(Snapshot)
-        case marker(String)
+        case marker(String, isReplay: Bool)
         case replayCommandStarted(blockID: UUID, command: String)
     }
 
@@ -2159,6 +2159,7 @@ private final class TerminalOutputProcessor {
     private var parserBuffer = ""
     private var pendingBlockID: UUID?
     private var activeBlockID: UUID?
+    private var isReplayingCommand = false
     private var usesPagerKeyBindings = false
     private var isAlternateScreenActive = false
     private var isApplicationCursorModeActive = false
@@ -2175,6 +2176,7 @@ private final class TerminalOutputProcessor {
             self.parserBuffer.removeAll(keepingCapacity: true)
             self.pendingBlockID = blockID
             self.activeBlockID = nil
+            self.isReplayingCommand = false
             self.usesPagerKeyBindings = usesPagerKeyBindings
             self.isAlternateScreenActive = false
             self.isApplicationCursorModeActive = false
@@ -2191,6 +2193,7 @@ private final class TerminalOutputProcessor {
             self.parserBuffer.removeAll(keepingCapacity: true)
             self.pendingBlockID = nil
             self.activeBlockID = nil
+            self.isReplayingCommand = false
             self.usesPagerKeyBindings = false
             self.isAlternateScreenActive = false
             self.isApplicationCursorModeActive = false
@@ -2284,14 +2287,16 @@ private final class TerminalOutputProcessor {
             parserBuffer.removeSubrange(...end)
             flushVisible(visible)
             visible.removeAll(keepingCapacity: true)
-            emit(.marker(marker))
+            emit(.marker(marker, isReplay: isReplayingCommand))
             if marker.hasPrefix("C;") {
                 if let pendingBlockID {
                     activeBlockID = pendingBlockID
                     self.pendingBlockID = nil
+                    isReplayingCommand = false
                 } else {
                     let blockID = UUID()
                     activeBlockID = blockID
+                    isReplayingCommand = true
                     emit(.replayCommandStarted(
                         blockID: blockID,
                         command: Self.commandPayload(fromCommandStartMarker: marker)
@@ -2301,6 +2306,7 @@ private final class TerminalOutputProcessor {
             if marker.hasPrefix("D;") {
                 activeBlockID = nil
                 pendingBlockID = nil
+                isReplayingCommand = false
             }
         }
 
@@ -5114,8 +5120,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         switch event {
         case .snapshot(let snapshot):
             applyOutputSnapshot(snapshot, in: tab)
-        case .marker(let marker):
-            handleMarker(marker, in: tab)
+        case .marker(let marker, let isReplay):
+            handleMarker(marker, isReplay: isReplay, in: tab)
         case .replayCommandStarted(let blockID, let command):
             beginReplayedCommandBlock(blockID: blockID, command: command, in: tab)
         }
@@ -5165,7 +5171,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func handleMarker(_ marker: String, in tab: TerminalTab) {
+    private func handleMarker(_ marker: String, isReplay: Bool, in tab: TerminalTab) {
         let parts = marker.split(separator: ";", maxSplits: 1).map(String.init)
         guard let code = parts.first else { return }
         let payload = parts.count > 1 ? parts[1] : ""
@@ -5195,7 +5201,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case "V":
             updateDotenvShield(payload.trimmingCharacters(in: .whitespacesAndNewlines) == "1", in: tab)
         case "O":
-            openRemoteCode(payload: payload, in: tab)
+            if !isReplay {
+                openRemoteCode(payload: payload, in: tab)
+            }
         case "D":
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
             if let activeBlockID = tab.activeBlockID,
