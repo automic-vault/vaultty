@@ -637,7 +637,8 @@ final class VaulttyCompletionEngine {
         currentPrefix: String,
         request: CompletionRequest
     ) -> [CompletionSuggestion] {
-        var node = FigNode(value: spec.value)
+        var activeSpec = spec
+        var node = FigNode(value: activeSpec.value)
         let consumed = max(0, argumentTokens.count - 1)
         var pendingOptionArgs: [FigArg] = []
         var positionalArgIndex = 0
@@ -657,7 +658,13 @@ final class VaulttyCompletionEngine {
                     continue
                 }
                 if let subcommand = node.subcommand(named: token.text) {
-                    node = subcommand
+                    if let loadSpec = subcommand.loadSpec,
+                       let loaded = specLoader.loadSpec(loadSpec) {
+                        activeSpec = loaded
+                        node = FigNode(value: loaded.value)
+                    } else {
+                        node = subcommand
+                    }
                     positionalArgIndex = 0
                     pendingOptionArgs.removeAll()
                     continue
@@ -701,7 +708,7 @@ final class VaulttyCompletionEngine {
                     commandName: commandName,
                     currentPrefix: currentPrefix,
                     request: request,
-                    spec: spec
+                    spec: activeSpec
                 ))
             }
         }
@@ -1568,6 +1575,28 @@ private final class FigSpecLoader {
             return cached
         }
         guard let url = specIndex()[command],
+              let loaded = load(cacheKey: command, url: url)
+        else {
+            return nil
+        }
+        return loaded
+    }
+
+    func loadSpec(_ path: String) -> LoadedFigSpec? {
+        let key = "spec:\(path)"
+        if let cached = cache[key] {
+            return cached
+        }
+        guard let specsRoot,
+              let url = specURL(path, relativeTo: specsRoot)
+        else {
+            return nil
+        }
+        return load(cacheKey: key, url: url)
+    }
+
+    private func load(cacheKey: String, url: URL) -> LoadedFigSpec? {
+        guard
               let contents = try? String(contentsOf: url, encoding: .utf8),
               let transformed = transformModule(contents)
         else {
@@ -1590,8 +1619,19 @@ private final class FigSpecLoader {
             return nil
         }
         let loaded = LoadedFigSpec(context: context, value: defaultValue)
-        cache[command] = loaded
+        cache[cacheKey] = loaded
         return loaded
+    }
+
+    private func specURL(_ path: String, relativeTo specsRoot: URL) -> URL? {
+        guard !path.isEmpty, !path.hasPrefix("/") else { return nil }
+        var url = specsRoot
+        for component in path.split(separator: "/") {
+            guard component != ".." else { return nil }
+            url.appendPathComponent(String(component), isDirectory: false)
+        }
+        url.appendPathExtension("js")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func specIndex() -> [String: URL] {
@@ -1664,6 +1704,7 @@ private struct FigNode {
 
     var names: [String] { FigReader.names(from: value) }
     var description: String? { FigReader.string(value.forProperty("description")) }
+    var loadSpec: String? { FigReader.string(value.forProperty("loadSpec")) }
     var subcommands: [FigNode] { FigReader.arrayValues(value.forProperty("subcommands")).map(FigNode.init) }
     var options: [FigOption] { FigReader.arrayValues(value.forProperty("options")).map(FigOption.init) }
     var args: [FigArg] { FigReader.args(from: value.forProperty("args")) }
