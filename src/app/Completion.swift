@@ -673,7 +673,7 @@ final class VaulttyCompletionEngine {
         }
 
         var suggestions: [CompletionSuggestion] = []
-        if currentPrefix.hasPrefix("-") {
+        if currentPrefix.hasPrefix("-") || (currentPrefix.isEmpty && node.subcommands.isEmpty) {
             suggestions.append(contentsOf: node.options.flatMap { option in
                 option.names.map {
                     CompletionSuggestion(
