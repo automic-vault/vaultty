@@ -272,14 +272,7 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
             let down = min(halfWindowHeight, max(0, availableBelow - Self.popupMargin))
             let up = max(0, window.frame.maxY - screenRect.maxY - Self.popupMargin)
             let height = min(contentHeight, max(Self.minPopupHeight, down + up))
-            let screenPlacementRect = NSRect(
-                x: screenRect.minX,
-                y: screenRect.minY - min(height, down),
-                width: max(1, screenRect.width),
-                height: height
-            )
-            let viewRect = view.convert(window.convertFromScreen(screenPlacementRect), from: nil)
-            return PopupPlacement(rect: positioningRect(for: viewRect), edge: .maxX, height: height)
+            return PopupPlacement(rect: positioningRect(for: rect), edge: .maxX, height: height)
         }
 
         let belowHeight = min(contentHeight, halfWindowHeight, max(Self.minPopupHeight, availableBelow - Self.popupMargin))
