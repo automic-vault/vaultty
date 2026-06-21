@@ -2295,6 +2295,10 @@ private final class TerminalOutputProcessor {
                     isReplayingCommand = false
                 } else {
                     let blockID = UUID()
+                    terminalScreen.resetForCommand()
+                    styledRenderer.reset()
+                    isAlternateScreenActive = false
+                    isApplicationCursorModeActive = false
                     activeBlockID = blockID
                     isReplayingCommand = true
                     emit(.replayCommandStarted(
