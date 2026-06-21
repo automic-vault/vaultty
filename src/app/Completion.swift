@@ -1203,6 +1203,8 @@ final class VaulttyCompletionEngine {
             let directoryName = nsPrefix.deletingLastPathComponent
             if directoryName.isEmpty {
                 basePrefix = ""
+            } else if directoryName == "/" {
+                basePrefix = "/"
             } else if directoryName == "." {
                 basePrefix = prefix.hasPrefix("./") ? "./" : ""
             } else {

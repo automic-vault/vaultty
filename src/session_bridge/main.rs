@@ -349,6 +349,8 @@ fn path_insert_value(prefix: &str, suggestion_name: &str, is_directory: bool) ->
             .unwrap_or_default();
         if directory_name.is_empty() {
             String::new()
+        } else if directory_name == "/" {
+            "/".to_owned()
         } else if directory_name == "." {
             if prefix.starts_with("./") {
                 "./".to_owned()
@@ -751,6 +753,11 @@ mod tests {
             .find(|suggestion| suggestion.display_text == "space file.txt")
             .expect("spaced file should be suggested");
         assert_eq!(spaced.insert_text, "'space file.txt' ");
+    }
+
+    #[test]
+    fn path_completion_keeps_absolute_root_prefix() {
+        assert_eq!(path_insert_value("/op", "opt/", true), "/opt/");
     }
 
     #[test]
