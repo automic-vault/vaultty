@@ -4624,7 +4624,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             shellPath: environment["SHELL"] ?? "/bin/zsh",
             environment: environment,
             location: tab.sessionRef.location,
-            limit: 14
+            limit: 256
         )
 
         completionQueue.async { [weak self] in
