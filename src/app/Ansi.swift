@@ -66,7 +66,7 @@ enum Ansi {
                     cursorCol = max(0, cursorCol - 1)
                     index += 1
                 case 0x09:
-                    put(scalar)
+                    expandTab()
                     index += 1
                 case 0x0A, 0x0B, 0x0C:
                     lineFeed()
@@ -214,6 +214,12 @@ enum Ansi {
                 lines[cursorRow].append(Cell(scalar: scalar, style: style))
             }
             cursorCol += 1
+        }
+
+        private func expandTab() {
+            for _ in 0..<(8 - cursorCol % 8) {
+                put(" ")
+            }
         }
 
         private func lineFeed() {

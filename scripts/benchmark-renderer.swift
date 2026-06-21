@@ -16,6 +16,11 @@ private struct BenchmarkResult {
 @main
 private struct RendererBenchmark {
     static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            assert(Ansi.visibleText(from: "a\tb") == "a       b")
+            return
+        }
+
         let cases = [
             BenchmarkCase(
                 name: "carriage-return-progress",
