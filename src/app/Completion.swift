@@ -84,6 +84,14 @@ private struct BridgeGeneratorOutput: Decodable {
 final class CompletionPopupController: NSObject, NSPopoverDelegate {
     private static let popupWidth: CGFloat = 360
     private static let maxPopupHeight: CGFloat = 232
+    private static let minPopupHeight: CGFloat = 44
+    private static let popupMargin: CGFloat = 12
+
+    private struct PopupPlacement {
+        let rect: NSRect
+        let edge: NSRectEdge
+        let height: CGFloat
+    }
 
     private let popover = NSPopover()
     private let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 44))
@@ -144,9 +152,9 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         self.showsSelection = !suggestions.isEmpty
 
         let contentHeight = CompletionListView.contentHeight(forRowCount: suggestions.count)
-        let visibleHeight = min(Self.maxPopupHeight, contentHeight)
-        let shouldFlashScrollers = contentHeight > visibleHeight
-        let size = NSSize(width: Self.popupWidth, height: visibleHeight)
+        let placement = popupPlacement(for: rect, of: view, contentHeight: contentHeight)
+        let shouldFlashScrollers = contentHeight > placement.height
+        let size = NSSize(width: Self.popupWidth, height: placement.height)
         let geometryChanged = currentContentSize != size ||
             currentDocumentHeight != contentHeight ||
             scrollView.hasVerticalScroller != shouldFlashScrollers
@@ -167,24 +175,22 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
             popover.contentSize = size
         }
 
-        let edge = preferredEdge(for: rect, of: view, popupHeight: visibleHeight)
-        let positioningRect = positioningRect(for: rect)
         placementSerial += 1
         let serial = placementSerial
 
         if popover.isShown {
-            if presentationView !== view || presentationEdge != edge {
+            if presentationView !== view || presentationEdge != placement.edge {
                 performInternalRepositionClose()
-                present(relativeTo: positioningRect, of: view, preferredEdge: edge)
+                present(relativeTo: placement.rect, of: view, preferredEdge: placement.edge)
             } else {
-                popover.positioningRect = positioningRect
-                reapplyPositioningRect(positioningRect, serial: serial)
+                popover.positioningRect = placement.rect
+                reapplyPositioningRect(placement.rect, serial: serial)
             }
             return
         }
 
-        present(relativeTo: positioningRect, of: view, preferredEdge: edge)
-        reapplyPositioningRect(positioningRect, serial: serial)
+        present(relativeTo: placement.rect, of: view, preferredEdge: placement.edge)
+        reapplyPositioningRect(placement.rect, serial: serial)
         if shouldFlashScrollers {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.popover.isShown else { return }
@@ -196,17 +202,25 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
     func reposition(relativeTo rect: NSRect, of view: NSView) {
         guard popover.isShown else { return }
 
-        let edge = preferredEdge(for: rect, of: view, popupHeight: currentContentSize.height)
-        let positioningRect = positioningRect(for: rect)
+        let placement = popupPlacement(for: rect, of: view, contentHeight: currentDocumentHeight)
+        let size = NSSize(width: Self.popupWidth, height: placement.height)
+        if currentContentSize != size {
+            currentContentSize = size
+            scrollView.frame = NSRect(origin: .zero, size: size)
+            scrollView.hasVerticalScroller = currentDocumentHeight > placement.height
+            listView.frame = NSRect(x: 0, y: 0, width: Self.popupWidth, height: currentDocumentHeight)
+            popover.contentViewController?.preferredContentSize = size
+            popover.contentSize = size
+        }
         placementSerial += 1
         let serial = placementSerial
 
-        if presentationView !== view || presentationEdge != edge {
+        if presentationView !== view || presentationEdge != placement.edge {
             performInternalRepositionClose()
-            present(relativeTo: positioningRect, of: view, preferredEdge: edge)
+            present(relativeTo: placement.rect, of: view, preferredEdge: placement.edge)
         } else {
-            popover.positioningRect = positioningRect
-            reapplyPositioningRect(positioningRect, serial: serial)
+            popover.positioningRect = placement.rect
+            reapplyPositioningRect(placement.rect, serial: serial)
         }
     }
 
@@ -240,24 +254,48 @@ final class CompletionPopupController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func preferredEdge(for rect: NSRect, of view: NSView, popupHeight: CGFloat) -> NSRectEdge {
-        guard let window = view.window else { return .maxY }
+    private func popupPlacement(for rect: NSRect, of view: NSView, contentHeight: CGFloat) -> PopupPlacement {
+        let fallbackHeight = min(Self.maxPopupHeight, contentHeight)
+        guard let window = view.window else {
+            return PopupPlacement(rect: positioningRect(for: rect), edge: .maxY, height: fallbackHeight)
+        }
 
         let windowRect = view.convert(rect, to: nil)
         let screenRect = window.convertToScreen(windowRect)
-        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        let bottomMargin: CGFloat = 12
-        let topMargin: CGFloat = 12
-        let availableBelow = screenRect.minY - (visibleFrame?.minY ?? 0)
-        let availableAbove = (visibleFrame?.maxY ?? 0) - screenRect.maxY
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        let halfWindowHeight = max(Self.minPopupHeight, window.frame.height / 2)
+        let availableBelow = screenRect.minY - visibleFrame.minY
+        let availableAbove = visibleFrame.maxY - screenRect.maxY
+        let availableRight = visibleFrame.maxX - screenRect.maxX
 
-        if availableBelow >= popupHeight + bottomMargin {
-            return .maxY
+        if availableRight >= Self.popupWidth + Self.popupMargin {
+            let down = min(halfWindowHeight, max(0, availableBelow - Self.popupMargin))
+            let up = max(0, window.frame.maxY - screenRect.maxY - Self.popupMargin)
+            let height = min(contentHeight, max(Self.minPopupHeight, down + up))
+            let screenPlacementRect = NSRect(
+                x: screenRect.minX,
+                y: screenRect.minY - min(height, down),
+                width: max(1, screenRect.width),
+                height: height
+            )
+            let viewRect = view.convert(window.convertFromScreen(screenPlacementRect), from: nil)
+            return PopupPlacement(rect: positioningRect(for: viewRect), edge: .maxX, height: height)
         }
-        if availableAbove >= popupHeight + topMargin {
-            return .minY
+
+        let belowHeight = min(contentHeight, halfWindowHeight, max(Self.minPopupHeight, availableBelow - Self.popupMargin))
+        if availableBelow >= Self.minPopupHeight + Self.popupMargin {
+            return PopupPlacement(rect: positioningRect(for: rect), edge: .maxY, height: belowHeight)
         }
-        return availableAbove > availableBelow ? .minY : .maxY
+
+        let aboveHeight = min(contentHeight, halfWindowHeight, max(Self.minPopupHeight, availableAbove - Self.popupMargin))
+        if availableAbove >= Self.minPopupHeight + Self.popupMargin {
+            return PopupPlacement(rect: positioningRect(for: rect), edge: .minY, height: aboveHeight)
+        }
+        return PopupPlacement(
+            rect: positioningRect(for: rect),
+            edge: availableAbove > availableBelow ? .minY : .maxY,
+            height: min(contentHeight, halfWindowHeight)
+        )
     }
 
     private func positioningRect(for rect: NSRect) -> NSRect {
