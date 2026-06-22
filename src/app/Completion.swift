@@ -1020,8 +1020,9 @@ final class VaulttyCompletionEngine {
         }
 
         var names = Set<String>()
+        let executableSources = executableCommandSources(for: request)
         names.formUnion(specLoader.commandNames())
-        names.formUnion(executableCommandNames(for: request))
+        names.formUnion(executableSources.keys)
 
         let suggestions = names.map { name in
             let hasSpec = specLoader.hasSpec(command: name)
@@ -1031,7 +1032,7 @@ final class VaulttyCompletionEngine {
                 description: commandDescriptions.description(for: name),
                 kind: .command,
                 priority: hasSpec ? 70 : 50,
-                source: hasSpec ? "Fig" : "PATH"
+                source: hasSpec ? "Fig" : (executableSources[name] ?? "PATH")
             )
         }
         commandCache[cacheKey] = suggestions
@@ -1047,21 +1048,21 @@ final class VaulttyCompletionEngine {
         }
     }
 
-    private func executableCommandNames(for request: CompletionRequest) -> Set<String> {
+    private func executableCommandSources(for request: CompletionRequest) -> [String: String] {
         switch request.location {
         case .local:
-            var names = Set<String>()
+            var sources: [String: String] = [:]
             let path = request.environment["PATH"] ?? ""
             for directory in path.split(separator: ":").map(String.init) {
                 guard let contents = try? fileManager.contentsOfDirectory(atPath: directory) else { continue }
                 for name in contents {
                     let path = (directory as NSString).appendingPathComponent(name)
-                    if fileManager.isExecutableFile(atPath: path) {
-                        names.insert(name)
+                    if sources[name] == nil && fileManager.isExecutableFile(atPath: path) {
+                        sources[name] = path
                     }
                 }
             }
-            return names
+            return sources
         case .sshHost(let hostID):
             let request = BridgeCommandCompletionRequest(prefix: "")
             guard let response: BridgeCompletionResponse = runBridgeJSON(
@@ -1070,9 +1071,13 @@ final class VaulttyCompletionEngine {
                 request: request,
                 timeout: 2
             ) else {
-                return []
+                return [:]
             }
-            return Set(response.suggestions.map(\.displayText))
+            var sources: [String: String] = [:]
+            for suggestion in response.suggestions where sources[suggestion.displayText] == nil {
+                sources[suggestion.displayText] = suggestion.source
+            }
+            return sources
         }
     }
 

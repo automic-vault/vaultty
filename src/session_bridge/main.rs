@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -185,7 +185,7 @@ fn complete_path(request: &PathCompletionRequest) -> io::Result<Vec<CompletionSu
 }
 
 fn complete_commands_from_path(path: Option<OsString>, prefix: &str) -> Vec<CompletionSuggestion> {
-    let mut names = HashSet::new();
+    let mut sources = HashMap::new();
     let Some(path) = path else {
         return Vec::new();
     };
@@ -201,20 +201,22 @@ fn complete_commands_from_path(path: Option<OsString>, prefix: &str) -> Vec<Comp
             }
             let path = entry.path();
             if is_executable(&path) {
-                names.insert(name);
+                sources
+                    .entry(name)
+                    .or_insert_with(|| path.to_string_lossy().into_owned());
             }
         }
     }
 
-    names
+    sources
         .into_iter()
-        .map(|name| CompletionSuggestion {
+        .map(|(name, source)| CompletionSuggestion {
             display_text: name.clone(),
             insert_text: format!("{name} "),
             description: None,
             kind: "command",
             priority: 50,
-            source: "PATH".to_owned(),
+            source,
             is_executable: true,
         })
         .collect()
