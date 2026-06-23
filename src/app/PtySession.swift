@@ -118,6 +118,7 @@ struct SessionMetadata: Decodable {
 
 final class PtySession {
     var onOutput: ((String) -> Void)?
+    var onHistoryOutput: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
     var onReady: ((Bool) -> Void)?
 
@@ -131,6 +132,7 @@ final class PtySession {
     private var bridgeError: FileHandle?
     private var bridgeErrorOutput = Data()
     private var parserBuffer = ""
+    private var treatsNextOutputAsLegacyHistory = false
     private let lifecycleLock = NSLock()
     private var isStopped = false
     private var didReportExit = false
@@ -256,6 +258,7 @@ final class PtySession {
         bridgeProcess = nil
         bridgeErrorOutput.removeAll(keepingCapacity: false)
         parserBuffer.removeAll(keepingCapacity: false)
+        treatsNextOutputAsLegacyHistory = false
     }
 
     static func killDetachedSession(sessionID: String) throws {
@@ -429,12 +432,26 @@ final class PtySession {
         if let payload = line.removingPrefix("OUTPUT "),
            let data = Data(base64Encoded: payload),
            let text = String(data: data, encoding: .utf8) {
-            onOutput?(text)
+            if treatsNextOutputAsLegacyHistory {
+                treatsNextOutputAsLegacyHistory = false
+                onHistoryOutput?(text)
+            } else {
+                onOutput?(text)
+            }
+            return
+        }
+
+        if let payload = line.removingPrefix("HISTORY "),
+           let data = Data(base64Encoded: payload),
+           let text = String(data: data, encoding: .utf8) {
+            treatsNextOutputAsLegacyHistory = false
+            onHistoryOutput?(text)
             return
         }
 
         if let payload = line.removingPrefix("READY ") {
             let created = payload.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+            treatsNextOutputAsLegacyHistory = !created
             DispatchQueue.main.async { [weak self] in
                 self?.onReady?(created)
             }

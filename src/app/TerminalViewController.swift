@@ -2210,17 +2210,18 @@ private final class TerminalOutputProcessor {
     func resetForReplay() {
         queue.async { [weak self] in
             guard let self else { return }
-            self.pendingShellOutput.removeAll(keepingCapacity: true)
-            self.isShellOutputFlushScheduled = false
-            self.parserBuffer.removeAll(keepingCapacity: true)
-            self.pendingBlockID = nil
-            self.activeBlockID = nil
-            self.isReplayingCommand = false
-            self.usesPagerKeyBindings = false
-            self.isAlternateScreenActive = false
-            self.isApplicationCursorModeActive = false
-            self.terminalScreen.resetForCommand()
-            self.styledRenderer.reset()
+            self.resetForReplayOnQueue()
+        }
+    }
+
+    func replayShellOutput(_ text: String, completion: (() -> Void)? = nil) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.resetForReplayOnQueue()
+            self.consumeShellOutput(text)
+            DispatchQueue.main.async {
+                completion?()
+            }
         }
     }
 
@@ -2267,6 +2268,20 @@ private final class TerminalOutputProcessor {
         queue.asyncAfter(deadline: .now() + flushDelay) { [weak self] in
             self?.flushPendingShellOutputOnQueue()
         }
+    }
+
+    private func resetForReplayOnQueue() {
+        pendingShellOutput.removeAll(keepingCapacity: true)
+        isShellOutputFlushScheduled = false
+        parserBuffer.removeAll(keepingCapacity: true)
+        pendingBlockID = nil
+        activeBlockID = nil
+        isReplayingCommand = false
+        usesPagerKeyBindings = false
+        isAlternateScreenActive = false
+        isApplicationCursorModeActive = false
+        terminalScreen.resetForCommand()
+        styledRenderer.reset()
     }
 
     private func flushPendingShellOutputOnQueue() {
@@ -2715,6 +2730,7 @@ private final class TerminalTab {
     var hasInjectedDotenvSecrets = false
     var isScrollToBottomScheduled = false
     var isShellReady = false
+    var isReplayingHistory = false
     var hasExited = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
@@ -4151,6 +4167,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.hasExited = false
         setCommandBarStatusText("Rejoining session...", in: tab)
         tab.isShellReady = false
+        tab.isReplayingHistory = false
         tab.isTerminalControlActive = false
         tab.isAlternateScreenActive = false
         tab.isApplicationCursorModeActive = false
@@ -4493,11 +4510,24 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.session.onOutput = { [weak outputProcessor = tab.outputProcessor] text in
             outputProcessor?.enqueueShellOutput(text)
         }
+        tab.session.onHistoryOutput = { [weak self, weak tab] text in
+            DispatchQueue.main.async { [weak self, weak tab] in
+                guard let self, let tab else { return }
+                tab.isReplayingHistory = true
+                tab.isShellReady = false
+                self.updateCommandBarVisibility(for: tab)
+            }
+            tab?.outputProcessor.replayShellOutput(text) { [weak self, weak tab] in
+                guard let self, let tab else { return }
+                self.finishHistoryReplay(in: tab)
+            }
+        }
         tab.session.onExit = { [weak self, weak tab] status in
             guard let self, let tab else { return }
             guard tab.sessionRef == configuredSessionRef else { return }
             guard !tab.hasExited else { return }
             tab.hasExited = true
+            tab.isReplayingHistory = false
             self.removeExitedSessionFromPersistentHistory(configuredSessionRef)
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
                 guard let self, let tab else { return }
@@ -4511,6 +4541,20 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 self.clearCommandInput(in: tab)
                 self.updateCommandBarVisibility(for: tab)
             }
+        }
+    }
+
+    private func finishHistoryReplay(in tab: TerminalTab) {
+        tab.isReplayingHistory = false
+        guard !tab.hasExited else { return }
+        if !isCommandRunning(in: tab) {
+            tab.isShellReady = true
+            updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
+            updateCommandBarVisibility(for: tab)
+            updateTabTitleForDirectory(tab)
+            scrollToBottom(tab)
+            focusInput(for: tab)
+            runSelfTestIfNeeded(in: tab)
         }
     }
 
@@ -4650,7 +4694,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func requestCompletion(in tab: TerminalTab, mode: CompletionRequestMode) {
-        guard tab.isShellReady, !tab.isTerminalControlActive else { return }
+        guard tab.isShellReady, !tab.isReplayingHistory, !tab.isTerminalControlActive else { return }
         let selectedRange = tab.inputView.selectedRange()
         guard selectedRange.length == 0 else { return }
 
@@ -5017,7 +5061,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func submitCommand(in tab: TerminalTab) {
-        guard tab.isShellReady else { return }
+        guard tab.isShellReady, !tab.isReplayingHistory else { return }
         hideSessionPicker(for: tab)
         let rawCommand = tab.inputView.string
         let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5127,7 +5171,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func showPreviousCommand(in tab: TerminalTab) -> Bool {
-        guard tab.isShellReady, !tab.commandHistory.isEmpty else { return false }
+        guard tab.isShellReady, !tab.isReplayingHistory, !tab.commandHistory.isEmpty else { return false }
 
         let nextIndex: Int
         if let index = tab.commandHistoryIndex {
@@ -5143,7 +5187,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func showNextCommand(in tab: TerminalTab) -> Bool {
-        guard tab.isShellReady, let index = tab.commandHistoryIndex else { return false }
+        guard tab.isShellReady, !tab.isReplayingHistory, let index = tab.commandHistoryIndex else { return false }
 
         let nextIndex = index + 1
         if nextIndex < tab.commandHistory.count {
@@ -5260,7 +5304,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         switch code {
         case "R":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
-            tab.isShellReady = true
+            if !tab.isReplayingHistory {
+                tab.isShellReady = true
+            }
             updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
@@ -5294,7 +5340,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isAlternateScreenActive = false
             tab.isApplicationCursorModeActive = false
             tab.ptyPassthroughView.usesPagerKeyBindings = false
-            tab.isShellReady = true
+            if !tab.isReplayingHistory {
+                tab.isShellReady = true
+            }
             stopTtyModePolling(for: tab)
             setTerminalControl(false, in: tab)
             clearCommandInput(in: tab)

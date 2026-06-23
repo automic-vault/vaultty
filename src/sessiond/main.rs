@@ -447,7 +447,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
 
     let history = session.history();
     if !history.is_empty() {
-        writeln!(stream, "OUTPUT {}", BASE64.encode(history))?;
+        writeln!(stream, "HISTORY {}", BASE64.encode(history))?;
     }
 
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
