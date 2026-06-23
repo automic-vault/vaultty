@@ -5226,7 +5226,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
             if let activeBlockID = tab.activeBlockID,
                let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID }) {
-                tab.blocks[index].finishedAt = Date()
+                tab.blocks[index].finishedAt = isReplay ? nil : Date()
                 tab.blocks[index].state = .completed(status)
                 ensureBlockView(for: activeBlockID, in: tab)
                 updateBlockViewNow(for: activeBlockID, in: tab)
