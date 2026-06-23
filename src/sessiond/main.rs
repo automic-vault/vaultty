@@ -195,7 +195,7 @@ impl Session {
     }
 
     fn reconcile_idle_command_state(&self, broadcast_completion: bool) {
-        if !shell_is_foreground(self) {
+        if !pty_is_idle_or_stale(self) {
             return;
         }
 
@@ -724,12 +724,30 @@ fn reap_child(pid: pid_t) -> i32 {
     }
 }
 
-fn shell_is_foreground(session: &Session) -> bool {
-    let mut foreground_process_group: pid_t = 0;
+fn pty_is_idle_or_stale(session: &Session) -> bool {
+    let Some(foreground_process_group) = foreground_process_group(session.master_fd) else {
+        return false;
+    };
     let shell_process_group = unsafe { libc::getpgid(session.child_pid) };
-    shell_process_group > 0
-        && unsafe { libc::ioctl(session.master_fd, TIOCGPGRP, &mut foreground_process_group) } == 0
-        && foreground_process_group == shell_process_group
+    if shell_process_group > 0 && foreground_process_group == shell_process_group {
+        return true;
+    }
+
+    foreground_process_group > 0 && process_group_is_gone(foreground_process_group)
+}
+
+fn foreground_process_group(fd: RawFd) -> Option<pid_t> {
+    let mut foreground_process_group: pid_t = 0;
+    if unsafe { libc::ioctl(fd, TIOCGPGRP, &mut foreground_process_group) } == 0 {
+        Some(foreground_process_group)
+    } else {
+        None
+    }
+}
+
+fn process_group_is_gone(process_group: pid_t) -> bool {
+    (unsafe { libc::kill(-process_group, 0) != 0 })
+        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 fn history_has_unfinished_command(history: &[u8]) -> bool {

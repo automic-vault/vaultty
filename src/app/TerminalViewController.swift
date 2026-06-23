@@ -5288,6 +5288,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             stopRunningElapsedUpdates(for: tab)
             tab.activeBlockID = nil
+            tab.pendingBlockID = nil
             tab.isAlternateScreenActive = false
             tab.isApplicationCursorModeActive = false
             tab.ptyPassthroughView.usesPagerKeyBindings = false
