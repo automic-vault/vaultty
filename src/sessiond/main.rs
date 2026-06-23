@@ -136,7 +136,7 @@ impl Session {
     }
 
     fn history(&self) -> Vec<u8> {
-        self.reconcile_idle_command_state(false);
+        self.reconcile_idle_command_state();
         self.history.lock().expect("history lock poisoned").clone()
     }
 
@@ -153,7 +153,7 @@ impl Session {
     }
 
     fn metadata_snapshot(&self) -> SessionMetadata {
-        self.reconcile_idle_command_state(false);
+        self.reconcile_idle_command_state();
         let mut metadata = self
             .metadata
             .lock()
@@ -190,32 +190,18 @@ impl Session {
             .running_command = None;
     }
 
-    fn sync_command_state(&self) {
-        self.reconcile_idle_command_state(true);
-    }
-
-    fn reconcile_idle_command_state(&self, broadcast_completion: bool) {
-        if !pty_is_idle_or_stale(self) {
+    fn reconcile_idle_command_state(&self) {
+        if !shell_is_foreground(self) {
             return;
         }
 
-        let mut completed_stale_command = false;
         let mut history = self.history.lock().expect("history lock poisoned");
         if history_has_unfinished_command(&history) {
             // ponytail: exit status is unknown for old incomplete replays; 0 restores input.
             history.extend_from_slice(SYNTHETIC_COMMAND_FINISHED_MARKER);
-            completed_stale_command = true;
         }
         drop(history);
         self.clear_running_command();
-        if completed_stale_command && broadcast_completion {
-            self.broadcast_output(SYNTHETIC_COMMAND_FINISHED_MARKER.to_vec());
-        }
-    }
-
-    fn broadcast_output(&self, bytes: Vec<u8>) {
-        let mut clients = self.clients.lock().expect("clients lock poisoned");
-        clients.retain(|client| client.send(bytes.clone()).is_ok());
     }
 
     fn write_input(&self, bytes: &[u8]) {
@@ -501,8 +487,6 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
             }
         } else if command == "INTERRUPT" {
             session.interrupt();
-        } else if command == "SYNC" {
-            session.sync_command_state();
         } else if let Some(encoded) = command.strip_prefix("STATE ") {
             let update = decode_state_update(encoded)?;
             session.update_metadata(update);
@@ -724,30 +708,12 @@ fn reap_child(pid: pid_t) -> i32 {
     }
 }
 
-fn pty_is_idle_or_stale(session: &Session) -> bool {
-    let Some(foreground_process_group) = foreground_process_group(session.master_fd) else {
-        return false;
-    };
-    let shell_process_group = unsafe { libc::getpgid(session.child_pid) };
-    if shell_process_group > 0 && foreground_process_group == shell_process_group {
-        return true;
-    }
-
-    foreground_process_group > 0 && process_group_is_gone(foreground_process_group)
-}
-
-fn foreground_process_group(fd: RawFd) -> Option<pid_t> {
+fn shell_is_foreground(session: &Session) -> bool {
     let mut foreground_process_group: pid_t = 0;
-    if unsafe { libc::ioctl(fd, TIOCGPGRP, &mut foreground_process_group) } == 0 {
-        Some(foreground_process_group)
-    } else {
-        None
-    }
-}
-
-fn process_group_is_gone(process_group: pid_t) -> bool {
-    (unsafe { libc::kill(-process_group, 0) != 0 })
-        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    let shell_process_group = unsafe { libc::getpgid(session.child_pid) };
+    shell_process_group > 0
+        && unsafe { libc::ioctl(session.master_fd, TIOCGPGRP, &mut foreground_process_group) } == 0
+        && foreground_process_group == shell_process_group
 }
 
 fn history_has_unfinished_command(history: &[u8]) -> bool {

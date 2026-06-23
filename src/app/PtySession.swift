@@ -180,10 +180,6 @@ final class PtySession {
         sendLine("INTERRUPT")
     }
 
-    func synchronizeCommandState() {
-        sendLine("SYNC")
-    }
-
     func write(_ string: String, suppressEcho: Bool = false) {
         guard let data = string.data(using: .utf8) else { return }
         sendLine("INPUT \(data.base64EncodedString())")

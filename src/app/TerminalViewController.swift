@@ -4596,36 +4596,15 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             """
 
-        tab.session.onReady = { [weak self, weak tab] created in
-            guard let self, let tab else { return }
-            if created {
-                tab.session.write(initScript, suppressEcho: true)
-            } else {
-                self.scheduleCommandStateSync(for: tab, sessionRef: tab.sessionRef)
-            }
+        tab.session.onReady = { [weak tab] created in
+            guard created else { return }
+            tab?.session.write(initScript, suppressEcho: true)
         }
 
         do {
             try tab.session.start(shellPath: shell, environment: env, workingDirectory: workingDirectory)
         } catch {
             setCommandBarStatusText("Failed to start shell: \(error.localizedDescription)", in: tab)
-        }
-    }
-
-    private func scheduleCommandStateSync(for tab: TerminalTab, sessionRef: SessionRef) {
-        tab.session.synchronizeCommandState()
-        for delay in [0.25, 1.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak tab] in
-                guard let self,
-                      let tab,
-                      tab.sessionRef == sessionRef,
-                      !tab.hasExited,
-                      self.isCommandRunning(in: tab)
-                else {
-                    return
-                }
-                tab.session.synchronizeCommandState()
-            }
         }
     }
 
@@ -5288,7 +5267,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             stopRunningElapsedUpdates(for: tab)
             tab.activeBlockID = nil
-            tab.pendingBlockID = nil
             tab.isAlternateScreenActive = false
             tab.isApplicationCursorModeActive = false
             tab.ptyPassthroughView.usesPagerKeyBindings = false
