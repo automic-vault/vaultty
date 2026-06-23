@@ -2162,6 +2162,7 @@ private final class TerminalOutputProcessor {
     }
 
     var onEvent: ((Event) -> Void)?
+    var onTerminalResponse: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "com.automicvault.vaultty.output-render", qos: .userInitiated)
     private let flushDelay: DispatchTimeInterval
@@ -2273,6 +2274,10 @@ private final class TerminalOutputProcessor {
     }
 
     private func consumeShellOutput(_ text: String) {
+        for response in Self.terminalResponses(in: text) {
+            onTerminalResponse?(response)
+        }
+
         parserBuffer += text
         var visible = ""
 
@@ -2391,6 +2396,20 @@ private final class TerminalOutputProcessor {
             return ""
         }
         return command
+    }
+
+    private static func terminalResponses(in text: String) -> [String] {
+        var responses: [String] = []
+        if text.contains("\u{1B}]10;?\u{7}") || text.contains("\u{1B}]10;?\u{1B}\\") {
+            responses.append("\u{1B}]10;rgb:ffff/ffff/ffff\u{1B}\\")
+        }
+        if text.contains("\u{1B}]11;?\u{7}") || text.contains("\u{1B}]11;?\u{1B}\\") {
+            responses.append("\u{1B}]11;rgb:0000/0000/0000\u{1B}\\")
+        }
+        if text.contains("\u{1B}[6n") {
+            responses.append("\u{1B}[1;1R")
+        }
+        return responses
     }
 }
 
@@ -4469,6 +4488,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.outputProcessor.onEvent = { [weak self, weak tab] event in
             guard let self, let tab else { return }
             self.handleOutputProcessorEvent(event, in: tab)
+        }
+        tab.outputProcessor.onTerminalResponse = { [weak tab] response in
+            tab?.session.write(response, suppressEcho: true)
         }
         tab.session.onOutput = { [weak outputProcessor = tab.outputProcessor] text in
             outputProcessor?.enqueueShellOutput(text)
