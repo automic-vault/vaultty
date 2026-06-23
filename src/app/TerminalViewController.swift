@@ -2989,6 +2989,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private var activeTabID: UUID?
     private var tabButtons: [UUID: TitleTabButton] = [:]
     private var sessionPickerCandidatesByTab: [UUID: [SessionRef: LocalSessionCandidate]] = [:]
+    private var commandStateDebugSignatures: [UUID: String] = [:]
+    private var commandStateHiddenSnapshotSerials: [UUID: Int] = [:]
     var onInstallStagedUpdate: (() -> Void)?
 
     private let titleTabStack = TitleTabStackView()
@@ -3716,12 +3718,20 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func publishVisibleSessionState() {
         for tab in tabs where shouldPersistSession(tab) {
+            let runningCommand = runningCommand(in: tab)
+            if let runningCommand {
+                traceCommandState(
+                    "publish-running-command",
+                    in: tab,
+                    extra: "runningCommand=\(debugCommand(runningCommand))"
+                )
+            }
             tab.session.updateState(
                 title: standardTabTitle(tab.title, in: tab),
                 cwd: tab.currentCwd,
                 createdAt: tab.createdAt,
                 commandCount: tab.commandCount,
-                runningCommand: runningCommand(in: tab),
+                runningCommand: runningCommand,
                 commandHistory: tab.commandHistory
             )
         }
@@ -4499,6 +4509,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             guard let self, let tab else { return }
             guard tab.sessionRef == configuredSessionRef else { return }
             guard !tab.hasExited else { return }
+            self.traceCommandState("session-exit", in: tab, extra: "status=\(status)", force: true)
             tab.hasExited = true
             self.removeExitedSessionFromPersistentHistory(configuredSessionRef)
             tab.outputProcessor.flushAndFinish { [weak self, weak tab] in
@@ -4512,6 +4523,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 self.setTerminalControl(false, in: tab)
                 self.clearCommandInput(in: tab)
                 self.updateCommandBarVisibility(for: tab)
+                self.traceCommandState("session-exit-finished", in: tab, extra: "status=\(status)", force: true)
             }
         }
     }
@@ -4596,9 +4608,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
             """
 
-        tab.session.onReady = { [weak tab] created in
+        tab.session.onReady = { [weak self, weak tab] created in
+            guard let self, let tab else { return }
+            self.traceCommandState("session-ready", in: tab, extra: "created=\(created)", force: true)
             guard created else { return }
-            tab?.session.write(initScript, suppressEcho: true)
+            tab.session.write(initScript, suppressEcho: true)
         }
 
         do {
@@ -5056,6 +5070,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         tab.pendingBlockID = block.id
         persistSessionState()
+        traceCommandState("submit-command", in: tab, extra: "command=\(debugCommand(command))", force: true)
         tab.outputProcessor.resetForCommand(
             blockID: block.id,
             usesPagerKeyBindings: usesPagerKeyBindings
@@ -5102,6 +5117,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func interruptCommand(in tab: TerminalTab) {
         guard isCommandRunning(in: tab) else { return }
+        traceCommandState("interrupt-command", in: tab, force: true)
         renderInterruptEcho(in: tab)
         tab.session.sendInterrupt()
         tab.outputProcessor.finishCommand()
@@ -5200,6 +5216,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.pendingBlockID = nil
         addBlockView(block, to: tab)
         updateTabTitle(command.isEmpty ? tab.title : titleForCommand(command), detail: command, in: tab)
+        traceCommandState("replay-command-started", in: tab, extra: "command=\(debugCommand(command))", force: true)
         updateCommandBarVisibility(for: tab)
     }
 
@@ -5237,6 +5254,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         case "R":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             tab.isShellReady = true
+            traceCommandState("marker-R", in: tab, extra: "replay=\(isReplay)", force: true)
             updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
             updateCommandBarVisibility(for: tab)
             updateTabTitleForDirectory(tab)
@@ -5247,6 +5265,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 tab.activeBlockID = pendingBlockID
                 tab.pendingBlockID = nil
             }
+            traceCommandState("marker-C", in: tab, extra: "replay=\(isReplay)", force: true)
         case "P":
             tab.currentCwd = decodeBase64(payload) ?? tab.currentCwd
             persistSessionState()
@@ -5258,6 +5277,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
         case "D":
             let status = Int32(payload.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+            traceCommandState("marker-D-before", in: tab, extra: "status=\(status) replay=\(isReplay)", force: true)
             if let activeBlockID = tab.activeBlockID,
                let index = tab.blocks.firstIndex(where: { $0.id == activeBlockID }) {
                 tab.blocks[index].finishedAt = isReplay ? nil : Date()
@@ -5281,6 +5301,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             scrollToBottom(tab)
             focusInput(for: tab)
             runSelfTestIfNeeded(in: tab)
+            traceCommandState("marker-D-after", in: tab, extra: "status=\(status) replay=\(isReplay)", force: true)
         default:
             break
         }
@@ -5729,7 +5750,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateCommandBarVisibility(for tab: TerminalTab) {
-        let shouldShowCommandBar = !tab.isTerminalControlActive && !isCommandRunning(in: tab)
+        let isRunning = isCommandRunning(in: tab)
+        let shouldShowCommandBar = !tab.isTerminalControlActive && !isRunning
         tab.commandBarView.isHidden = !shouldShowCommandBar
         tab.commandSeparator.isHidden = !shouldShowCommandBar
         tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
@@ -5737,6 +5759,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         updateRunningIndicator(for: tab, showsRunningIndicator: !shouldShowCommandBar)
         tab.rootView.needsLayout = true
         tab.rootView.layoutSubtreeIfNeeded()
+        traceCommandState(
+            "command-bar-visibility",
+            in: tab,
+            extra: "show=\(shouldShowCommandBar) running=\(isRunning)"
+        )
+        if !shouldShowCommandBar {
+            scheduleHiddenCommandBarSnapshot(for: tab)
+        }
     }
 
     private func updateRunningIndicator(for tab: TerminalTab, showsRunningIndicator: Bool? = nil) {
@@ -5888,6 +5918,154 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             return false
         }
+    }
+
+    private func scheduleHiddenCommandBarSnapshot(for tab: TerminalTab) {
+        let serial = (commandStateHiddenSnapshotSerials[tab.id] ?? 0) + 1
+        commandStateHiddenSnapshotSerials[tab.id] = serial
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak tab] in
+            guard let self,
+                  let tab,
+                  self.commandStateHiddenSnapshotSerials[tab.id] == serial,
+                  tab.commandBarView.isHidden
+            else {
+                return
+            }
+            self.traceCommandState("command-bar-still-hidden", in: tab, force: true)
+        }
+    }
+
+    private func traceCommandState(
+        _ event: String,
+        in tab: TerminalTab,
+        extra: String? = nil,
+        force: Bool = false
+    ) {
+        let summary = commandStateSummary(for: tab)
+        let extraText = extra.map { " \($0)" } ?? ""
+        let signature = "\(event)|\(extra ?? "")|\(summary)"
+        guard force || commandStateDebugSignatures[tab.id] != signature else {
+            return
+        }
+        commandStateDebugSignatures[tab.id] = signature
+        appendCommandStateLog("VaulttyCommandState \(event):\(extraText) \(summary)")
+    }
+
+    private func commandStateSummary(for tab: TerminalTab) -> String {
+        let runningBlocks = tab.blocks.filter { block in
+            if case .running = block.state {
+                return true
+            }
+            return false
+        }
+        let runningBlockText = runningBlocks
+            .map { "\(shortID($0.id)):\(debugCommand($0.command))" }
+            .joined(separator: ",")
+        let latestBlockText = tab.blocks.last.map {
+            "\(shortID($0.id)):\(debugBlockState($0.state)):\(debugCommand($0.command))"
+        } ?? "none"
+        let reasons = commandRunningReasons(for: tab).joined(separator: ",")
+        return [
+            "tab=\(shortID(tab.id))",
+            "session=\(debugSessionRef(tab.sessionRef))",
+            "shellReady=\(tab.isShellReady)",
+            "terminalControl=\(tab.isTerminalControlActive)",
+            "alt=\(tab.isAlternateScreenActive)",
+            "appCursor=\(tab.isApplicationCursorModeActive)",
+            "commandBarHidden=\(tab.commandBarView.isHidden)",
+            "passthroughHidden=\(tab.ptyPassthroughView.isHidden)",
+            "active=\(shortOptionalID(tab.activeBlockID))",
+            "pending=\(shortOptionalID(tab.pendingBlockID))",
+            "runningReasons=\(reasons.isEmpty ? "none" : reasons)",
+            "runningBlocks=\(runningBlocks.count)[\(runningBlockText)]",
+            "blockCount=\(tab.blocks.count)",
+            "latest=\(latestBlockText)",
+            "hasExited=\(tab.hasExited)"
+        ].joined(separator: " ")
+    }
+
+    private func commandRunningReasons(for tab: TerminalTab) -> [String] {
+        var reasons: [String] = []
+        if let activeBlockID = tab.activeBlockID {
+            reasons.append("active:\(shortID(activeBlockID))")
+        }
+        if let pendingBlockID = tab.pendingBlockID {
+            reasons.append("pending:\(shortID(pendingBlockID))")
+        }
+        for block in tab.blocks {
+            if case .running = block.state {
+                reasons.append("block:\(shortID(block.id))")
+            }
+        }
+        return reasons
+    }
+
+    private func appendCommandStateLog(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "\(timestamp) \(message)\n"
+        NSLog("%@", line.trimmingCharacters(in: .newlines) as NSString)
+        let url = sessionStateURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("command-state.log", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
+        } catch {
+            NSLog("Failed to write Vaultty command state log: \(error.localizedDescription)")
+        }
+    }
+
+    private func debugSessionRef(_ sessionRef: SessionRef) -> String {
+        let location: String
+        switch sessionRef.location {
+        case .local:
+            location = "local"
+        case .sshHost(let hostID):
+            location = "ssh:\(shortString(hostID))"
+        }
+        return "\(location):\(shortString(sessionRef.sessionID))"
+    }
+
+    private func debugBlockState(_ state: TerminalBlock.State) -> String {
+        switch state {
+        case .running:
+            return "running"
+        case .completed(let status):
+            return "completed:\(status)"
+        }
+    }
+
+    private func debugCommand(_ command: String) -> String {
+        let collapsed = command
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return shortString(collapsed.isEmpty ? "<empty>" : collapsed, length: 80)
+    }
+
+    private func shortOptionalID(_ id: UUID?) -> String {
+        id.map(shortID) ?? "nil"
+    }
+
+    private func shortID(_ id: UUID) -> String {
+        shortString(id.uuidString, length: 8)
+    }
+
+    private func shortString(_ value: String, length: Int = 8) -> String {
+        if value.count <= length {
+            return value
+        }
+        return String(value.prefix(length))
     }
 
     private func scheduleBlockViewUpdate(for blockID: UUID, in tab: TerminalTab) {
