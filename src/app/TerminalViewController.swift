@@ -4516,7 +4516,14 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             } ?? "/bin/zsh")
 
         var env = ProcessInfo.processInfo.environment
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.automicvault.vaultty"
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         env["TERM"] = "xterm-256color"
+        env["TERM_PROGRAM"] = "Vaultty"
+        env["TERM_PROGRAM_VERSION"] = appVersion
+        env["LC_TERMINAL"] = "Vaultty"
+        env["LC_TERMINAL_VERSION"] = appVersion
+        env["__CFBundleIdentifier"] = bundleIdentifier
         env["VAULTTY"] = "1"
         env["VAULTTY_ENV"] = isRemoteSession ? "" : bundledExecutablePath(named: "vaultty-env")
         env["PROMPT"] = ""
@@ -4525,6 +4532,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let initScript = """
             export VAULTTY=1
             export TERM=xterm-256color
+            export TERM_PROGRAM=Vaultty
+            export TERM_PROGRAM_VERSION=\(shellQuote(appVersion))
+            export LC_TERMINAL=Vaultty
+            export LC_TERMINAL_VERSION=\(shellQuote(appVersion))
+            export __CFBundleIdentifier=\(shellQuote(bundleIdentifier))
             export VAULTTY_ENV=\(shellQuote(env["VAULTTY_ENV"] ?? ""))
             \(remoteCodeFunctionScript)
             cd \(shellQuote(workingDirectory.path))
