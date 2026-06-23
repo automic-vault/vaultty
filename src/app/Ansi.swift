@@ -345,6 +345,7 @@ enum Ansi {
                 }
             }
 
+            Ansi.linkifyURLs(in: attributed)
             return StyledOutput(plainText: plain, attributedText: attributed)
         }
 
@@ -814,6 +815,7 @@ enum Ansi {
                 }
             }
 
+            Ansi.linkifyURLs(in: output)
             return TerminalScreenState(
                 text: plain,
                 attributedText: output,
@@ -931,6 +933,51 @@ enum Ansi {
 
     static func visibleText(from text: String) -> String {
         StyledTextRenderer().process(text).plainText
+    }
+
+    static func runSelfTests() {
+        assert(visibleText(from: "a\tb") == "a       b")
+
+        let text = "http://one.test https://two.test/a. file:///tmp/x ftp://nope"
+        let output = StyledTextRenderer().process(text).attributedText
+        assert(linkScheme(in: output, text: text, needle: "http://one.test") == "http")
+        assert(linkScheme(in: output, text: text, needle: "https://two.test/a") == "https")
+        assert(linkScheme(in: output, text: text, needle: "file:///tmp/x") == "file")
+        assert(linkScheme(in: output, text: text, needle: "ftp://nope") == nil)
+    }
+
+    private static let linkDetector = try! NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
+
+    private static let clickableURLSchemes: Set<String> = ["file", "http", "https"]
+
+    private static func linkifyURLs(in output: NSMutableAttributedString) {
+        let range = NSRange(location: 0, length: output.length)
+        linkDetector.enumerateMatches(in: output.string, range: range) { match, _, _ in
+            guard let match,
+                  let url = match.url,
+                  let scheme = url.scheme?.lowercased(),
+                  clickableURLSchemes.contains(scheme)
+            else {
+                return
+            }
+            output.addAttribute(.link, value: url, range: match.range)
+        }
+    }
+
+    private static func linkScheme(
+        in output: NSAttributedString,
+        text: String,
+        needle: String
+    ) -> String? {
+        let range = (text as NSString).range(of: needle)
+        guard range.location != NSNotFound,
+              let url = output.attribute(.link, at: range.location, effectiveRange: nil) as? URL
+        else {
+            return nil
+        }
+        return url.scheme
     }
 
     private static func isAlternateScreenMode(_ parameters: [UInt8]) -> Bool {

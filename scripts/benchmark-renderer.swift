@@ -17,7 +17,7 @@ private struct BenchmarkResult {
 private struct RendererBenchmark {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            assert(Ansi.visibleText(from: "a\tb") == "a       b")
+            Ansi.runSelfTests()
             return
         }
 

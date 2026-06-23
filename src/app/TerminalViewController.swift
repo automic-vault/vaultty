@@ -833,6 +833,14 @@ private final class BlockOutputTextView: NSTextView {
         true
     }
 
+    override func clicked(onLink link: Any, at charIndex: Int) {
+        if let url = link as? URL {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        super.clicked(onLink: link, at: charIndex)
+    }
+
     fileprivate func selectedTextForCopy() -> String? {
         let selectedRange = selectedRange()
         guard selectedRange.length > 0,
