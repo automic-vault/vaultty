@@ -1126,6 +1126,9 @@ private final class BlockView: NSView {
             if let duration = durationText(for: block) {
                 metadata.append(MetadataSegment(text: duration, color: .tertiaryLabelColor))
             }
+            if let timestamp = completionTimestampText(for: block) {
+                metadata.append(MetadataSegment(text: timestamp, color: .tertiaryLabelColor))
+            }
             if code != 0 {
                 metadata.append(MetadataSegment(text: "exit \(code)", color: .secondaryLabelColor))
             }
@@ -1215,6 +1218,16 @@ private final class BlockView: NSView {
         }
         let seconds = max(0, finishedAt.timeIntervalSince(block.startedAt))
         return Self.durationText(seconds: seconds, rounding: .nearest)
+    }
+
+    private func completionTimestampText(for block: TerminalBlock) -> String? {
+        guard let finishedAt = block.finishedAt else {
+            return nil
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = Calendar.autoupdatingCurrent.isDateInToday(finishedAt) ? .none : .short
+        formatter.timeStyle = .short
+        return formatter.string(from: finishedAt)
     }
 
     static func liveDurationRefreshInterval(startedAt: Date, now: Date, refreshInterval: TimeInterval) -> TimeInterval {
