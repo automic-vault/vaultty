@@ -5016,15 +5016,6 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         return boundedAnchorRect(textView.convert(textCaretRect, to: containerView))
     }
 
-    private var shellLineResetSequence: String {
-        "\u{15}"
-    }
-
-    private func commandSubmissionScript(for command: String) -> String {
-        let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        return "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
-    }
-
     private func submitCommand(in tab: TerminalTab) {
         guard tab.isShellReady else { return }
         hideSessionPicker(for: tab)
@@ -5074,7 +5065,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startTtyModePolling(for: tab)
         startRunningElapsedUpdates(for: tab)
 
-        let script = shellLineResetSequence + commandSubmissionScript(for: command)
+        let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
+        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script, suppressEcho: true)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
@@ -5101,7 +5093,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
-        tab.session.write(shellLineResetSequence + rawCommand + "\n", suppressEcho: true)
+        tab.session.write(rawCommand + "\n", suppressEcho: true)
         updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         focusInput(for: tab)
     }
