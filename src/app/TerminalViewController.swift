@@ -3177,6 +3177,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     func windowDidBecomeActive() {
         restoreCommandFocusIfNeeded()
+        refreshVisibleCommandBarGitStatus()
     }
 
     func stopAllSessions() {
@@ -4425,6 +4426,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         updateActiveTabCutoutFrame()
         if let tab = activeTab {
             focusInput(for: tab)
+            refreshVisibleCommandBarGitStatus(for: tab)
         }
         persistSessionState()
     }
@@ -5529,6 +5531,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 )
             }
         }
+    }
+
+    private func refreshVisibleCommandBarGitStatus() {
+        guard let tab = activeTab else { return }
+        refreshVisibleCommandBarGitStatus(for: tab)
+    }
+
+    private func refreshVisibleCommandBarGitStatus(for tab: TerminalTab) {
+        guard tab.isShellReady, !tab.commandBarView.isHidden else { return }
+        updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
     }
 
     private func setCommandBarStatusText(_ text: String, in tab: TerminalTab) {
