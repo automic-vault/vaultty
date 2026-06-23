@@ -136,7 +136,7 @@ impl Session {
     }
 
     fn history(&self) -> Vec<u8> {
-        self.reconcile_idle_command_state();
+        self.reconcile_idle_command_state(false);
         self.history.lock().expect("history lock poisoned").clone()
     }
 
@@ -153,7 +153,7 @@ impl Session {
     }
 
     fn metadata_snapshot(&self) -> SessionMetadata {
-        self.reconcile_idle_command_state();
+        self.reconcile_idle_command_state(false);
         let mut metadata = self
             .metadata
             .lock()
@@ -190,18 +190,32 @@ impl Session {
             .running_command = None;
     }
 
-    fn reconcile_idle_command_state(&self) {
+    fn sync_command_state(&self) {
+        self.reconcile_idle_command_state(true);
+    }
+
+    fn reconcile_idle_command_state(&self, broadcast_completion: bool) {
         if !shell_is_foreground(self) {
             return;
         }
 
+        let mut completed_stale_command = false;
         let mut history = self.history.lock().expect("history lock poisoned");
         if history_has_unfinished_command(&history) {
             // ponytail: exit status is unknown for old incomplete replays; 0 restores input.
             history.extend_from_slice(SYNTHETIC_COMMAND_FINISHED_MARKER);
+            completed_stale_command = true;
         }
         drop(history);
         self.clear_running_command();
+        if completed_stale_command && broadcast_completion {
+            self.broadcast_output(SYNTHETIC_COMMAND_FINISHED_MARKER.to_vec());
+        }
+    }
+
+    fn broadcast_output(&self, bytes: Vec<u8>) {
+        let mut clients = self.clients.lock().expect("clients lock poisoned");
+        clients.retain(|client| client.send(bytes.clone()).is_ok());
     }
 
     fn write_input(&self, bytes: &[u8]) {
@@ -487,6 +501,8 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> io::Result<
             }
         } else if command == "INTERRUPT" {
             session.interrupt();
+        } else if command == "SYNC" {
+            session.sync_command_state();
         } else if let Some(encoded) = command.strip_prefix("STATE ") {
             let update = decode_state_update(encoded)?;
             session.update_metadata(update);
