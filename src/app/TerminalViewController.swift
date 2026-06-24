@@ -5575,6 +5575,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func updateCommandBarDirectoryStatus(for tab: TerminalTab, forceRefresh: Bool = false) {
         let cwd = tab.currentCwd
+        let location = tab.sessionRef.location
         let directoryText = detailForDirectory(cwd)
         setCommandBarStatusText(directoryText, in: tab)
 
@@ -5582,6 +5583,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             guard let self else { return }
             let gitSummary = self.gitStateProvider.summary(
                 forDirectory: URL(fileURLWithPath: cwd, isDirectory: true),
+                location: location,
                 forceRefresh: forceRefresh
             )
 

@@ -28,14 +28,16 @@ fn main() -> io::Result<()> {
         }
         Some("--capabilities") => {
             println!("completion-v1");
+            println!("git-status-v1");
             Ok(())
         }
         Some("complete-path") => complete_path_stdio(),
         Some("complete-commands") => complete_commands_stdio(),
         Some("run-generator") => run_generator_stdio(),
+        Some("git-status") => git_status_stdio(),
         Some(arg) => {
             eprintln!(
-                "usage: vaultty-session-bridge [--version|--socket-path|--capabilities|complete-path|complete-commands|run-generator]"
+                "usage: vaultty-session-bridge [--version|--socket-path|--capabilities|complete-path|complete-commands|run-generator|git-status]"
             );
             eprintln!("unexpected argument: {arg}");
             std::process::exit(64);
@@ -99,6 +101,28 @@ struct GeneratorOutput {
     status: i32,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusRequest {
+    cwd: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusResponse {
+    summary: Option<GitStatusSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusSummary {
+    worktree_path: String,
+    branch: String,
+    is_dirty: bool,
+    insertions: i32,
+    deletions: i32,
+}
+
 fn complete_path_stdio() -> io::Result<()> {
     let request: PathCompletionRequest = read_json_stdin()?;
     write_json_stdout(&CompletionResponse {
@@ -116,6 +140,11 @@ fn complete_commands_stdio() -> io::Result<()> {
 fn run_generator_stdio() -> io::Result<()> {
     let request: GeneratorRequest = read_json_stdin()?;
     write_json_stdout(&run_generator(&request))
+}
+
+fn git_status_stdio() -> io::Result<()> {
+    let request: GitStatusRequest = read_json_stdin()?;
+    write_json_stdout(&git_status(&request))
 }
 
 fn read_json_stdin<T: for<'de> Deserialize<'de>>() -> io::Result<T> {
@@ -301,6 +330,116 @@ fn run_generator(request: &GeneratorRequest) -> GeneratorOutput {
         stderr,
         status,
     }
+}
+
+fn git_status(request: &GitStatusRequest) -> GitStatusResponse {
+    let Some(worktree_path) = git_stdout(&request.cwd, &["rev-parse", "--show-toplevel"]) else {
+        return GitStatusResponse { summary: None };
+    };
+    let worktree_path = worktree_path.trim();
+    let Some(status_output) = git_stdout(
+        worktree_path,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--untracked-files=normal",
+        ],
+    ) else {
+        return GitStatusResponse { summary: None };
+    };
+    let Some((branch, is_dirty)) = parse_git_status(&status_output) else {
+        return GitStatusResponse { summary: None };
+    };
+    let (insertions, deletions) = if is_dirty {
+        git_stdout(
+            worktree_path,
+            &["--no-optional-locks", "diff", "--numstat", "HEAD", "--"],
+        )
+        .map(|output| parse_numstat(&output))
+        .unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+
+    GitStatusResponse {
+        summary: Some(GitStatusSummary {
+            worktree_path: worktree_path.to_owned(),
+            branch,
+            is_dirty,
+            insertions,
+            deletions,
+        }),
+    }
+}
+
+fn git_stdout(cwd: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_git_status(output: &str) -> Option<(String, bool)> {
+    let mut branch = None;
+    let mut is_dirty = false;
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            branch = branch_name_from_status(rest);
+            continue;
+        }
+        let mut chars = line.chars();
+        let index_status = chars.next().unwrap_or(' ');
+        let worktree_status = chars.next().unwrap_or(' ');
+        is_dirty = is_dirty || index_status != ' ' || worktree_status != ' ';
+    }
+    branch.map(|branch| (branch, is_dirty))
+}
+
+fn branch_name_from_status(value: &str) -> Option<String> {
+    let mut value = value.to_owned();
+    if let Some(index) = value.find(" [") {
+        value.truncate(index);
+    }
+    if let Some(index) = value.find("...") {
+        value.truncate(index);
+    }
+    if let Some(rest) = value.strip_prefix("Initial commit on ") {
+        value = rest.to_owned();
+    }
+    if let Some(rest) = value.strip_prefix("No commits yet on ") {
+        value = rest.to_owned();
+    }
+    if value == "HEAD (no branch)" {
+        value = "HEAD".to_owned();
+    }
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn parse_numstat(output: &str) -> (i32, i32) {
+    let mut insertions = 0;
+    let mut deletions = 0;
+    for line in output.lines() {
+        let mut fields = line.splitn(3, '\t');
+        if let Some(value) = fields.next().and_then(|value| value.parse::<i32>().ok()) {
+            insertions += value;
+        }
+        if let Some(value) = fields.next().and_then(|value| value.parse::<i32>().ok()) {
+            deletions += value;
+        }
+    }
+    (insertions, deletions)
 }
 
 fn path_search_parts(expanded: &str, cwd: &str) -> (PathBuf, String) {
@@ -737,6 +876,32 @@ mod tests {
         names
     }
 
+    fn git(temp: &TempDir, arguments: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&temp.path)
+            .args(arguments)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            arguments,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo(temp: &TempDir) {
+        git(temp, &["init"]);
+        git(temp, &["checkout", "-b", "vaultty-test"]);
+        git(temp, &["config", "user.email", "vaultty@example.invalid"]);
+        git(temp, &["config", "user.name", "Vaultty Test"]);
+        fs::write(temp.path.join("tracked.txt"), b"one\n").expect("tracked file should be written");
+        git(temp, &["add", "tracked.txt"]);
+        git(temp, &["commit", "-m", "initial"]);
+    }
+
     #[test]
     fn path_completion_handles_relative_prefixes_and_spaces() {
         let temp = TempDir::new("path-relative");
@@ -801,6 +966,47 @@ mod tests {
         let suggestions =
             complete_commands_from_path(Some(OsString::from(temp.path.as_os_str())), "vault-");
         assert_eq!(names(&suggestions), vec!["vault-command"]);
+    }
+
+    #[test]
+    fn git_status_returns_none_outside_repo() {
+        let temp = TempDir::new("git-none");
+        let response = git_status(&GitStatusRequest {
+            cwd: temp.path.to_string_lossy().into_owned(),
+        });
+        assert!(response.summary.is_none());
+    }
+
+    #[test]
+    fn git_status_reports_clean_repo() {
+        let temp = TempDir::new("git-clean");
+        init_git_repo(&temp);
+
+        let response = git_status(&GitStatusRequest {
+            cwd: temp.path.to_string_lossy().into_owned(),
+        });
+        let summary = response.summary.expect("git summary should exist");
+        assert_eq!(summary.branch, "vaultty-test");
+        assert!(!summary.is_dirty);
+        assert_eq!(summary.insertions, 0);
+        assert_eq!(summary.deletions, 0);
+    }
+
+    #[test]
+    fn git_status_reports_dirty_line_counts() {
+        let temp = TempDir::new("git-dirty");
+        init_git_repo(&temp);
+        fs::write(temp.path.join("tracked.txt"), b"one\ntwo\n")
+            .expect("tracked file should be modified");
+
+        let response = git_status(&GitStatusRequest {
+            cwd: temp.path.to_string_lossy().into_owned(),
+        });
+        let summary = response.summary.expect("git summary should exist");
+        assert_eq!(summary.branch, "vaultty-test");
+        assert!(summary.is_dirty);
+        assert_eq!(summary.insertions, 1);
+        assert_eq!(summary.deletions, 0);
     }
 
     #[test]
