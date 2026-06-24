@@ -22,6 +22,24 @@ private struct TerminalBlock {
     var state: State
 }
 
+private enum FindResultTarget: Equatable {
+    case command
+    case output
+}
+
+private struct FindResult: Equatable {
+    let blockID: UUID
+    let target: FindResultTarget
+    let range: NSRange
+
+    static func == (lhs: FindResult, rhs: FindResult) -> Bool {
+        lhs.blockID == rhs.blockID
+            && lhs.target == rhs.target
+            && lhs.range.location == rhs.range.location
+            && lhs.range.length == rhs.range.length
+    }
+}
+
 private enum TahoeGlassPalette {
     static let windowCornerRadius: CGFloat = 22
     static let titleBarHeight: CGFloat = 50
@@ -1059,7 +1077,8 @@ private final class BlockView: NSView {
     private var needsOutputHeightMeasurement = true
     private var renderedOutputRevision = -1
     private var lastBlock: TerminalBlock?
-    private var isFindHighlighted = false
+    private var findSelectionTarget: FindResultTarget?
+    private var findSelectionRange: NSRange?
 
     var onCopyCommand: (() -> Void)?
     var onCopyOutput: (() -> Void)?
@@ -1207,18 +1226,22 @@ private final class BlockView: NSView {
             }
         }
         metaLabel.attributedStringValue = attributedMetadata(metadata)
-        applyFindHighlightAppearance(bounce: false)
+        applyFindSelectionAppearance(bounce: false)
     }
 
-    func setFindHighlighted(_ highlighted: Bool, bounce: Bool = false) {
-        guard isFindHighlighted != highlighted || bounce else { return }
-        isFindHighlighted = highlighted
-        if !highlighted, let lastBlock {
+    func setFindSelection(target: FindResultTarget?, range: NSRange? = nil, bounce: Bool = false) {
+        let didChange = findSelectionTarget != target
+            || findSelectionRange?.location != range?.location
+            || findSelectionRange?.length != range?.length
+        guard didChange || bounce else { return }
+        findSelectionTarget = target
+        findSelectionRange = range
+        if target == nil, let lastBlock {
             renderedOutputRevision = -1
             update(with: lastBlock)
             return
         }
-        applyFindHighlightAppearance(bounce: bounce)
+        applyFindSelectionAppearance(bounce: bounce)
     }
 
     override func layout() {
@@ -1297,25 +1320,39 @@ private final class BlockView: NSView {
         outputView.setBoundsOrigin(.zero)
     }
 
-    private func applyFindHighlightAppearance(bounce: Bool) {
-        guard isFindHighlighted else {
-            commandLabel.textColor = .labelColor
-            outputView.textColor = .labelColor
+    private func applyFindSelectionAppearance(bounce: Bool) {
+        guard let target = findSelectionTarget,
+              let range = findSelectionRange,
+              let lastBlock
+        else {
             return
         }
 
         let textColor = NSColor(calibratedWhite: 0.10, alpha: 1)
-        layer?.backgroundColor = NSColor.findHighlightColor.cgColor
-        commandLabel.textColor = textColor
-        outputView.textColor = textColor
-        let meta = NSMutableAttributedString(attributedString: metaLabel.attributedStringValue)
-        meta.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: meta.length))
-        metaLabel.attributedStringValue = meta
-        outputView.textStorage?.addAttribute(
-            .foregroundColor,
-            value: textColor,
-            range: NSRange(location: 0, length: outputView.textStorage?.length ?? 0)
-        )
+        let highlightColor = NSColor.findHighlightColor
+        commandLabel.attributedStringValue = normalCommandAttributedString(lastBlock.command)
+        outputView.textStorage?.setAttributedString(lastBlock.attributedOutput)
+        switch target {
+        case .command:
+            let command = NSMutableAttributedString(attributedString: commandLabel.attributedStringValue)
+            if isValidRange(range, inLength: command.length) {
+                command.addAttributes([
+                    .backgroundColor: highlightColor,
+                    .foregroundColor: textColor
+                ], range: range)
+                commandLabel.attributedStringValue = command
+            }
+        case .output:
+            let output = NSMutableAttributedString(attributedString: lastBlock.attributedOutput)
+            if isValidRange(range, inLength: output.length) {
+                output.addAttributes([
+                    .backgroundColor: highlightColor,
+                    .foregroundColor: textColor
+                ], range: range)
+                outputView.textStorage?.setAttributedString(output)
+                outputView.scrollRangeToVisible(range)
+            }
+        }
 
         guard bounce, let layer else { return }
         let animation = CAKeyframeAnimation(keyPath: "transform.scale")
@@ -1324,6 +1361,23 @@ private final class BlockView: NSView {
         animation.duration = 0.32
         animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
         layer.add(animation, forKey: "findBounce")
+    }
+
+    private func normalCommandAttributedString(_ command: String) -> NSAttributedString {
+        NSAttributedString(
+            string: command,
+            attributes: [
+                .font: commandLabel.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
+                .foregroundColor: NSColor.labelColor
+            ]
+        )
+    }
+
+    private func isValidRange(_ range: NSRange, inLength length: Int) -> Bool {
+        range.location != NSNotFound
+            && range.location >= 0
+            && range.length > 0
+            && range.location + range.length <= length
     }
 
     private func durationText(for block: TerminalBlock) -> String? {
@@ -2850,7 +2904,7 @@ private final class TerminalTab {
     var isFindMode = false
     var findCommandDraft = ""
     var findQuery = ""
-    var findResultBlockIDs: [UUID] = []
+    var findResults: [FindResult] = []
     var findResultIndex: Int?
     var canReplaceFreshSession = false
     var createdAt: Date
@@ -3747,7 +3801,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             tab.isFindMode = true
             tab.findCommandDraft = tab.inputView.string
             tab.findQuery = ""
-            tab.findResultBlockIDs = []
+            tab.findResults = []
             tab.findResultIndex = nil
             setInput("", in: tab)
         }
@@ -3768,7 +3822,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         clearFindHighlight(in: tab)
         tab.isFindMode = false
         tab.findQuery = ""
-        tab.findResultBlockIDs = []
+        tab.findResults = []
         tab.findResultIndex = nil
         tab.commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
         tab.findCloseButton.isHidden = true
@@ -3786,55 +3840,84 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func updateFindResults(in tab: TerminalTab, bounce: Bool) {
         guard tab.isFindMode else { return }
         tab.findQuery = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previousBlockID = tab.findResultIndex.flatMap { index in
-            tab.findResultBlockIDs.indices.contains(index) ? tab.findResultBlockIDs[index] : nil
+        let previousResult = tab.findResultIndex.flatMap { index in
+            tab.findResults.indices.contains(index) ? tab.findResults[index] : nil
         }
 
-        tab.findResultBlockIDs = findResultBlockIDs(query: tab.findQuery, in: tab)
-        if let previousBlockID,
-           let index = tab.findResultBlockIDs.firstIndex(of: previousBlockID) {
+        tab.findResults = findResults(query: tab.findQuery, in: tab)
+        if let previousResult,
+           let index = tab.findResults.firstIndex(of: previousResult) {
             tab.findResultIndex = index
         } else {
-            tab.findResultIndex = tab.findResultBlockIDs.isEmpty ? nil : 0
+            tab.findResultIndex = tab.findResults.isEmpty ? nil : 0
         }
 
         applyFindSelection(in: tab, bounce: bounce)
         updateFindStatus(in: tab)
     }
 
-    private func findResultBlockIDs(query: String, in tab: TerminalTab) -> [UUID] {
+    private func findResults(query: String, in tab: TerminalTab) -> [FindResult] {
         guard !query.isEmpty else { return [] }
-        return tab.blocks.reversed().compactMap { block in
-            blockMatchesFindQuery(block, query: query) ? block.id : nil
+        return tab.blocks.reversed().flatMap { block in
+            findResults(in: block, query: query)
         }
     }
 
-    private func blockMatchesFindQuery(_ block: TerminalBlock, query: String) -> Bool {
-        block.command.localizedCaseInsensitiveContains(query)
-            || block.output.localizedCaseInsensitiveContains(query)
+    private func findResults(in block: TerminalBlock, query: String) -> [FindResult] {
+        let commandResults = matchRanges(in: block.command, query: query).map {
+            FindResult(blockID: block.id, target: .command, range: $0)
+        }
+        let outputResults = matchRanges(in: block.output, query: query).map {
+            FindResult(blockID: block.id, target: .output, range: $0)
+        }
+        return commandResults + outputResults
+    }
+
+    private func matchRanges(in text: String, query: String) -> [NSRange] {
+        let source = text as NSString
+        let queryLength = (query as NSString).length
+        guard source.length > 0, queryLength > 0 else { return [] }
+
+        var results: [NSRange] = []
+        var searchRange = NSRange(location: 0, length: source.length)
+        while searchRange.length > 0 {
+            let range = source.range(of: query, options: [.caseInsensitive], range: searchRange)
+            guard range.location != NSNotFound else { break }
+            results.append(range)
+            let nextLocation = range.location + max(1, range.length)
+            searchRange = NSRange(location: nextLocation, length: source.length - nextLocation)
+        }
+        return results
     }
 
     private func selectFindResult(offset: Int, in tab: TerminalTab) {
-        guard tab.isFindMode, !tab.findResultBlockIDs.isEmpty else {
+        guard tab.isFindMode, !tab.findResults.isEmpty else {
             NSSound.beep()
             return
         }
         let current = tab.findResultIndex ?? 0
-        tab.findResultIndex = (current + offset + tab.findResultBlockIDs.count) % tab.findResultBlockIDs.count
+        tab.findResultIndex = (current + offset + tab.findResults.count) % tab.findResults.count
         applyFindSelection(in: tab, bounce: true)
         updateFindStatus(in: tab)
     }
 
     private func applyFindSelection(in tab: TerminalTab, bounce: Bool) {
-        let selectedBlockID = tab.findResultIndex.flatMap { index in
-            tab.findResultBlockIDs.indices.contains(index) ? tab.findResultBlockIDs[index] : nil
+        let selectedResult = tab.findResultIndex.flatMap { index in
+            tab.findResults.indices.contains(index) ? tab.findResults[index] : nil
         }
         for (blockID, blockView) in tab.blockViews {
-            let isSelected = blockID == selectedBlockID
-            blockView.setFindHighlighted(isSelected, bounce: isSelected && bounce)
+            if blockID == selectedResult?.blockID {
+                blockView.setFindSelection(
+                    target: selectedResult?.target,
+                    range: selectedResult?.range,
+                    bounce: bounce
+                )
+            } else {
+                blockView.setFindSelection(target: nil)
+            }
         }
-        guard let selectedBlockID,
-              let blockView = tab.blockViews[selectedBlockID]
+        guard let selectedResult,
+              let blockView = tab.blockViews[selectedResult.blockID]
         else {
             return
         }
@@ -3843,7 +3926,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     private func clearFindHighlight(in tab: TerminalTab) {
         for blockView in tab.blockViews.values {
-            blockView.setFindHighlighted(false)
+            blockView.setFindSelection(target: nil)
         }
     }
 
@@ -3852,7 +3935,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         if tab.findQuery.isEmpty {
             status = "Find in History"
         } else if let index = tab.findResultIndex {
-            status = "\(index + 1) of \(tab.findResultBlockIDs.count)"
+            status = "\(index + 1) of \(tab.findResults.count)"
         } else {
             status = "0 results"
         }
