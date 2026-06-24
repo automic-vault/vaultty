@@ -3030,6 +3030,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private let completionPopup = CompletionPopupController()
     private var completionRequestSerial = 0
     private var pendingCompletionIndicatorTabID: UUID?
+    private var deferredCompletionAcceptanceSerial: Int?
     private var activeCompletionRange: NSRange?
     private var activeCompletionCommonPrefix: String?
     private var isApplyingCompletion = false
@@ -3304,10 +3305,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) {
                 isCompletionInteractionArmed = true
-                if insertSharedCompletionPrefixIfAvailable(in: tab) {
+                if deferCompletionAcceptanceUntilPendingRequestCompletes(in: tab) {
                     return true
                 }
-                acceptSelectedCompletion(in: tab, continuingDirectories: true)
+                completeFromPopup(in: tab, continuingDirectories: true)
                 return true
             }
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
@@ -4727,13 +4728,23 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
                 guard let self, let tab else { return }
                 guard self.activeTabID == tab.id,
                       serial == self.completionRequestSerial else {
+                    if self.deferredCompletionAcceptanceSerial == serial {
+                        self.deferredCompletionAcceptanceSerial = nil
+                    }
                     if serial == self.completionRequestSerial {
                         self.clearPendingCompletionIndicator()
                     }
                     return
                 }
+                let shouldAcceptAfterUpdate = self.deferredCompletionAcceptanceSerial == serial
+                if shouldAcceptAfterUpdate {
+                    self.deferredCompletionAcceptanceSerial = nil
+                }
                 self.clearPendingCompletionIndicator()
                 self.handleCompletionResult(result, in: tab, mode: mode)
+                if shouldAcceptAfterUpdate, self.completionPopup.isShown {
+                    self.completeFromPopup(in: tab, continuingDirectories: true)
+                }
             }
         }
     }
@@ -4805,6 +4816,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             renderCompletionPreview(suggestion, in: tab)
         }
         return true
+    }
+
+    private func deferCompletionAcceptanceUntilPendingRequestCompletes(in tab: TerminalTab) -> Bool {
+        guard pendingCompletionIndicatorTabID == tab.id else { return false }
+        deferredCompletionAcceptanceSerial = completionRequestSerial
+        return true
+    }
+
+    private func completeFromPopup(in tab: TerminalTab, continuingDirectories: Bool = false) {
+        if insertSharedCompletionPrefixIfAvailable(in: tab) {
+            return
+        }
+        acceptSelectedCompletion(in: tab, continuingDirectories: continuingDirectories)
     }
 
     private func acceptSelectedCompletion(in tab: TerminalTab, continuingDirectories: Bool = false) {
@@ -4934,6 +4958,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         clearPendingCompletionIndicator()
         activeCompletionRange = nil
         activeCompletionCommonPrefix = nil
+        deferredCompletionAcceptanceSerial = nil
         isCompletionInteractionArmed = false
         completionPopup.dismiss()
         completionRequestSerial += 1
