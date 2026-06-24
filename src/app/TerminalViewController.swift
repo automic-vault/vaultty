@@ -1069,6 +1069,7 @@ private final class BlockView: NSView {
     private let outputView = BlockOutputTextView(frame: .zero)
     private let copyMarkdownButton = HoverCopyMarkdownButton(frame: .zero)
     private let menuButton = HoverMenuButton(frame: .zero)
+    private let findReticuleLayer = CALayer()
     private var outputHeightConstraint: NSLayoutConstraint?
     private var minimumHeightConstraint: NSLayoutConstraint?
     private var contentBottomConstraint: NSLayoutConstraint?
@@ -1090,6 +1091,13 @@ private final class BlockView: NSView {
         layer?.cornerRadius = 0
         layer?.borderWidth = 0
         layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
+        findReticuleLayer.isHidden = true
+        findReticuleLayer.borderWidth = 1
+        findReticuleLayer.borderColor = NSColor.findHighlightColor.cgColor
+        findReticuleLayer.cornerRadius = 3
+        findReticuleLayer.backgroundColor = NSColor.clear.cgColor
+        findReticuleLayer.zPosition = 1
+        layer?.addSublayer(findReticuleLayer)
 
         commandLabel.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         commandLabel.textColor = .labelColor
@@ -1237,6 +1245,7 @@ private final class BlockView: NSView {
         findSelectionTarget = target
         findSelectionRange = range
         if target == nil, let lastBlock {
+            findReticuleLayer.isHidden = true
             renderedOutputRevision = -1
             update(with: lastBlock)
             return
@@ -1345,6 +1354,7 @@ private final class BlockView: NSView {
               let range = findSelectionRange,
               let lastBlock
         else {
+            findReticuleLayer.isHidden = true
             return
         }
 
@@ -1352,6 +1362,7 @@ private final class BlockView: NSView {
         let highlightColor = NSColor.findHighlightColor
         commandLabel.attributedStringValue = normalCommandAttributedString(lastBlock.command)
         outputView.textStorage?.setAttributedString(lastBlock.attributedOutput)
+        var reticuleRect: NSRect?
         switch target {
         case .command:
             let command = NSMutableAttributedString(attributedString: commandLabel.attributedStringValue)
@@ -1361,6 +1372,7 @@ private final class BlockView: NSView {
                     .foregroundColor: textColor
                 ], range: range)
                 commandLabel.attributedStringValue = command
+                reticuleRect = commandRect(for: range)
             }
         case .output:
             let output = NSMutableAttributedString(attributedString: lastBlock.attributedOutput)
@@ -1370,16 +1382,35 @@ private final class BlockView: NSView {
                     .foregroundColor: textColor
                 ], range: range)
                 outputView.textStorage?.setAttributedString(output)
+                reticuleRect = outputRect(for: range)
             }
         }
 
-        guard bounce, let layer else { return }
+        guard let reticuleRect else {
+            findReticuleLayer.isHidden = true
+            return
+        }
+        updateFindReticule(
+            frame: reticuleRect.insetBy(dx: -2, dy: -2),
+            from: target == .command ? commandLabel : outputView,
+            bounce: bounce
+        )
+    }
+
+    private func updateFindReticule(frame: NSRect, from view: NSView, bounce: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        findReticuleLayer.frame = convert(frame, from: view)
+        findReticuleLayer.isHidden = false
+        CATransaction.commit()
+
+        guard bounce else { return }
         let animation = CAKeyframeAnimation(keyPath: "transform.scale")
         animation.values = [1.0, 1.025, 0.995, 1.0]
         animation.keyTimes = [0, 0.35, 0.72, 1]
         animation.duration = 0.32
         animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(animation, forKey: "findBounce")
+        findReticuleLayer.add(animation, forKey: "findBounce")
     }
 
     private func normalCommandAttributedString(_ command: String) -> NSAttributedString {
@@ -1389,6 +1420,15 @@ private final class BlockView: NSView {
                 .font: commandLabel.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
                 .foregroundColor: NSColor.labelColor
             ]
+        )
+    }
+
+    private func commandRect(for range: NSRange) -> NSRect? {
+        textRect(
+            for: range,
+            in: commandLabel.stringValue,
+            font: commandLabel.font ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
+            width: commandLabel.bounds.width
         )
     }
 
@@ -1405,6 +1445,20 @@ private final class BlockView: NSView {
         rect.origin.x += outputView.textContainerOrigin.x
         rect.origin.y += outputView.textContainerOrigin.y
         return rect
+    }
+
+    private func textRect(for range: NSRange, in text: String, font: NSFont, width: CGFloat) -> NSRect? {
+        let textStorage = NSTextStorage(string: text, attributes: [.font: font])
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: max(1, width), height: CGFloat.greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.lineBreakMode = .byWordWrapping
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+        guard isValidRange(range, inLength: textStorage.length) else { return nil }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        return layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
     }
 
     private func isValidRange(_ range: NSRange, inLength length: Int) -> Bool {
