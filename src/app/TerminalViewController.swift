@@ -1092,10 +1092,10 @@ private final class BlockView: NSView {
         layer?.borderWidth = 0
         layer?.backgroundColor = TahoeGlassPalette.surfaceTint.cgColor
         findReticuleLayer.isHidden = true
-        findReticuleLayer.borderWidth = 1
-        findReticuleLayer.borderColor = NSColor.findHighlightColor.cgColor
+        findReticuleLayer.opacity = 0
+        findReticuleLayer.borderWidth = 0
         findReticuleLayer.cornerRadius = 3
-        findReticuleLayer.backgroundColor = NSColor.clear.cgColor
+        findReticuleLayer.backgroundColor = NSColor.findHighlightColor.withAlphaComponent(0.45).cgColor
         findReticuleLayer.zPosition = 1
         layer?.addSublayer(findReticuleLayer)
 
@@ -1401,16 +1401,25 @@ private final class BlockView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         findReticuleLayer.frame = convert(frame, from: view)
-        findReticuleLayer.isHidden = false
+        findReticuleLayer.isHidden = !bounce
+        findReticuleLayer.opacity = 0
         CATransaction.commit()
 
         guard bounce else { return }
-        let animation = CAKeyframeAnimation(keyPath: "transform.scale")
-        animation.values = [1.0, 1.025, 0.995, 1.0]
-        animation.keyTimes = [0, 0.35, 0.72, 1]
-        animation.duration = 0.32
-        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        findReticuleLayer.add(animation, forKey: "findBounce")
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = [1.18, 1.04, 1.0]
+        scale.keyTimes = [0, 0.58, 1]
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0.65, 0.35, 0.0]
+        opacity.keyTimes = scale.keyTimes
+
+        let group = CAAnimationGroup()
+        group.animations = [scale, opacity]
+        group.duration = 0.34
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.isRemovedOnCompletion = true
+        findReticuleLayer.add(group, forKey: "findBounce")
     }
 
     private func normalCommandAttributedString(_ command: String) -> NSAttributedString {
