@@ -2980,6 +2980,7 @@ private final class TerminalTab {
     var isScrollToBottomScheduled = false
     var isShellReady = false
     var isReplayingHistory = false
+    var needsShellInputResetBeforeNextSubmit = false
     var hasExited = false
     var isTerminalControlActive = false
     var isAlternateScreenActive = false
@@ -5128,8 +5129,12 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             """
 
         tab.session.onReady = { [weak tab] created in
-            guard created else { return }
-            tab?.session.write(initScript, suppressEcho: true)
+            guard let tab else { return }
+            guard created else {
+                tab.needsShellInputResetBeforeNextSubmit = true
+                return
+            }
+            tab.session.write(initScript, suppressEcho: true)
         }
 
         do {
@@ -5334,6 +5339,16 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     private func submitCommandExcludingVisibleCompletionPreview(in tab: TerminalTab) {
         dismissCompletion()
         submitCommand(in: tab)
+    }
+
+    private var shellLineResetSequence: String {
+        "\u{15}"
+    }
+
+    private func shellInputResetPrefixIfNeeded(in tab: TerminalTab) -> String {
+        guard tab.needsShellInputResetBeforeNextSubmit else { return "" }
+        tab.needsShellInputResetBeforeNextSubmit = false
+        return shellLineResetSequence
     }
 
     private func previewCompletionSelection(_ suggestion: CompletionSuggestion) {
@@ -5623,7 +5638,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         startRunningElapsedUpdates(for: tab)
 
         let encodedCommand = command.data(using: .utf8)?.base64EncodedString() ?? ""
-        let script = "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
+        let script = shellInputResetPrefixIfNeeded(in: tab) + "__vaultty_cmd=\(shellQuote(command)); __vaultty_command_b64=\(shellQuote(encodedCommand)); printf '\\033]133;C;%s\\a' \"$__vaultty_command_b64\"; eval \"$__vaultty_cmd\"; __vaultty_status=$?; printf '\\033]133;P;%s\\a' \"$(pwd | base64)\"; printf '\\033]133;D;%s\\a' \"$__vaultty_status\"\n"
         tab.session.write(script, suppressEcho: true)
         updatePassthroughVisibility(for: tab)
         focusInput(for: tab)
@@ -5650,7 +5665,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.blocks.append(block)
         addBlockView(block, to: tab)
         updateCommandBarVisibility(for: tab)
-        tab.session.write(rawCommand + "\n", suppressEcho: true)
+        tab.session.write(shellInputResetPrefixIfNeeded(in: tab) + rawCommand + "\n", suppressEcho: true)
         updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         focusInput(for: tab)
     }
