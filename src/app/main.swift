@@ -224,6 +224,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         controller?.killClosedTabs(sender)
     }
 
+    @objc private func findInHistory(_ sender: Any?) {
+        controller?.findInHistory(sender)
+    }
+
+    @objc private func findNextInHistory(_ sender: Any?) {
+        controller?.findNextInHistory(sender)
+    }
+
+    @objc private func findPreviousInHistory(_ sender: Any?) {
+        controller?.findPreviousInHistory(sender)
+    }
+
     @objc private func manageSSHHosts(_ sender: Any?) {
         let stored = loadSSHHosts()
         let form = makeSSHHostPanel(hosts: stored.hosts)
@@ -675,6 +687,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
             action: #selector(NSText.selectAll(_:)),
             keyEquivalent: "a"
         )
+        editMenu.addItem(.separator())
+        let findItem = NSMenuItem()
+        findItem.title = "Find"
+        let findMenu = NSMenu(title: "Find")
+        let findInHistoryItem = findMenu.addItem(
+            withTitle: "Find...",
+            action: #selector(findInHistory(_:)),
+            keyEquivalent: "f"
+        )
+        findInHistoryItem.target = self
+        let findNextItem = findMenu.addItem(
+            withTitle: "Find Next",
+            action: #selector(findNextInHistory(_:)),
+            keyEquivalent: "g"
+        )
+        findNextItem.target = self
+        let findPreviousItem = findMenu.addItem(
+            withTitle: "Find Previous",
+            action: #selector(findPreviousInHistory(_:)),
+            keyEquivalent: "g"
+        )
+        findPreviousItem.keyEquivalentModifierMask = [.command, .shift]
+        findPreviousItem.target = self
+        findItem.submenu = findMenu
+        editMenu.addItem(findItem)
         editMenu.addItem(.separator())
         let clearItem = editMenu.addItem(
             withTitle: "Clear Tab",

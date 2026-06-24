@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import QuartzCore
 
 @_silgen_name("vaultty_ghostty_osc_command_type")
 private func vaulttyGhosttyOscCommandType(_ payload: UnsafePointer<CChar>) -> Int32
@@ -969,6 +970,67 @@ private final class HoverCopyMarkdownButton: NSButton {
     }
 }
 
+private final class FindCloseButton: NSButton {
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isHovering = false {
+        didSet { updateAppearance() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        bezelStyle = .regularSquare
+        image = NSImage(
+            systemSymbolName: "multiply",
+            accessibilityDescription: "Close Find"
+        )
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        toolTip = "Close Find"
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = .secondaryLabelColor
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    private func updateAppearance() {
+        layer?.backgroundColor = (isHovering
+            ? NSColor.white.withAlphaComponent(0.10)
+            : NSColor.clear
+        ).cgColor
+        contentTintColor = isHovering ? .labelColor : .secondaryLabelColor
+    }
+}
+
 private final class BlockView: NSView {
     private enum Metrics {
         static let runningMinimumHeight: CGFloat = 90
@@ -996,6 +1058,8 @@ private final class BlockView: NSView {
     private var lastMeasuredOutputWidth: CGFloat = 0
     private var needsOutputHeightMeasurement = true
     private var renderedOutputRevision = -1
+    private var lastBlock: TerminalBlock?
+    private var isFindHighlighted = false
 
     var onCopyCommand: (() -> Void)?
     var onCopyOutput: (() -> Void)?
@@ -1100,6 +1164,7 @@ private final class BlockView: NSView {
     }
 
     func update(with block: TerminalBlock, now: Date = Date()) {
+        lastBlock = block
         commandLabel.stringValue = block.command
         hasVisibleOutput = !block.output.isEmpty
         outputView.isHidden = !hasVisibleOutput
@@ -1142,6 +1207,18 @@ private final class BlockView: NSView {
             }
         }
         metaLabel.attributedStringValue = attributedMetadata(metadata)
+        applyFindHighlightAppearance(bounce: false)
+    }
+
+    func setFindHighlighted(_ highlighted: Bool, bounce: Bool = false) {
+        guard isFindHighlighted != highlighted || bounce else { return }
+        isFindHighlighted = highlighted
+        if !highlighted, let lastBlock {
+            renderedOutputRevision = -1
+            update(with: lastBlock)
+            return
+        }
+        applyFindHighlightAppearance(bounce: bounce)
     }
 
     override func layout() {
@@ -1218,6 +1295,35 @@ private final class BlockView: NSView {
 
     private func resetOutputViewport() {
         outputView.setBoundsOrigin(.zero)
+    }
+
+    private func applyFindHighlightAppearance(bounce: Bool) {
+        guard isFindHighlighted else {
+            commandLabel.textColor = .labelColor
+            outputView.textColor = .labelColor
+            return
+        }
+
+        let textColor = NSColor(calibratedWhite: 0.10, alpha: 1)
+        layer?.backgroundColor = NSColor.findHighlightColor.cgColor
+        commandLabel.textColor = textColor
+        outputView.textColor = textColor
+        let meta = NSMutableAttributedString(attributedString: metaLabel.attributedStringValue)
+        meta.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: meta.length))
+        metaLabel.attributedStringValue = meta
+        outputView.textStorage?.addAttribute(
+            .foregroundColor,
+            value: textColor,
+            range: NSRange(location: 0, length: outputView.textStorage?.length ?? 0)
+        )
+
+        guard bounce, let layer else { return }
+        let animation = CAKeyframeAnimation(keyPath: "transform.scale")
+        animation.values = [1.0, 1.025, 0.995, 1.0]
+        animation.keyTimes = [0, 0.35, 0.72, 1]
+        animation.duration = 0.32
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(animation, forKey: "findBounce")
     }
 
     private func durationText(for block: TerminalBlock) -> String? {
@@ -2712,6 +2818,7 @@ private final class TerminalTab {
     let dotenvStatusShieldImageView = NSImageView()
     let commandSeparator = SeparatorView()
     let commandBarView = NSView()
+    let findCloseButton = FindCloseButton(frame: .zero)
     let completionPendingLine = NSView()
     let ptyPassthroughView = PtyPassthroughView(frame: .zero)
     var title: String
@@ -2740,6 +2847,11 @@ private final class TerminalTab {
     var commandHistory: [String] = []
     var commandHistoryIndex: Int?
     var commandHistoryDraft = ""
+    var isFindMode = false
+    var findCommandDraft = ""
+    var findQuery = ""
+    var findResultBlockIDs: [UUID] = []
+    var findResultIndex: Int?
     var canReplaceFreshSession = false
     var createdAt: Date
     var commandCount: Int
@@ -2850,6 +2962,8 @@ private final class TerminalTab {
         commandBarView.wantsLayer = true
         commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
         commandBarView.translatesAutoresizingMaskIntoConstraints = false
+        findCloseButton.isHidden = true
+        findCloseButton.translatesAutoresizingMaskIntoConstraints = false
         completionPendingLine.wantsLayer = true
         completionPendingLine.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.75).cgColor
         completionPendingLine.isHidden = true
@@ -2863,6 +2977,7 @@ private final class TerminalTab {
             self?.isApplicationCursorModeActive == true
         }
         commandBarView.addSubview(statusLineStack)
+        commandBarView.addSubview(findCloseButton)
         commandBarView.addSubview(inputScroll)
         commandBarView.addSubview(completionPendingLine)
 
@@ -2920,8 +3035,8 @@ private final class TerminalTab {
 
             statusLineStack.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor, constant: 12),
             statusLineStack.trailingAnchor.constraint(
-                lessThanOrEqualTo: commandBarView.trailingAnchor,
-                constant: -12
+                lessThanOrEqualTo: findCloseButton.leadingAnchor,
+                constant: -8
             ),
             statusLineStack.topAnchor.constraint(equalTo: commandBarView.topAnchor, constant: 8),
             dotenvStatusShieldImageView.widthAnchor.constraint(
@@ -2930,6 +3045,10 @@ private final class TerminalTab {
             dotenvStatusShieldImageView.heightAnchor.constraint(
                 equalToConstant: TahoeGlassPalette.commandStatusShieldSize
             ),
+            findCloseButton.topAnchor.constraint(equalTo: commandBarView.topAnchor, constant: 4),
+            findCloseButton.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor, constant: -8),
+            findCloseButton.widthAnchor.constraint(equalToConstant: 28),
+            findCloseButton.heightAnchor.constraint(equalToConstant: 28),
 
             inputScroll.leadingAnchor.constraint(equalTo: commandBarView.leadingAnchor),
             inputScroll.trailingAnchor.constraint(equalTo: commandBarView.trailingAnchor),
@@ -3288,6 +3407,19 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             return false
         }
 
+        if tab.isFindMode {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                exitFindMode(in: tab)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
+                commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                selectFindResult(offset: 1, in: tab)
+                return true
+            }
+            return false
+        }
+
         if completionPopup.isShown {
             if commandSelector == #selector(NSResponder.moveUp(_:)) {
                 isCompletionInteractionArmed = true
@@ -3405,6 +3537,10 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         tab.inputView.normalizePlainTextStorage()
         tab.inputView.clearMutedCompletionPreview()
+        if tab.isFindMode {
+            updateFindResults(in: tab, bounce: true)
+            return
+        }
         if completionPopup.isShown {
             updateCompletionAnchor(for: tab)
             requestCompletion(in: tab, mode: .filtering)
@@ -3461,6 +3597,43 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
     func newTab(at directoryURL: URL) {
         createTab(workingDirectory: directoryURL)
+    }
+
+    @objc func findInHistory(_ sender: Any?) {
+        guard let tab = activeTab else {
+            NSSound.beep()
+            return
+        }
+        enterFindMode(in: tab)
+    }
+
+    @objc func findNextInHistory(_ sender: Any?) {
+        guard let tab = activeTab else {
+            NSSound.beep()
+            return
+        }
+        guard tab.isFindMode else {
+            enterFindMode(in: tab)
+            return
+        }
+        selectFindResult(offset: 1, in: tab)
+    }
+
+    @objc func findPreviousInHistory(_ sender: Any?) {
+        guard let tab = activeTab else {
+            NSSound.beep()
+            return
+        }
+        guard tab.isFindMode else {
+            enterFindMode(in: tab)
+            return
+        }
+        selectFindResult(offset: -1, in: tab)
+    }
+
+    @objc private func closeFindMode(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        exitFindMode(in: tab)
     }
 
     @objc func selectPreviousTab(_ sender: Any?) {
@@ -3568,9 +3741,128 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private func enterFindMode(in tab: TerminalTab) {
+        dismissCompletion()
+        if !tab.isFindMode {
+            tab.isFindMode = true
+            tab.findCommandDraft = tab.inputView.string
+            tab.findQuery = ""
+            tab.findResultBlockIDs = []
+            tab.findResultIndex = nil
+            setInput("", in: tab)
+        }
+
+        tab.commandHistoryIndex = nil
+        tab.commandBarView.layer?.backgroundColor = NSColor.selectedControlColor.withAlphaComponent(0.32).cgColor
+        tab.findCloseButton.isHidden = false
+        tab.inputView.setAccessibilityLabel("Vaultty history find")
+        updatePassthroughVisibility(for: tab)
+        updateCommandBarVisibility(for: tab)
+        updateFindResults(in: tab, bounce: false)
+        focusInput(for: tab)
+        tab.inputView.selectAll(nil)
+    }
+
+    private func exitFindMode(in tab: TerminalTab) {
+        guard tab.isFindMode else { return }
+        clearFindHighlight(in: tab)
+        tab.isFindMode = false
+        tab.findQuery = ""
+        tab.findResultBlockIDs = []
+        tab.findResultIndex = nil
+        tab.commandBarView.layer?.backgroundColor = TahoeGlassPalette.commandTint.cgColor
+        tab.findCloseButton.isHidden = true
+        tab.inputView.setAccessibilityLabel("Vaultty command input")
+        setInput(tab.findCommandDraft, in: tab)
+        tab.findCommandDraft = ""
+        if tab.isShellReady {
+            updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
+        }
+        updatePassthroughVisibility(for: tab)
+        updateCommandBarVisibility(for: tab)
+        focusInput(for: tab)
+    }
+
+    private func updateFindResults(in tab: TerminalTab, bounce: Bool) {
+        guard tab.isFindMode else { return }
+        tab.findQuery = tab.inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousBlockID = tab.findResultIndex.flatMap { index in
+            tab.findResultBlockIDs.indices.contains(index) ? tab.findResultBlockIDs[index] : nil
+        }
+
+        tab.findResultBlockIDs = findResultBlockIDs(query: tab.findQuery, in: tab)
+        if let previousBlockID,
+           let index = tab.findResultBlockIDs.firstIndex(of: previousBlockID) {
+            tab.findResultIndex = index
+        } else {
+            tab.findResultIndex = tab.findResultBlockIDs.isEmpty ? nil : 0
+        }
+
+        applyFindSelection(in: tab, bounce: bounce)
+        updateFindStatus(in: tab)
+    }
+
+    private func findResultBlockIDs(query: String, in tab: TerminalTab) -> [UUID] {
+        guard !query.isEmpty else { return [] }
+        return tab.blocks.reversed().compactMap { block in
+            blockMatchesFindQuery(block, query: query) ? block.id : nil
+        }
+    }
+
+    private func blockMatchesFindQuery(_ block: TerminalBlock, query: String) -> Bool {
+        block.command.localizedCaseInsensitiveContains(query)
+            || block.output.localizedCaseInsensitiveContains(query)
+    }
+
+    private func selectFindResult(offset: Int, in tab: TerminalTab) {
+        guard tab.isFindMode, !tab.findResultBlockIDs.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        let current = tab.findResultIndex ?? 0
+        tab.findResultIndex = (current + offset + tab.findResultBlockIDs.count) % tab.findResultBlockIDs.count
+        applyFindSelection(in: tab, bounce: true)
+        updateFindStatus(in: tab)
+    }
+
+    private func applyFindSelection(in tab: TerminalTab, bounce: Bool) {
+        let selectedBlockID = tab.findResultIndex.flatMap { index in
+            tab.findResultBlockIDs.indices.contains(index) ? tab.findResultBlockIDs[index] : nil
+        }
+        for (blockID, blockView) in tab.blockViews {
+            let isSelected = blockID == selectedBlockID
+            blockView.setFindHighlighted(isSelected, bounce: isSelected && bounce)
+        }
+        guard let selectedBlockID,
+              let blockView = tab.blockViews[selectedBlockID]
+        else {
+            return
+        }
+        blockView.scrollToVisible(blockView.bounds)
+    }
+
+    private func clearFindHighlight(in tab: TerminalTab) {
+        for blockView in tab.blockViews.values {
+            blockView.setFindHighlighted(false)
+        }
+    }
+
+    private func updateFindStatus(in tab: TerminalTab) {
+        let status: String
+        if tab.findQuery.isEmpty {
+            status = "Find in History"
+        } else if let index = tab.findResultIndex {
+            status = "\(index + 1) of \(tab.findResultBlockIDs.count)"
+        } else {
+            status = "0 results"
+        }
+        setCommandBarStatusText(status, in: tab)
+    }
+
     @objc func clearActiveTab(_ sender: Any?) {
         guard let tab = activeTab, !tab.blocks.isEmpty else { return }
 
+        clearFindHighlight(in: tab)
         let blocksToKeep = tab.blocks.filter { block in
             if block.id == tab.activeBlockID || block.id == tab.pendingBlockID {
                 return true
@@ -3586,6 +3878,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.commandHistoryIndex = nil
         tab.commandHistoryDraft = ""
         rebuildBlockViews(for: tab)
+        updateFindResults(in: tab, bounce: false)
         scrollToBottom(tab)
         focusInput(for: tab)
     }
@@ -3816,6 +4109,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             commandHistory: commandHistory
         )
         tab.currentCwd = directoryPath
+        tab.findCloseButton.target = self
+        tab.findCloseButton.action = #selector(closeFindMode(_:))
         setCommandBarStatusText("Starting shell...", in: tab)
         tabs.append(tab)
         configureSession(for: tab)
@@ -5311,6 +5606,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         ensureBlockView(for: snapshot.blockID, in: tab)
         scheduleBlockViewUpdate(for: snapshot.blockID, in: tab)
+        if tab.isFindMode {
+            updateFindResults(in: tab, bounce: false)
+        }
         if didChangeTerminalMode {
             refreshTerminalControl(in: tab)
         }
@@ -5574,6 +5872,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateCommandBarDirectoryStatus(for tab: TerminalTab, forceRefresh: Bool = false) {
+        guard !tab.isFindMode else { return }
         let cwd = tab.currentCwd
         let location = tab.sessionRef.location
         let directoryText = detailForDirectory(cwd)
@@ -5590,7 +5889,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
             DispatchQueue.main.async { [weak tab] in
                 guard let tab,
                       tab.currentCwd == cwd,
-                      tab.isShellReady
+                      tab.isShellReady,
+                      !tab.isFindMode
                 else {
                     return
                 }
@@ -5710,6 +6010,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func clearCommandInput(in tab: TerminalTab) {
+        guard !tab.isFindMode else { return }
         tab.inputView.clearMutedCompletionPreview()
         tab.inputView.string = ""
         tab.inputView.resetPlainTextAttributes()
@@ -5828,7 +6129,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateCommandBarVisibility(for tab: TerminalTab) {
-        let shouldShowCommandBar = !tab.isTerminalControlActive && !isCommandRunning(in: tab)
+        let shouldShowCommandBar = tab.isFindMode || (!tab.isTerminalControlActive && !isCommandRunning(in: tab))
         tab.commandBarView.isHidden = !shouldShowCommandBar
         tab.commandSeparator.isHidden = !shouldShowCommandBar
         tab.scrollBottomToCommandBarConstraint?.isActive = shouldShowCommandBar
@@ -5861,7 +6162,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func shouldSendInputToPty(in tab: TerminalTab) -> Bool {
-        tab.isTerminalControlActive || isCommandRunning(in: tab)
+        !tab.isFindMode && (tab.isTerminalControlActive || isCommandRunning(in: tab))
     }
 
     private func resizePtyToViewport(for tab: TerminalTab) {
@@ -5933,6 +6234,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         blockView.translatesAutoresizingMaskIntoConstraints = false
         blockView.widthAnchor.constraint(equalTo: tab.stackView.widthAnchor).isActive = true
         tab.blockViews[block.id] = blockView
+        if tab.isFindMode {
+            updateFindResults(in: tab, bounce: false)
+        }
         scrollToBottom(tab)
     }
 
