@@ -1244,6 +1244,26 @@ private final class BlockView: NSView {
         applyFindSelectionAppearance(bounce: bounce)
     }
 
+    func scrollFindSelectionToVisible() {
+        guard let target = findSelectionTarget,
+              let range = findSelectionRange
+        else {
+            scrollToVisible(bounds)
+            return
+        }
+
+        switch target {
+        case .command:
+            scrollToVisible(convert(commandLabel.bounds.insetBy(dx: 0, dy: -8), from: commandLabel))
+        case .output:
+            guard let rect = outputRect(for: range) else {
+                scrollToVisible(convert(outputView.bounds.insetBy(dx: 0, dy: -8), from: outputView))
+                return
+            }
+            scrollToVisible(convert(rect.insetBy(dx: 0, dy: -8), from: outputView))
+        }
+    }
+
     override func layout() {
         super.layout()
         if abs(outputView.bounds.width - lastMeasuredOutputWidth) > 0.5 {
@@ -1350,7 +1370,6 @@ private final class BlockView: NSView {
                     .foregroundColor: textColor
                 ], range: range)
                 outputView.textStorage?.setAttributedString(output)
-                outputView.scrollRangeToVisible(range)
             }
         }
 
@@ -1371,6 +1390,21 @@ private final class BlockView: NSView {
                 .foregroundColor: NSColor.labelColor
             ]
         )
+    }
+
+    private func outputRect(for range: NSRange) -> NSRect? {
+        guard let textContainer = outputView.textContainer,
+              let layoutManager = outputView.layoutManager,
+              isValidRange(range, inLength: outputView.textStorage?.length ?? 0)
+        else {
+            return nil
+        }
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += outputView.textContainerOrigin.x
+        rect.origin.y += outputView.textContainerOrigin.y
+        return rect
     }
 
     private func isValidRange(_ range: NSRange, inLength length: Int) -> Bool {
@@ -3846,14 +3880,32 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
 
         tab.findResults = findResults(query: tab.findQuery, in: tab)
         if let previousResult,
-           let index = tab.findResults.firstIndex(of: previousResult) {
+           let index = tab.findResults.firstIndex(where: { findResult($0, hasSameAnchorAs: previousResult) }) {
             tab.findResultIndex = index
         } else {
             tab.findResultIndex = tab.findResults.isEmpty ? nil : 0
         }
 
-        applyFindSelection(in: tab, bounce: bounce)
+        let selectedResult = tab.findResultIndex.flatMap { index in
+            tab.findResults.indices.contains(index) ? tab.findResults[index] : nil
+        }
+        applyFindSelection(
+            in: tab,
+            bounce: bounce,
+            scroll: !findResult(selectedResult, hasSameAnchorAs: previousResult)
+        )
         updateFindStatus(in: tab)
+    }
+
+    private func findResult(_ lhs: FindResult?, hasSameAnchorAs rhs: FindResult?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return findResult(lhs, hasSameAnchorAs: rhs)
+    }
+
+    private func findResult(_ lhs: FindResult, hasSameAnchorAs rhs: FindResult) -> Bool {
+        lhs.blockID == rhs.blockID
+            && lhs.target == rhs.target
+            && lhs.range.location == rhs.range.location
     }
 
     private func findResults(query: String, in tab: TerminalTab) -> [FindResult] {
@@ -3870,7 +3922,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         let outputResults = matchRanges(in: block.output, query: query).map {
             FindResult(blockID: block.id, target: .output, range: $0)
         }
-        return commandResults + outputResults
+        return Array(outputResults.reversed()) + Array(commandResults.reversed())
     }
 
     private func matchRanges(in text: String, query: String) -> [NSRange] {
@@ -3897,11 +3949,11 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         }
         let current = tab.findResultIndex ?? 0
         tab.findResultIndex = (current + offset + tab.findResults.count) % tab.findResults.count
-        applyFindSelection(in: tab, bounce: true)
+        applyFindSelection(in: tab, bounce: true, scroll: true)
         updateFindStatus(in: tab)
     }
 
-    private func applyFindSelection(in tab: TerminalTab, bounce: Bool) {
+    private func applyFindSelection(in tab: TerminalTab, bounce: Bool, scroll: Bool) {
         let selectedResult = tab.findResultIndex.flatMap { index in
             tab.findResults.indices.contains(index) ? tab.findResults[index] : nil
         }
@@ -3921,7 +3973,9 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         else {
             return
         }
-        blockView.scrollToVisible(blockView.bounds)
+        if scroll {
+            blockView.scrollFindSelectionToVisible()
+        }
     }
 
     private func clearFindHighlight(in tab: TerminalTab) {
