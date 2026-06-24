@@ -3898,6 +3898,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.commandBarView.layer?.backgroundColor = NSColor.selectedControlColor.withAlphaComponent(0.32).cgColor
         tab.findCloseButton.isHidden = false
         tab.inputView.setAccessibilityLabel("Vaultty history find")
+        updateDotenvShield(tab.hasInjectedDotenvSecrets, in: tab)
         updatePassthroughVisibility(for: tab)
         updateCommandBarVisibility(for: tab)
         updateFindResults(in: tab, bounce: false)
@@ -3917,6 +3918,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         tab.inputView.setAccessibilityLabel("Vaultty command input")
         setInput(tab.findCommandDraft, in: tab)
         tab.findCommandDraft = ""
+        updateDotenvShield(tab.hasInjectedDotenvSecrets, in: tab)
         if tab.isShellReady {
             updateCommandBarDirectoryStatus(for: tab, forceRefresh: true)
         }
@@ -5990,9 +5992,8 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func updateDotenvShield(_ isVisible: Bool, in tab: TerminalTab) {
-        guard tab.hasInjectedDotenvSecrets != isVisible else { return }
         tab.hasInjectedDotenvSecrets = isVisible
-        tab.dotenvStatusShieldImageView.isHidden = !isVisible
+        tab.dotenvStatusShieldImageView.isHidden = tab.isFindMode || !isVisible
     }
 
     private func updateTabTitleForDirectory(_ tab: TerminalTab) {
