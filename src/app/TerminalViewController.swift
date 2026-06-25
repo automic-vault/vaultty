@@ -880,11 +880,30 @@ private final class BlockOutputTextView: NSTextView {
     }
 
     override func clicked(onLink link: Any, at charIndex: Int) {
+        if let fileLink = link as? Ansi.FileLink {
+            openInDefaultEditor(fileLink)
+            return
+        }
         if let url = link as? URL {
+            if url.isFileURL {
+                openInDefaultEditor(Ansi.FileLink(url: url, line: nil))
+                return
+            }
             NSWorkspace.shared.open(url)
             return
         }
         super.clicked(onLink: link, at: charIndex)
+    }
+
+    private func openInDefaultEditor(_ link: Ansi.FileLink) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        var arguments = ["-t", link.url.path]
+        if let line = link.line {
+            arguments += ["--args", "+\(line)"]
+        }
+        process.arguments = arguments
+        try? process.run()
     }
 
     fileprivate func selectedTextForCopy() -> String? {
@@ -2465,6 +2484,7 @@ private final class TerminalOutputProcessor {
     private var parserBuffer = ""
     private var pendingBlockID: UUID?
     private var activeBlockID: UUID?
+    private var activeBlockCwd: String?
     private var isReplayingCommand = false
     private var usesPagerKeyBindings = false
     private var isAlternateScreenActive = false
@@ -2474,7 +2494,7 @@ private final class TerminalOutputProcessor {
         self.flushDelay = flushDelay
     }
 
-    func resetForCommand(blockID: UUID, usesPagerKeyBindings: Bool) {
+    func resetForCommand(blockID: UUID, cwd: String, usesPagerKeyBindings: Bool) {
         queue.async { [weak self] in
             guard let self else { return }
             self.pendingShellOutput.removeAll(keepingCapacity: true)
@@ -2482,6 +2502,7 @@ private final class TerminalOutputProcessor {
             self.parserBuffer.removeAll(keepingCapacity: true)
             self.pendingBlockID = blockID
             self.activeBlockID = nil
+            self.activeBlockCwd = cwd
             self.isReplayingCommand = false
             self.usesPagerKeyBindings = usesPagerKeyBindings
             self.isAlternateScreenActive = false
@@ -2526,6 +2547,7 @@ private final class TerminalOutputProcessor {
             guard let self else { return }
             self.flushPendingShellOutputOnQueue()
             self.activeBlockID = nil
+            self.activeBlockCwd = nil
             DispatchQueue.main.async {
                 completion?()
             }
@@ -2535,6 +2557,7 @@ private final class TerminalOutputProcessor {
     func finishCommand() {
         queue.async { [weak self] in
             self?.activeBlockID = nil
+            self?.activeBlockCwd = nil
         }
     }
 
@@ -2560,6 +2583,7 @@ private final class TerminalOutputProcessor {
         parserBuffer.removeAll(keepingCapacity: true)
         pendingBlockID = nil
         activeBlockID = nil
+        activeBlockCwd = nil
         isReplayingCommand = false
         usesPagerKeyBindings = false
         isAlternateScreenActive = false
@@ -2625,6 +2649,7 @@ private final class TerminalOutputProcessor {
                     isAlternateScreenActive = false
                     isApplicationCursorModeActive = false
                     activeBlockID = blockID
+                    activeBlockCwd = nil
                     isReplayingCommand = true
                     emit(.replayCommandStarted(
                         blockID: blockID,
@@ -2635,6 +2660,7 @@ private final class TerminalOutputProcessor {
             if marker.hasPrefix("D;") {
                 activeBlockID = nil
                 pendingBlockID = nil
+                activeBlockCwd = nil
                 isReplayingCommand = false
             }
         }
@@ -2673,7 +2699,7 @@ private final class TerminalOutputProcessor {
             plainText = state.text
             attributedText = state.attributedText
         } else {
-            let rendered = styledRenderer.process(text)
+            let rendered = styledRenderer.process(text, linkBaseDirectory: activeBlockCwd)
             plainText = rendered.plainText
             attributedText = rendered.attributedText
         }
@@ -5664,6 +5690,7 @@ final class TerminalViewController: NSViewController, NSTextViewDelegate {
         persistSessionState()
         tab.outputProcessor.resetForCommand(
             blockID: block.id,
+            cwd: block.cwd,
             usesPagerKeyBindings: usesPagerKeyBindings
         )
         addBlockView(block, to: tab)

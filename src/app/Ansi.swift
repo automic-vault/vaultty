@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 
 enum Ansi {
+    final class FileLink: NSObject {
+        let url: URL
+        let line: Int?
+
+        init(url: URL, line: Int?) {
+            self.url = url
+            self.line = line
+        }
+    }
+
     struct TerminalScreenState {
         let text: String
         let attributedText: NSAttributedString
@@ -32,6 +42,7 @@ enum Ansi {
         private var savedCursorCol = 0
         private var droppedLineCount = 0
         private var attributeCache: AttributeCache = [:]
+        private var linkBaseDirectory: String?
 
         func reset() {
             pending.removeAll()
@@ -43,9 +54,11 @@ enum Ansi {
             savedCursorCol = 0
             droppedLineCount = 0
             attributeCache.removeAll(keepingCapacity: true)
+            linkBaseDirectory = nil
         }
 
-        func process(_ text: String) -> StyledOutput {
+        func process(_ text: String, linkBaseDirectory: String? = nil) -> StyledOutput {
+            self.linkBaseDirectory = linkBaseDirectory
             let scalars = Array((pending + text).unicodeScalars)
             pending.removeAll()
 
@@ -345,7 +358,7 @@ enum Ansi {
                 }
             }
 
-            Ansi.linkifyURLs(in: attributed)
+            Ansi.linkifyURLs(in: attributed, baseDirectory: linkBaseDirectory)
             return StyledOutput(plainText: plain, attributedText: attributed)
         }
 
@@ -944,6 +957,20 @@ enum Ansi {
         assert(linkScheme(in: output, text: text, needle: "https://two.test/a") == "https")
         assert(linkScheme(in: output, text: text, needle: "file:///tmp/x") == "file")
         assert(linkScheme(in: output, text: text, needle: "ftp://nope") == nil)
+
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vaultty-ansi-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let file = tempDirectory.appendingPathComponent("Example.swift")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+        let pathText = "\(file.path):42 ./Example.swift:7 Missing.swift:1"
+        let pathOutput = StyledTextRenderer()
+            .process(pathText, linkBaseDirectory: tempDirectory.path)
+            .attributedText
+        assert(fileLinkLine(in: pathOutput, text: pathText, needle: file.path) == 42)
+        assert(fileLinkLine(in: pathOutput, text: pathText, needle: "./Example.swift") == 7)
+        assert(fileLinkLine(in: pathOutput, text: pathText, needle: "Missing.swift") == nil)
     }
 
     private static let linkDetector = try! NSDataDetector(
@@ -952,7 +979,14 @@ enum Ansi {
 
     private static let clickableURLSchemes: Set<String> = ["file", "http", "https"]
 
-    private static func linkifyURLs(in output: NSMutableAttributedString) {
+    private static let pathDetector = try! NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_./~-])((?:~|/|\./|\.\./)?(?:(?:[A-Za-z0-9_.$+@%-]+/)+[A-Za-z0-9_.$+@%-]+|(?:[A-Za-z0-9_.$+@%-]+\.)+[A-Za-z][A-Za-z0-9_+-]{0,11}))(?::([0-9]+))?(?::[0-9]+)?"#
+    )
+
+    private static func linkifyURLs(
+        in output: NSMutableAttributedString,
+        baseDirectory: String? = nil
+    ) {
         let range = NSRange(location: 0, length: output.length)
         linkDetector.enumerateMatches(in: output.string, range: range) { match, _, _ in
             guard let match,
@@ -964,6 +998,83 @@ enum Ansi {
             }
             output.addAttribute(.link, value: url, range: match.range)
         }
+        linkifyFilePaths(in: output, baseDirectory: baseDirectory, range: range)
+    }
+
+    private static func linkifyFilePaths(
+        in output: NSMutableAttributedString,
+        baseDirectory: String?,
+        range: NSRange
+    ) {
+        let text = output.string as NSString
+        var links: [(range: NSRange, link: FileLink)] = []
+        pathDetector.enumerateMatches(in: output.string, range: range) { match, _, _ in
+            guard let match,
+                  output.attribute(.link, at: match.range.location, effectiveRange: nil) == nil,
+                  let pathRange = Range(match.range(at: 1), in: output.string)
+            else {
+                return
+            }
+
+            let rawPath = trimmingTrailingPathPunctuation(String(output.string[pathRange]))
+            guard let url = fileURL(for: rawPath, baseDirectory: baseDirectory) else { return }
+            let line = lineNumber(in: text, from: match)
+            let linkLength = rawPath.utf16.count
+                + (line.map { String($0).utf16.count + 1 } ?? 0)
+            links.append((
+                range: NSRange(location: match.range.location, length: linkLength),
+                link: FileLink(url: url, line: line)
+            ))
+        }
+        for link in links {
+            output.addAttribute(.link, value: link.link, range: link.range)
+        }
+    }
+
+    private static let pathTrimCharacters = CharacterSet(charactersIn: ".,);]")
+
+    private static func trimmingTrailingPathPunctuation(_ path: String) -> String {
+        var path = path
+        while let scalar = path.unicodeScalars.last,
+              pathTrimCharacters.contains(scalar) {
+            path.removeLast()
+        }
+        return path
+    }
+
+    private static func fileURL(for rawPath: String, baseDirectory: String?) -> URL? {
+        guard !rawPath.isEmpty else { return nil }
+        let expandedPath: String
+        if rawPath == "~" || rawPath.hasPrefix("~/") {
+            expandedPath = FileManager.default.homeDirectoryForCurrentUser.path
+                + String(rawPath.dropFirst())
+        } else if rawPath.hasPrefix("/") {
+            expandedPath = rawPath
+        } else if let baseDirectory {
+            expandedPath = (baseDirectory as NSString).appendingPathComponent(rawPath)
+        } else {
+            expandedPath = rawPath
+        }
+
+        let path = (expandedPath as NSString).standardizingPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    private static func lineNumber(in text: NSString, from match: NSTextCheckingResult) -> Int? {
+        let range = match.range(at: 2)
+        guard range.location != NSNotFound,
+              let line = Int(text.substring(with: range)),
+              line > 0
+        else {
+            return nil
+        }
+        return line
     }
 
     private static func linkScheme(
@@ -978,6 +1089,20 @@ enum Ansi {
             return nil
         }
         return url.scheme
+    }
+
+    private static func fileLinkLine(
+        in output: NSAttributedString,
+        text: String,
+        needle: String
+    ) -> Int? {
+        let range = (text as NSString).range(of: needle)
+        guard range.location != NSNotFound,
+              let link = output.attribute(.link, at: range.location, effectiveRange: nil) as? FileLink
+        else {
+            return nil
+        }
+        return link.line
     }
 
     private static func isAlternateScreenMode(_ parameters: [UInt8]) -> Bool {
