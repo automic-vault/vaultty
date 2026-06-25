@@ -852,6 +852,33 @@ private final class BlockOutputTextView: NSTextView {
         true
     }
 
+    override func didChangeText() {
+        super.didChangeText()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let textStorage, let layoutManager, let textContainer else { return }
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        layoutManager.ensureLayout(for: textContainer)
+        textStorage.enumerateAttribute(.link, in: fullRange) { value, range, _ in
+            guard value != nil else { return }
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(
+                forGlyphRange: glyphRange,
+                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                in: textContainer
+            ) { [weak self] rect, _ in
+                guard let self else { return }
+                var cursorRect = rect
+                cursorRect.origin.x += textContainerOrigin.x
+                cursorRect.origin.y += textContainerOrigin.y
+                addCursorRect(cursorRect, cursor: .pointingHand)
+            }
+        }
+    }
+
     override func clicked(onLink link: Any, at charIndex: Int) {
         if let url = link as? URL {
             NSWorkspace.shared.open(url)
