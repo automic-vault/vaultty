@@ -572,7 +572,7 @@ bundle_icon
 bundle_completions
 
 GHOSTTY_SWIFT_LINK_ARGS=()
-GHOSTTY_BRIDGE_FLAGS=()
+GHOSTTY_BRIDGE_FLAGS=(-DVAULTTY_WITH_GHOSTTY=0)
 
 if [[ "$WITH_GHOSTTY_VT" == true ]]; then
   GHOSTTY_PREFIX="$ROOT_DIR/target/ghostty-vt"
@@ -621,7 +621,8 @@ clang \
   -c "$ROOT_DIR/src/app/GhosttyOscBridge.c" \
   -o "$GHOSTTY_BRIDGE_OBJECT"
 
-swiftc \
+SWIFTC_COMMAND=(
+  swiftc
   "${SWIFT_FLAGS[@]}" \
   -parse-as-library \
   -target "arm64-apple-macosx$MIN_MACOS_VERSION" \
@@ -634,9 +635,15 @@ swiftc \
   "$ROOT_DIR/src/app/GitDirectoryState.swift" \
   "$ROOT_DIR/src/app/Completion.swift" \
   "$ROOT_DIR/src/app/TerminalViewController.swift" \
-  "$GHOSTTY_BRIDGE_OBJECT" \
-  "${GHOSTTY_SWIFT_LINK_ARGS[@]}" \
+  "$GHOSTTY_BRIDGE_OBJECT"
+)
+if [[ "${#GHOSTTY_SWIFT_LINK_ARGS[@]}" -gt 0 ]]; then
+  SWIFTC_COMMAND+=("${GHOSTTY_SWIFT_LINK_ARGS[@]}")
+fi
+SWIFTC_COMMAND+=(
   -o "$EXECUTABLE"
+)
+"${SWIFTC_COMMAND[@]}"
 
 echo "Signing with $IDENTITY"
 write_env_helper_entitlements

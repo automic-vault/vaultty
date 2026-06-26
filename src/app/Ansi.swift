@@ -41,6 +41,7 @@ enum Ansi {
         private var savedCursorRow = 0
         private var savedCursorCol = 0
         private var droppedLineCount = 0
+        private var visibleCellCount = 0
         private var attributeCache: AttributeCache = [:]
         private var linkBaseDirectory: String?
 
@@ -53,6 +54,7 @@ enum Ansi {
             savedCursorRow = 0
             savedCursorCol = 0
             droppedLineCount = 0
+            visibleCellCount = 0
             attributeCache.removeAll(keepingCapacity: true)
             linkBaseDirectory = nil
         }
@@ -220,11 +222,13 @@ enum Ansi {
             cursorCol = min(cursorCol, Self.maxLineCells - 1)
             while lines[cursorRow].count < cursorCol {
                 lines[cursorRow].append(Cell(scalar: " ", style: style))
+                visibleCellCount += 1
             }
             if cursorCol < lines[cursorRow].count {
                 lines[cursorRow][cursorCol] = Cell(scalar: scalar, style: style)
             } else {
                 lines[cursorRow].append(Cell(scalar: scalar, style: style))
+                visibleCellCount += 1
             }
             cursorCol += 1
         }
@@ -257,12 +261,15 @@ enum Ansi {
             case 0:
                 eraseLine(0)
                 if cursorRow + 1 < lines.count {
-                    lines.removeSubrange((cursorRow + 1)..<lines.count)
+                    let range = (cursorRow + 1)..<lines.count
+                    visibleCellCount -= lines[range].reduce(0) { $0 + $1.count }
+                    lines.removeSubrange(range)
                 }
             case 1:
                 eraseLine(1)
                 if cursorRow > 0 {
                     for row in 0..<cursorRow {
+                        visibleCellCount -= lines[row].count
                         lines[row] = []
                     }
                 }
@@ -270,6 +277,7 @@ enum Ansi {
                 lines = [[]]
                 cursorRow = 0
                 cursorCol = 0
+                visibleCellCount = 0
             default:
                 break
             }
@@ -281,16 +289,19 @@ enum Ansi {
             switch mode {
             case 0:
                 if cursorCol < lines[cursorRow].count {
+                    visibleCellCount -= lines[cursorRow].count - cursorCol
                     lines[cursorRow].removeSubrange(cursorCol..<lines[cursorRow].count)
                 }
             case 1:
                 while lines[cursorRow].count <= cursorCol {
                     lines[cursorRow].append(Cell(scalar: " ", style: style))
+                    visibleCellCount += 1
                 }
                 for col in 0...cursorCol {
                     lines[cursorRow][col] = Cell(scalar: " ", style: style)
                 }
             case 2:
+                visibleCellCount -= lines[cursorRow].count
                 lines[cursorRow] = []
             default:
                 break
@@ -322,7 +333,6 @@ enum Ansi {
         private func renderedOutput() -> StyledOutput {
             let attributed = NSMutableAttributedString()
             var plain = ""
-            let visibleCellCount = lines.reduce(0) { $0 + $1.count }
             plain.reserveCapacity(
                 visibleCellCount
                     + max(0, lines.count - 1)
@@ -363,14 +373,26 @@ enum Ansi {
         }
 
         private func trimScrollbackIfNeeded() {
-            var visibleCells = lines.reduce(0) { $0 + $1.count }
-            while lines.count > 1,
-                  (lines.count > Self.maxRenderedLines || visibleCells > Self.maxRenderedCells) {
-                let removed = lines.removeFirst()
-                visibleCells -= removed.count
-                droppedLineCount += 1
-                cursorRow = max(0, cursorRow - 1)
-                savedCursorRow = max(0, savedCursorRow - 1)
+            guard lines.count > Self.maxRenderedLines || visibleCellCount > Self.maxRenderedCells else {
+                return
+            }
+
+            // ponytail: batch trim gives replay headroom; exact-at-cap trimming turns huge logs quadratic.
+            let targetLines = Self.maxRenderedLines * 9 / 10
+            let targetCells = Self.maxRenderedCells * 9 / 10
+            var removeCount = 0
+            var removedCells = 0
+            while removeCount < lines.count - 1,
+                  lines.count - removeCount > targetLines || visibleCellCount - removedCells > targetCells {
+                removedCells += lines[removeCount].count
+                removeCount += 1
+            }
+            if removeCount > 0 {
+                lines.removeSubrange(0..<removeCount)
+                visibleCellCount -= removedCells
+                droppedLineCount += removeCount
+                cursorRow = max(0, cursorRow - removeCount)
+                savedCursorRow = max(0, savedCursorRow - removeCount)
             }
         }
 

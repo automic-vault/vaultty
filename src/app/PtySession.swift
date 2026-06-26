@@ -421,6 +421,7 @@ final class PtySession {
 
     private func consumeProtocolText(_ text: String) {
         parserBuffer += text
+        guard text.contains("\n") else { return }
         while let newline = parserBuffer.firstIndex(of: "\n") {
             let line = String(parserBuffer[..<newline])
             parserBuffer.removeSubrange(...newline)
