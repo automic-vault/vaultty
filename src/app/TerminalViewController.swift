@@ -50,6 +50,7 @@ private enum TahoeGlassPalette {
     static let titleContentTop: CGFloat = titleTabTopInset + titleTabHeight + titleTabBottomInset
     static let titleTabLeadingInset: CGFloat = 104
     static let titleTabMinimumWidth: CGFloat = 112
+    static let titleTabMaximumWidth: CGFloat = 240
     static let titleTabTitleLeadingInset: CGFloat = 16
     static let titleTabTitleTrailingInset: CGFloat = 16
     static let titleTabTitleCloseTrailingInset: CGFloat = 34
@@ -1709,6 +1710,7 @@ private final class TitleTabButton: NSButton {
         titleLabel.textColor = TahoeGlassPalette.titleText
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.cell?.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.truncatesLastVisibleLine = true
         titleContentView.addSubview(titleLabel)
 
@@ -1868,9 +1870,10 @@ private final class TitleTabButton: NSButton {
         let horizontalInsets = TahoeGlassPalette.titleTabTitleLeadingInset
             + TahoeGlassPalette.titleTabTitleCloseTrailingInset
             + TahoeGlassPalette.titleTabMeasurementSlack
-        return max(
-            TahoeGlassPalette.titleTabMinimumWidth,
-            titleTextWidth + horizontalInsets
+        let width = titleTextWidth + horizontalInsets
+        return min(
+            TahoeGlassPalette.titleTabMaximumWidth,
+            max(TahoeGlassPalette.titleTabMinimumWidth, width)
         )
     }
 
@@ -1885,7 +1888,13 @@ private final class TitleTabButton: NSButton {
     }
 
     private var titleContentWidth: CGFloat {
-        titleTextWidth
+        min(
+            titleTextWidth,
+            TahoeGlassPalette.titleTabMaximumWidth
+                - TahoeGlassPalette.titleTabTitleLeadingInset
+                - TahoeGlassPalette.titleTabTitleCloseTrailingInset
+                - TahoeGlassPalette.titleTabMeasurementSlack
+        )
     }
 
     func configureClose(target: AnyObject?, action: Selector) {
